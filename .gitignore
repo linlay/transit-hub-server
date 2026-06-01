@@ -16,7 +16,7 @@ bin/
 dist/
 coverage.out
 *.test
-transit-hub
+/transit-hub
 
 # Editor and OS noise
 .idea/
