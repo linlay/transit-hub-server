@@ -1,0 +1,17 @@
+name: minimax
+protocol: openai
+base_url: https://api.minimax.chat
+default_pool: primary
+headers: {}
+# endpoints:
+#   openai_chat_completions: /v1/chat/completions
+models:
+  - public: minimax-text
+    upstream: minimax-text-01
+    pool: primary
+pools:
+  - name: primary
+    accounts:
+      - name: minimax-main
+        api_key: sk-your-upstream-key
+        weight: 1

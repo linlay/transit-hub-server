@@ -1,0 +1,299 @@
+package gateway
+
+import (
+	"crypto/subtle"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/linlay/transit-hub/internal/config"
+	"github.com/linlay/transit-hub/internal/store"
+)
+
+type apiKeyResponse struct {
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	Description   string     `json:"description"`
+	KeyPrefix     string     `json:"key_prefix"`
+	Status        string     `json:"status"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	ForcedExpired bool       `json:"forced_expired"`
+	RequestQuota  int64      `json:"request_quota"`
+	TokenQuota    int64      `json:"token_quota"`
+	UsedRequests  int64      `json:"used_requests"`
+	UsedTokens    int64      `json:"used_tokens"`
+	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`
+	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+type createAPIKeyRequest struct {
+	Name         string     `json:"name"`
+	Description  string     `json:"description"`
+	ExpiresAt    *time.Time `json:"expires_at"`
+	RequestQuota int64      `json:"request_quota"`
+	TokenQuota   int64      `json:"token_quota"`
+}
+
+type createAPIKeyResponse struct {
+	apiKeyResponse
+	Key string `json:"key"`
+}
+
+type patchAPIKeyRequest struct {
+	Name          *string      `json:"name"`
+	Description   *string      `json:"description"`
+	Status        *string      `json:"status"`
+	ExpiresAt     optionalTime `json:"expires_at"`
+	ForcedExpired *bool        `json:"forced_expired"`
+	RequestQuota  *int64       `json:"request_quota"`
+	TokenQuota    *int64       `json:"token_quota"`
+}
+
+type optionalTime struct {
+	Set   bool
+	Value *time.Time
+}
+
+func (t *optionalTime) UnmarshalJSON(data []byte) error {
+	t.Set = true
+	if string(data) == "null" {
+		t.Value = nil
+		return nil
+	}
+	var parsed time.Time
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	t.Value = &parsed
+	return nil
+}
+
+func (g *Gateway) adminAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := bearerToken(r.Header.Get("Authorization"))
+		if token == "" {
+			token = r.Header.Get("x-admin-token")
+		}
+		if token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(g.env.AdminToken)) == 1 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if user, ok := g.authenticateAdminSession(r); ok {
+			r = r.WithContext(withAdminUser(r.Context(), user))
+			next.ServeHTTP(w, r)
+			return
+		}
+		if token == "" {
+			writeError(w, http.StatusUnauthorized, "missing admin credentials")
+			return
+		}
+		if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(g.env.AdminToken)) != 1 {
+			writeError(w, http.StatusUnauthorized, "invalid admin token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (g *Gateway) createAPIKey(w http.ResponseWriter, r *http.Request) {
+	var req createAPIKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	created, err := g.store.CreateAPIKey(r.Context(), store.CreateAPIKeyParams{
+		Name:         req.Name,
+		Description:  req.Description,
+		ExpiresAt:    req.ExpiresAt,
+		RequestQuota: req.RequestQuota,
+		TokenQuota:   req.TokenQuota,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, createAPIKeyResponse{
+		apiKeyResponse: toAPIKeyResponse(created.APIKey),
+		Key:            created.PlainText,
+	})
+}
+
+func (g *Gateway) listAPIKeys(w http.ResponseWriter, r *http.Request) {
+	limit, offset := pagination(r, 50, 200)
+	result, err := g.store.SearchAPIKeys(r.Context(), store.APIKeyListParams{
+		Search:         r.URL.Query().Get("search"),
+		Status:         r.URL.Query().Get("status"),
+		IncludeDeleted: parseBoolQuery(r, "include_deleted"),
+		Limit:          limit,
+		Offset:         offset,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	items := make([]apiKeyResponse, 0, len(result.Items))
+	for _, key := range result.Items {
+		items = append(items, toAPIKeyResponse(key))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":  items,
+		"total":  result.Total,
+		"limit":  result.Limit,
+		"offset": result.Offset,
+	})
+}
+
+func (g *Gateway) getAPIKey(w http.ResponseWriter, r *http.Request) {
+	key, err := g.store.GetAPIKey(r.Context(), chi.URLParam(r, "id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "api key not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toAPIKeyResponse(key))
+}
+
+func (g *Gateway) patchAPIKey(w http.ResponseWriter, r *http.Request) {
+	var req patchAPIKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	key, err := g.store.UpdateAPIKey(r.Context(), chi.URLParam(r, "id"), store.APIKeyPatch{
+		Name:          req.Name,
+		Description:   req.Description,
+		Status:        req.Status,
+		ExpiresAtSet:  req.ExpiresAt.Set,
+		ExpiresAt:     req.ExpiresAt.Value,
+		ForcedExpired: req.ForcedExpired,
+		RequestQuota:  req.RequestQuota,
+		TokenQuota:    req.TokenQuota,
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "api key not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toAPIKeyResponse(key))
+}
+
+func (g *Gateway) deleteAPIKey(w http.ResponseWriter, r *http.Request) {
+	key, err := g.store.DeleteAPIKey(r.Context(), chi.URLParam(r, "id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "api key not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toAPIKeyResponse(key))
+}
+
+func (g *Gateway) listProviders(w http.ResponseWriter, r *http.Request) {
+	overrides, err := g.store.ListRouteOverrides(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, g.registry.Snapshot(overrides))
+}
+
+func (g *Gateway) reloadProviders(w http.ResponseWriter, r *http.Request) {
+	providerConfigs, err := config.LoadProviderConfigs(g.env.ConfigDir)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := g.registry.Replace(providerConfigs); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "reloaded", "providers": len(providerConfigs)})
+}
+
+func (g *Gateway) setRoutePool(w http.ResponseWriter, r *http.Request) {
+	publicModel := chi.URLParam(r, "public_model")
+	var req struct {
+		Pool string `json:"pool"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if strings.TrimSpace(req.Pool) != "" && !g.registry.HasPoolForModel(publicModel, req.Pool) {
+		writeError(w, http.StatusBadRequest, "pool does not exist for model")
+		return
+	}
+	if err := g.store.SetRouteOverride(r.Context(), publicModel, req.Pool); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"public_model": publicModel, "pool": req.Pool})
+}
+
+func (g *Gateway) clearRoutePool(w http.ResponseWriter, r *http.Request) {
+	publicModel := chi.URLParam(r, "public_model")
+	if err := g.store.SetRouteOverride(r.Context(), publicModel, ""); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"public_model": publicModel, "pool": ""})
+}
+
+func toAPIKeyResponse(key store.APIKey) apiKeyResponse {
+	return apiKeyResponse{
+		ID:            key.ID,
+		Name:          key.Name,
+		Description:   key.Description,
+		KeyPrefix:     key.KeyPrefix,
+		Status:        key.Status,
+		ExpiresAt:     key.ExpiresAt,
+		ForcedExpired: key.ForcedExpired,
+		RequestQuota:  key.RequestQuota,
+		TokenQuota:    key.TokenQuota,
+		UsedRequests:  key.UsedRequests,
+		UsedTokens:    key.UsedTokens,
+		LastUsedAt:    key.LastUsedAt,
+		DeletedAt:     key.DeletedAt,
+		CreatedAt:     key.CreatedAt,
+		UpdatedAt:     key.UpdatedAt,
+	}
+}
+
+func pagination(r *http.Request, defaultLimit, maxLimit int) (int, int) {
+	limit := defaultLimit
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			limit = parsed
+		}
+	}
+	if limit <= 0 || limit > maxLimit {
+		limit = defaultLimit
+	}
+	offset := 0
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			offset = parsed
+		}
+	}
+	return limit, offset
+}
+
+func parseBoolQuery(r *http.Request, key string) bool {
+	value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get(key)))
+	return value == "1" || value == "true" || value == "yes"
+}

@@ -1,0 +1,20 @@
+name: deepseek
+protocol: openai
+base_url: https://api.deepseek.com
+default_pool: primary
+headers: {}
+# endpoints:
+#   openai_chat_completions: /v1/chat/completions
+models:
+  - public: deepseek-chat
+    upstream: deepseek-chat
+    pool: primary
+  - public: deepseek-reasoner
+    upstream: deepseek-reasoner
+    pool: primary
+pools:
+  - name: primary
+    accounts:
+      - name: deepseek-main
+        api_key: sk-your-upstream-key
+        weight: 1

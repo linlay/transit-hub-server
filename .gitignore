@@ -1,0 +1,30 @@
+.DS_Store
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Build and test artifacts
+bin/
+dist/
+coverage.out
+*.test
+transit-hub
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+
+# Real upstream credentials live here. Keep only *.example.yaml in git.
+configs/*.yaml
+configs/*.yml
+!configs/*.example.yaml
+!configs/*.example.yml

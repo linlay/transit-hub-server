@@ -1,0 +1,17 @@
+services:
+  transit-hub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      ADDR: ":8080"
+      DB_PATH: /app/data/transit-hub.db
+      CONFIG_DIR: /app/configs
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./configs:/app/configs:ro
+    restart: unless-stopped
