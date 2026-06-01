@@ -101,10 +101,13 @@ curl -sS http://localhost:8080/healthz
 容器化部署：
 
 ```bash
+docker network create transit-hub-net
 docker compose up -d --build
 ```
 
-容器启动前同样需要先准备 `.env`，并在 `configs/` 下放置真实的 provider 配置。容器会固定监听 `:8080`，挂载 `./data` 保存 SQLite 数据库，并以只读方式挂载 `./configs` 读取上游配置。
+容器启动前同样需要先准备 `.env`，并在 `configs/` 下放置真实的 provider 配置。容器会固定监听 `:8080`，加入 external Docker network `transit-hub-net`，挂载 `./data` 保存 SQLite 数据库，并以只读方式挂载 `./configs` 读取上游配置。
+
+生产部署时后端不映射宿主机端口，对外入口由 `transit-hub-website` 提供。website 容器会在同一个 `transit-hub-net` 网络内通过服务名 `transit-hub:8080` 访问后端。
 
 ## 创建客户端 API Key
 
@@ -159,7 +162,7 @@ npm run dev
 ```
 
 默认开发地址为 `http://localhost:5173`，后端默认允许该 Origin 携带 Cookie。
-若前端独立部署到其他域名，需要设置：
+生产环境推荐由 website 同源反代 `/admin` 到后端；此时浏览器不需要直接访问后端端口。若前端独立部署到其他域名，需要设置：
 
 ```dotenv
 CORS_ALLOWED_ORIGINS=https://your-admin-site.example.com
