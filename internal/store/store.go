@@ -515,6 +515,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			status TEXT NOT NULL,
 			issue_quota INTEGER NOT NULL DEFAULT 0,
 			issued_count INTEGER NOT NULL DEFAULT 0,
+			request_quota INTEGER NOT NULL DEFAULT 50,
+			token_quota INTEGER NOT NULL DEFAULT 100000,
+			allowed_models TEXT NOT NULL DEFAULT '[]',
 			expires_at TEXT,
 			last_issued_at TEXT,
 			created_at TEXT NOT NULL,
@@ -540,6 +543,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE request_logs ADD COLUMN cost_microusd INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE request_logs ADD COLUMN cache_hit_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE request_logs ADD COLUMN cache_miss_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE jwt_grants ADD COLUMN request_quota INTEGER NOT NULL DEFAULT 50`,
+		`ALTER TABLE jwt_grants ADD COLUMN token_quota INTEGER NOT NULL DEFAULT 100000`,
+		`ALTER TABLE jwt_grants ADD COLUMN allowed_models TEXT NOT NULL DEFAULT '[]'`,
 	} {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isDuplicateColumnError(err) {
 			return err
@@ -759,6 +765,9 @@ func APIKeyAllowsModel(key APIKey, publicModel string) bool {
 	publicModel = strings.TrimSpace(publicModel)
 	if publicModel == "" {
 		return false
+	}
+	if len(key.AllowedModels) == 0 {
+		return true
 	}
 	for _, model := range key.AllowedModels {
 		if model == publicModel {

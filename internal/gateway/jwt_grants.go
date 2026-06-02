@@ -22,6 +22,9 @@ type jwtGrantResponse struct {
 	IssuedCount    int64      `json:"issued_count"`
 	IssueRemaining int64      `json:"issue_remaining"`
 	IssueUnlimited bool       `json:"issue_unlimited"`
+	RequestQuota   int64      `json:"request_quota"`
+	TokenQuota     int64      `json:"token_quota"`
+	AllowedModels  []string   `json:"allowed_models"`
 	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
 	LastIssuedAt   *time.Time `json:"last_issued_at,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
@@ -29,10 +32,13 @@ type jwtGrantResponse struct {
 }
 
 type createJWTGrantRequest struct {
-	Name        string     `json:"name"`
-	Description string     `json:"description"`
-	IssueQuota  int64      `json:"issue_quota"`
-	ExpiresAt   *time.Time `json:"expires_at"`
+	Name          string     `json:"name"`
+	Description   string     `json:"description"`
+	IssueQuota    int64      `json:"issue_quota"`
+	RequestQuota  *int64     `json:"request_quota"`
+	TokenQuota    *int64     `json:"token_quota"`
+	AllowedModels []string   `json:"allowed_models"`
+	ExpiresAt     *time.Time `json:"expires_at"`
 }
 
 type createJWTGrantResponse struct {
@@ -41,10 +47,13 @@ type createJWTGrantResponse struct {
 }
 
 type patchJWTGrantRequest struct {
-	Name        *string `json:"name"`
-	Description *string `json:"description"`
-	Status      *string `json:"status"`
-	IssueQuota  *int64  `json:"issue_quota"`
+	Name          *string             `json:"name"`
+	Description   *string             `json:"description"`
+	Status        *string             `json:"status"`
+	IssueQuota    *int64              `json:"issue_quota"`
+	RequestQuota  *int64              `json:"request_quota"`
+	TokenQuota    *int64              `json:"token_quota"`
+	AllowedModels optionalStringSlice `json:"allowed_models"`
 }
 
 type applyAPIKeyRequest struct {
@@ -62,11 +71,24 @@ func (g *Gateway) createJWTGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
+	allowedModels, err := g.validateAllowedModels(req.AllowedModels)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	now := time.Now().UTC()
 	expiresAt := req.ExpiresAt
 	if expiresAt == nil {
 		defaultExpiresAt := now.Add(svc.DefaultJWTTTL())
 		expiresAt = &defaultExpiresAt
+	}
+	requestQuota := svc.DefaultAPIKeyRequestQuota()
+	if req.RequestQuota != nil {
+		requestQuota = *req.RequestQuota
+	}
+	tokenQuota := svc.DefaultAPIKeyTokenQuota()
+	if req.TokenQuota != nil {
+		tokenQuota = *req.TokenQuota
 	}
 	jti := store.GenerateJTI()
 	jwt, err := svc.SignGrant(jti, *expiresAt, now)
@@ -75,11 +97,14 @@ func (g *Gateway) createJWTGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	grant, err := g.store.CreateJWTGrant(r.Context(), store.CreateJWTGrantParams{
-		JTI:         jti,
-		Name:        req.Name,
-		Description: req.Description,
-		IssueQuota:  req.IssueQuota,
-		ExpiresAt:   expiresAt,
+		JTI:           jti,
+		Name:          req.Name,
+		Description:   req.Description,
+		IssueQuota:    req.IssueQuota,
+		RequestQuota:  requestQuota,
+		TokenQuota:    tokenQuota,
+		AllowedModels: allowedModels,
+		ExpiresAt:     expiresAt,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -92,20 +117,26 @@ func (g *Gateway) createJWTGrant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) listJWTGrants(w http.ResponseWriter, r *http.Request) {
-	grants, err := g.store.ListJWTGrants(r.Context())
+	limit, offset := pagination(r, 50, 200)
+	result, err := g.store.SearchJWTGrants(r.Context(), store.JWTGrantListParams{
+		Search: r.URL.Query().Get("search"),
+		Status: r.URL.Query().Get("status"),
+		Limit:  limit,
+		Offset: offset,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	items := make([]jwtGrantResponse, 0, len(grants))
-	for _, grant := range grants {
+	items := make([]jwtGrantResponse, 0, len(result.Items))
+	for _, grant := range result.Items {
 		items = append(items, toJWTGrantResponse(grant))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":  items,
-		"total":  len(items),
-		"limit":  len(items),
-		"offset": 0,
+		"total":  result.Total,
+		"limit":  result.Limit,
+		"offset": result.Offset,
 	})
 }
 
@@ -115,11 +146,24 @@ func (g *Gateway) patchJWTGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
+	allowedModels := req.AllowedModels.Value
+	if req.AllowedModels.Set {
+		var err error
+		allowedModels, err = g.validateAllowedModels(req.AllowedModels.Value)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	grant, err := g.store.UpdateJWTGrant(r.Context(), chi.URLParam(r, "jti"), store.JWTGrantPatch{
-		Name:        req.Name,
-		Description: req.Description,
-		Status:      req.Status,
-		IssueQuota:  req.IssueQuota,
+		Name:             req.Name,
+		Description:      req.Description,
+		Status:           req.Status,
+		IssueQuota:       req.IssueQuota,
+		RequestQuota:     req.RequestQuota,
+		TokenQuota:       req.TokenQuota,
+		AllowedModelsSet: req.AllowedModels.Set,
+		AllowedModels:    allowedModels,
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "jwt grant not found")
@@ -160,10 +204,8 @@ func (g *Gateway) applyAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created, err := g.store.IssueAPIKeyFromJWTGrant(r.Context(), claims.JTI, store.CreateAPIKeyParams{
-		Name:         req.Name,
-		Description:  req.Description,
-		RequestQuota: svc.DefaultAPIKeyRequestQuota(),
-		TokenQuota:   svc.DefaultAPIKeyTokenQuota(),
+		Name:        req.Name,
+		Description: req.Description,
 	}, now)
 	if errors.Is(err, store.ErrGrantQuotaExhausted) {
 		writeError(w, http.StatusTooManyRequests, err.Error())
@@ -209,6 +251,9 @@ func toJWTGrantResponse(grant store.JWTGrant) jwtGrantResponse {
 		IssuedCount:    grant.IssuedCount,
 		IssueRemaining: remaining,
 		IssueUnlimited: unlimited,
+		RequestQuota:   grant.RequestQuota,
+		TokenQuota:     grant.TokenQuota,
+		AllowedModels:  grant.AllowedModels,
 		ExpiresAt:      grant.ExpiresAt,
 		LastIssuedAt:   grant.LastIssuedAt,
 		CreatedAt:      grant.CreatedAt,

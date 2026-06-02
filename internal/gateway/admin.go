@@ -151,6 +151,8 @@ func (g *Gateway) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 	result, err := g.store.SearchAPIKeys(r.Context(), store.APIKeyListParams{
 		Search:         r.URL.Query().Get("search"),
 		Status:         r.URL.Query().Get("status"),
+		Source:         r.URL.Query().Get("source"),
+		IssuerJTI:      r.URL.Query().Get("issuer_jti"),
 		IncludeDeleted: parseBoolQuery(r, "include_deleted"),
 		Limit:          limit,
 		Offset:         offset,

@@ -191,7 +191,7 @@ curl -sS -X DELETE http://localhost:8080/admin/api-keys/key_xxx \
 curl -sS -X POST http://localhost:8080/admin/jwt-grants \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"desktop rollout","issue_quota":100}'
+  -d '{"name":"desktop rollout","issue_quota":100,"request_quota":50,"token_quota":100000,"allowed_models":[]}'
 ```
 
 客户端拿到 JWT 后调用公开申请接口：
@@ -203,7 +203,7 @@ curl -sS -X POST http://localhost:8080/api/apply-apikey \
   -d '{"name":"my desktop"}'
 ```
 
-申请成功会返回一次性明文 `dk_...` API Key。默认发放额度为 50 次请求和 100000 tokens，默认不授权任何模型；后续可以在管理站 API Keys 页面配置可调用模型、调大额度、禁用或改成不限额。
+申请成功会返回一次性明文 `dk_...` API Key，并通过 `issuer_jti` 追溯到签发它的 JWT Grant。`issue_quota` 控制该 grant 最多发放多少个 API Key，`request_quota`、`token_quota`、`allowed_models` 控制每个新发出 API Key 的初始限制；额度字段为 `0` 表示不限额，`allowed_models: []` 表示不限制模型。
 
 管理 grant：
 
@@ -216,7 +216,7 @@ curl -sS http://localhost:8080/admin/jwt-grants \
 curl -sS -X PATCH http://localhost:8080/admin/jwt-grants/jti_xxx \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"issue_quota":200,"status":"active"}'
+  -d '{"issue_quota":200,"request_quota":100,"token_quota":200000,"allowed_models":[],"status":"active"}'
 ```
 
 ## 管理网站

@@ -10,6 +10,8 @@ import (
 type APIKeyListParams struct {
 	Search         string
 	Status         string
+	Source         string
+	IssuerJTI      string
 	IncludeDeleted bool
 	Limit          int
 	Offset         int
@@ -45,6 +47,14 @@ func (s *Store) SearchAPIKeys(ctx context.Context, params APIKeyListParams) (API
 	if status := strings.ToLower(strings.TrimSpace(params.Status)); status != "" && status != "all" {
 		where = append(where, "status = ?")
 		args = append(args, status)
+	}
+	if source := strings.ToLower(strings.TrimSpace(params.Source)); source != "" && source != "all" {
+		where = append(where, "source = ?")
+		args = append(args, source)
+	}
+	if issuerJTI := strings.TrimSpace(params.IssuerJTI); issuerJTI != "" {
+		where = append(where, "issuer_jti = ?")
+		args = append(args, issuerJTI)
 	}
 	whereSQL := ""
 	if len(where) > 0 {

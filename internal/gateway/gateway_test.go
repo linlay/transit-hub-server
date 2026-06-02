@@ -191,7 +191,7 @@ func TestAPIKeyModelWhitelistAllowsDeniesAndPreservesRouteNotFound(t *testing.T)
 	}
 }
 
-func TestAPIKeyModelWhitelistDefaultsToEmpty(t *testing.T) {
+func TestAPIKeyModelWhitelistEmptyAllowsAllModels(t *testing.T) {
 	var hits int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&hits, 1)
@@ -207,10 +207,10 @@ func TestAPIKeyModelWhitelistDefaultsToEmpty(t *testing.T) {
 	req := proxyRequest(plainKey)
 	rec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if got := atomic.LoadInt64(&hits); got != 0 {
+	if got := atomic.LoadInt64(&hits); got != 1 {
 		t.Fatalf("upstream hits = %d", got)
 	}
 }
@@ -419,7 +419,10 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 
 	createReq := httptest.NewRequest(http.MethodPost, "/admin/jwt-grants", bytes.NewBufferString(`{
 		"name":"desktop grant",
-		"issue_quota":1
+		"issue_quota":1,
+		"request_quota":25,
+		"token_quota":2500,
+		"allowed_models":["public-model"]
 	}`))
 	createReq.Header.Set("Authorization", "Bearer admin")
 	createRec := httptest.NewRecorder()
@@ -436,6 +439,9 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 	if token == "" || jti == "" {
 		t.Fatalf("grant response missing token or jti: %#v", grantPayload)
 	}
+	if grantPayload["request_quota"].(float64) != 25 || grantPayload["token_quota"].(float64) != 2500 {
+		t.Fatalf("grant response missing quotas: %#v", grantPayload)
+	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/admin/jwt-grants", nil)
 	listReq.Header.Set("Authorization", "Bearer admin")
@@ -446,6 +452,9 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 	}
 	if bytes.Contains(listRec.Body.Bytes(), []byte(`"jwt"`)) {
 		t.Fatalf("grant list leaked jwt: %s", listRec.Body.String())
+	}
+	if !bytes.Contains(listRec.Body.Bytes(), []byte(`"allowed_models":["public-model"]`)) {
+		t.Fatalf("grant list missing allowed_models: %s", listRec.Body.String())
 	}
 
 	applyReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{"name":"desktop"}`))
@@ -467,8 +476,29 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if key.Source != "jwt" || key.IssuerJTI != jti || key.RequestQuota != 50 || key.TokenQuota != 100000 || len(key.AllowedModels) != 0 {
+	if key.Source != "jwt" || key.IssuerJTI != jti || key.RequestQuota != 25 || key.TokenQuota != 2500 || strings.Join(key.AllowedModels, ",") != "public-model" {
 		t.Fatalf("unexpected issued key: %#v", key)
+	}
+	filterReq := httptest.NewRequest(http.MethodGet, "/admin/api-keys?source=jwt&issuer_jti="+jti, nil)
+	filterReq.Header.Set("Authorization", "Bearer admin")
+	filterRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(filterRec, filterReq)
+	if filterRec.Code != http.StatusOK {
+		t.Fatalf("api key filter status = %d, body = %s", filterRec.Code, filterRec.Body.String())
+	}
+	var filtered struct {
+		Items []struct {
+			ID        string `json:"id"`
+			Source    string `json:"source"`
+			IssuerJTI string `json:"issuer_jti"`
+		} `json:"items"`
+		Total int64 `json:"total"`
+	}
+	if err := json.Unmarshal(filterRec.Body.Bytes(), &filtered); err != nil {
+		t.Fatal(err)
+	}
+	if filtered.Total != 1 || len(filtered.Items) != 1 || filtered.Items[0].Source != "jwt" || filtered.Items[0].IssuerJTI != jti {
+		t.Fatalf("unexpected filtered api keys: %#v", filtered)
 	}
 	grant, err := db.GetJWTGrant(t.Context(), jti)
 	if err != nil {
@@ -484,6 +514,153 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 	app.Handler().ServeHTTP(secondRec, secondReq)
 	if secondRec.Code != http.StatusTooManyRequests {
 		t.Fatalf("second apply status = %d, body = %s", secondRec.Code, secondRec.Body.String())
+	}
+}
+
+func TestJWTGrantPatchAffectsFutureIssuedKeysOnly(t *testing.T) {
+	issuerSvc := newTestIssuer(t)
+	providerConfig := openAIProvider("https://upstream.invalid")
+	providerConfig.Models = append(providerConfig.Models, config.ModelConfig{
+		Public:   "other-model",
+		Upstream: "other-upstream",
+		Pool:     "primary",
+	})
+	app, db, _ := newTestGatewayWithKeyAndIssuer(t, []config.ProviderConfig{providerConfig}, store.CreateAPIKeyParams{Name: "test"}, issuerSvc)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/jwt-grants", bytes.NewBufferString(`{
+		"name":"patchable grant",
+		"issue_quota":2,
+		"request_quota":10,
+		"token_quota":100,
+		"allowed_models":["public-model"]
+	}`))
+	createReq.Header.Set("Authorization", "Bearer admin")
+	createRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("grant create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var createdGrant struct {
+		JTI string `json:"jti"`
+		JWT string `json:"jwt"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createdGrant); err != nil {
+		t.Fatal(err)
+	}
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{"name":"first"}`))
+	firstReq.Header.Set("Authorization", "Bearer "+createdGrant.JWT)
+	firstRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusCreated {
+		t.Fatalf("first apply status = %d, body = %s", firstRec.Code, firstRec.Body.String())
+	}
+	var firstPayload struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(firstRec.Body.Bytes(), &firstPayload); err != nil {
+		t.Fatal(err)
+	}
+	firstKey, err := db.FindAPIKeyByPlainText(t.Context(), firstPayload.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/admin/jwt-grants/"+createdGrant.JTI, bytes.NewBufferString(`{
+		"request_quota":20,
+		"token_quota":200,
+		"allowed_models":["other-model"]
+	}`))
+	patchReq.Header.Set("Authorization", "Bearer admin")
+	patchRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch grant status = %d, body = %s", patchRec.Code, patchRec.Body.String())
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{"name":"second"}`))
+	secondReq.Header.Set("Authorization", "Bearer "+createdGrant.JWT)
+	secondRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(secondRec, secondReq)
+	if secondRec.Code != http.StatusCreated {
+		t.Fatalf("second apply status = %d, body = %s", secondRec.Code, secondRec.Body.String())
+	}
+	var secondPayload struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(secondRec.Body.Bytes(), &secondPayload); err != nil {
+		t.Fatal(err)
+	}
+	secondKey, err := db.FindAPIKeyByPlainText(t.Context(), secondPayload.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if firstKey.RequestQuota != 10 || firstKey.TokenQuota != 100 || strings.Join(firstKey.AllowedModels, ",") != "public-model" {
+		t.Fatalf("first key changed unexpectedly: %#v", firstKey)
+	}
+	if secondKey.RequestQuota != 20 || secondKey.TokenQuota != 200 || strings.Join(secondKey.AllowedModels, ",") != "other-model" {
+		t.Fatalf("second key did not use patched grant: %#v", secondKey)
+	}
+}
+
+func TestJWTGrantListFilters(t *testing.T) {
+	issuerSvc := newTestIssuer(t)
+	app, db, _ := newTestGatewayWithKeyAndIssuer(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")}, store.CreateAPIKeyParams{Name: "test"}, issuerSvc)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/jwt-grants", bytes.NewBufferString(`{
+		"name":"desktop rollout",
+		"description":"mac clients",
+		"issue_quota":10
+	}`))
+	createReq.Header.Set("Authorization", "Bearer admin")
+	createRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("grant create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var activeGrant struct {
+		JTI string `json:"jti"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &activeGrant); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateJWTGrant(t.Context(), store.CreateJWTGrantParams{
+		JTI:        store.GenerateJTI(),
+		Name:       "archived rollout",
+		Status:     "disabled",
+		IssueQuota: 10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	filterReq := httptest.NewRequest(http.MethodGet, "/admin/jwt-grants?status=active&search=desktop", nil)
+	filterReq.Header.Set("Authorization", "Bearer admin")
+	filterRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(filterRec, filterReq)
+	if filterRec.Code != http.StatusOK {
+		t.Fatalf("grant filter status = %d, body = %s", filterRec.Code, filterRec.Body.String())
+	}
+	var filtered struct {
+		Items []struct {
+			JTI    string `json:"jti"`
+			Status string `json:"status"`
+		} `json:"items"`
+		Total int64 `json:"total"`
+	}
+	if err := json.Unmarshal(filterRec.Body.Bytes(), &filtered); err != nil {
+		t.Fatal(err)
+	}
+	if filtered.Total != 1 || len(filtered.Items) != 1 || filtered.Items[0].JTI != activeGrant.JTI || filtered.Items[0].Status != "active" {
+		t.Fatalf("unexpected filtered grants: %#v", filtered)
+	}
+
+	jtiReq := httptest.NewRequest(http.MethodGet, "/admin/jwt-grants?search="+activeGrant.JTI, nil)
+	jtiReq.Header.Set("Authorization", "Bearer admin")
+	jtiRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(jtiRec, jtiReq)
+	if jtiRec.Code != http.StatusOK || !bytes.Contains(jtiRec.Body.Bytes(), []byte(activeGrant.JTI)) {
+		t.Fatalf("jti search failed status = %d, body = %s", jtiRec.Code, jtiRec.Body.String())
 	}
 }
 
