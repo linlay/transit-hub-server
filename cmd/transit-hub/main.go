@@ -12,6 +12,7 @@ import (
 
 	"github.com/linlay/transit-hub/internal/config"
 	"github.com/linlay/transit-hub/internal/gateway"
+	"github.com/linlay/transit-hub/internal/issuer"
 	"github.com/linlay/transit-hub/internal/provider"
 	"github.com/linlay/transit-hub/internal/store"
 )
@@ -53,12 +54,26 @@ func main() {
 		logger.Fatalf("build provider registry: %v", err)
 	}
 	if len(providerConfigs) == 0 {
-		logger.Printf("no provider configs loaded from %s; copy an example config and call /admin/providers/reload", env.ConfigDir)
+		logger.Printf("no provider configs loaded from %s; copy an example config and call /admin/providers/reload", config.ProviderConfigDir(env.ConfigDir))
+	}
+
+	var issuerService *issuer.Service
+	if issuerConfig, found, err := config.LoadIssuerConfig(env.IssuerConfigPath); err != nil {
+		logger.Fatalf("load issuer config: %v", err)
+	} else if found {
+		issuerService, err = issuer.New(issuerConfig)
+		if err != nil {
+			logger.Fatalf("load jwt issuer: %v", err)
+		}
+		logger.Printf("jwt issuer loaded from %s", env.IssuerConfigPath)
+	} else {
+		logger.Printf("jwt issuer config not found at %s; /api/apply-apikey is disabled", env.IssuerConfigPath)
 	}
 
 	app := gateway.New(gateway.Options{
 		Env:      env,
 		Store:    db,
+		Issuer:   issuerService,
 		Registry: registry,
 		Logger:   logger,
 	})

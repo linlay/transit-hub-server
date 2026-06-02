@@ -18,11 +18,15 @@ import (
 )
 
 var (
-	ErrNotFound       = errors.New("not found")
-	ErrKeyNotFound    = errors.New("api key not found")
-	ErrKeyInactive    = errors.New("api key inactive")
-	ErrKeyExpired     = errors.New("api key expired")
-	ErrQuotaExhausted = errors.New("api key quota exhausted")
+	ErrNotFound            = errors.New("not found")
+	ErrKeyNotFound         = errors.New("api key not found")
+	ErrKeyInactive         = errors.New("api key inactive")
+	ErrKeyExpired          = errors.New("api key expired")
+	ErrQuotaExhausted      = errors.New("api key quota exhausted")
+	ErrGrantNotFound       = errors.New("jwt grant not found")
+	ErrGrantInactive       = errors.New("jwt grant inactive")
+	ErrGrantExpired        = errors.New("jwt grant expired")
+	ErrGrantQuotaExhausted = errors.New("jwt grant quota exhausted")
 )
 
 type Store struct {
@@ -34,6 +38,8 @@ type APIKey struct {
 	Name          string     `json:"name"`
 	Description   string     `json:"description"`
 	KeyPrefix     string     `json:"key_prefix"`
+	Source        string     `json:"source"`
+	IssuerJTI     string     `json:"issuer_jti,omitempty"`
 	Status        string     `json:"status"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	ForcedExpired bool       `json:"forced_expired"`
@@ -50,6 +56,9 @@ type APIKey struct {
 type CreateAPIKeyParams struct {
 	Name         string
 	Description  string
+	Prefix       string
+	Source       string
+	IssuerJTI    string
 	ExpiresAt    *time.Time
 	RequestQuota int64
 	TokenQuota   int64
@@ -121,14 +130,28 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) CreateAPIKey(ctx context.Context, params CreateAPIKeyParams) (CreatedAPIKey, error) {
+	return s.createAPIKeyInTx(ctx, nil, params)
+}
+
+func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateAPIKeyParams) (CreatedAPIKey, error) {
 	if strings.TrimSpace(params.Name) == "" {
 		params.Name = "unnamed"
+	}
+	if strings.TrimSpace(params.Prefix) == "" {
+		params.Prefix = "th"
+	}
+	if strings.TrimSpace(params.Source) == "" {
+		params.Source = "admin"
 	}
 	if params.RequestQuota < 0 || params.TokenQuota < 0 {
 		return CreatedAPIKey{}, errors.New("quotas must be >= 0")
 	}
+	source := strings.ToLower(strings.TrimSpace(params.Source))
+	if source != "admin" && source != "jwt" {
+		return CreatedAPIKey{}, errors.New("source must be admin or jwt")
+	}
 
-	plain, err := GeneratePlainAPIKey()
+	plain, err := GeneratePlainAPIKey(params.Prefix)
 	if err != nil {
 		return CreatedAPIKey{}, err
 	}
@@ -138,6 +161,8 @@ func (s *Store) CreateAPIKey(ctx context.Context, params CreateAPIKeyParams) (Cr
 		Name:          strings.TrimSpace(params.Name),
 		Description:   strings.TrimSpace(params.Description),
 		KeyPrefix:     keyPrefix(plain),
+		Source:        source,
+		IssuerJTI:     strings.TrimSpace(params.IssuerJTI),
 		Status:        "active",
 		ExpiresAt:     params.ExpiresAt,
 		ForcedExpired: false,
@@ -147,12 +172,18 @@ func (s *Store) CreateAPIKey(ctx context.Context, params CreateAPIKeyParams) (Cr
 		UpdatedAt:     now,
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	exec := func(query string, args ...any) (sql.Result, error) {
+		if tx != nil {
+			return tx.ExecContext(ctx, query, args...)
+		}
+		return s.db.ExecContext(ctx, query, args...)
+	}
+	_, err = exec(`
 		INSERT INTO api_keys (
-			id, key_hash, key_prefix, name, description, status, expires_at, forced_expired,
+			id, key_hash, key_prefix, name, description, source, issuer_jti, status, expires_at, forced_expired,
 			request_quota, token_quota, used_requests, used_tokens, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
-	`, key.ID, HashKey(plain), key.KeyPrefix, key.Name, key.Description, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, formatTime(key.CreatedAt), formatTime(key.UpdatedAt))
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+	`, key.ID, HashKey(plain), key.KeyPrefix, key.Name, key.Description, key.Source, key.IssuerJTI, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, formatTime(key.CreatedAt), formatTime(key.UpdatedAt))
 	if err != nil {
 		return CreatedAPIKey{}, err
 	}
@@ -161,7 +192,7 @@ func (s *Store) CreateAPIKey(ctx context.Context, params CreateAPIKeyParams) (Cr
 
 func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, description, key_prefix, status, expires_at, forced_expired, request_quota, token_quota,
+		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota,
 		       used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE deleted_at IS NULL
@@ -185,7 +216,7 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 
 func (s *Store) GetAPIKey(ctx context.Context, id string) (APIKey, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, description, key_prefix, status, expires_at, forced_expired, request_quota, token_quota,
+		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota,
 		       used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE id = ?
@@ -195,7 +226,7 @@ func (s *Store) GetAPIKey(ctx context.Context, id string) (APIKey, error) {
 
 func (s *Store) FindAPIKeyByPlainText(ctx context.Context, plain string) (APIKey, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, description, key_prefix, status, expires_at, forced_expired, request_quota, token_quota,
+		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota,
 		       used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE key_hash = ? AND deleted_at IS NULL
@@ -383,12 +414,16 @@ func (s *Store) SetRouteOverride(ctx context.Context, publicModel, pool string) 
 	return err
 }
 
-func GeneratePlainAPIKey() (string, error) {
+func GeneratePlainAPIKey(prefix string) (string, error) {
+	prefix = strings.Trim(strings.ToLower(strings.TrimSpace(prefix)), "_")
+	if prefix == "" {
+		prefix = "th"
+	}
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", err
 	}
-	return "th_" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
+	return prefix + "_" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
 func HashKey(raw string) string {
@@ -408,6 +443,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			key_prefix TEXT NOT NULL DEFAULT '',
 			name TEXT NOT NULL,
 			description TEXT NOT NULL DEFAULT '',
+			source TEXT NOT NULL DEFAULT 'admin',
+			issuer_jti TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL,
 			expires_at TEXT,
 			forced_expired INTEGER NOT NULL DEFAULT 0,
@@ -451,6 +488,19 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at TEXT NOT NULL
 		);
 
+		CREATE TABLE IF NOT EXISTS jwt_grants (
+			jti TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL,
+			issue_quota INTEGER NOT NULL DEFAULT 0,
+			issued_count INTEGER NOT NULL DEFAULT 0,
+			expires_at TEXT,
+			last_issued_at TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+
 		CREATE INDEX IF NOT EXISTS idx_request_logs_api_key_created_at
 			ON request_logs(api_key_id, created_at DESC);
 	`)
@@ -460,6 +510,8 @@ func (s *Store) migrate(ctx context.Context) error {
 	for _, stmt := range []string{
 		`ALTER TABLE api_keys ADD COLUMN key_prefix TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE api_keys ADD COLUMN description TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE api_keys ADD COLUMN source TEXT NOT NULL DEFAULT 'admin'`,
+		`ALTER TABLE api_keys ADD COLUMN issuer_jti TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE api_keys ADD COLUMN last_used_at TEXT`,
 		`ALTER TABLE api_keys ADD COLUMN deleted_at TEXT`,
 		`ALTER TABLE request_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT ''`,
@@ -521,6 +573,10 @@ func (s *Store) migrate(ctx context.Context) error {
 
 		CREATE INDEX IF NOT EXISTS idx_api_keys_deleted_status
 			ON api_keys(deleted_at, status);
+		CREATE INDEX IF NOT EXISTS idx_api_keys_source_issuer
+			ON api_keys(source, issuer_jti);
+		CREATE INDEX IF NOT EXISTS idx_jwt_grants_status
+			ON jwt_grants(status, expires_at);
 		CREATE INDEX IF NOT EXISTS idx_request_logs_created_at
 			ON request_logs(created_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_request_logs_provider_created_at
@@ -555,6 +611,8 @@ func scanAPIKey(scanner apiKeyScanner) (APIKey, error) {
 		&key.Name,
 		&key.Description,
 		&key.KeyPrefix,
+		&key.Source,
+		&key.IssuerJTI,
 		&key.Status,
 		&expiresAt,
 		&forcedExpired,

@@ -35,7 +35,8 @@ ADMIN_TOKEN=replace-with-a-long-random-token
 | --- | --- | --- |
 | `ADDR` | `:8080` | 服务监听地址 |
 | `DB_PATH` | `data/transit-hub.db` | SQLite 数据库路径 |
-| `CONFIG_DIR` | `configs` | Provider 配置目录 |
+| `CONFIG_DIR` | `configs` | 配置根目录；provider 配置位于 `$CONFIG_DIR/providers` |
+| `ISSUER_CONFIG_PATH` | `$CONFIG_DIR/issuer/config.yaml` | JWT grant 签发配置路径 |
 | `ADMIN_TOKEN` | 无 | Admin API 令牌，必填 |
 | `ADMIN_USERNAME` | `admin` | 首个内部管理员用户名；仅在 `ADMIN_PASSWORD` 设置时用于初始化 |
 | `ADMIN_PASSWORD` | 无 | 首个内部管理员密码；为空时不会自动创建登录账号 |
@@ -53,10 +54,10 @@ ADMIN_TOKEN=replace-with-a-long-random-token
 从示例复制真实配置：
 
 ```bash
-cp configs/deepseek.example.yaml configs/deepseek.yaml
+cp configs/providers/deepseek.example.yaml configs/providers/deepseek.yaml
 ```
 
-编辑 `configs/deepseek.yaml`，填入真实上游 key：
+编辑 `configs/providers/deepseek.yaml`，填入真实上游 key：
 
 ```yaml
 name: deepseek
@@ -78,13 +79,38 @@ pools:
 
 说明：
 
-- 运行时加载 `configs/*.yaml` 和 `configs/*.yml`。
+- 运行时加载 `configs/providers/*.yaml` 和 `configs/providers/*.yml`。
 - 文件名包含 `.example.` 的配置不会被加载。
 - 真实配置里会包含上游密钥，已被 `.gitignore` 忽略。
 - `protocol` 只能是 `openai` 或 `anthropic`。
 - `endpoints.openai_chat_completions` 和 `endpoints.anthropic_messages` 可用于覆盖上游路径。
 
-### 3. 启动服务
+### 3. 配置 JWT Grant 签发密钥
+
+如果需要开放自动发放桌面端 API Key 的接口，准备 issuer 配置和 RSA 密钥：
+
+```bash
+mkdir -p configs/issuer
+openssl genrsa -out configs/issuer/private.pem 2048
+openssl rsa -in configs/issuer/private.pem -pubout -out configs/issuer/public.pem
+cp configs/issuer/config.example.yaml configs/issuer/config.yaml
+```
+
+`configs/issuer/config.yaml` 示例：
+
+```yaml
+private_key_path: private.pem
+public_key_path: public.pem
+issuer: transit-hub
+audience: api-key-grant
+default_jwt_ttl: 720h
+default_api_key_request_quota: 50
+default_api_key_token_quota: 100000
+```
+
+`private_key_path` 和 `public_key_path` 支持相对 issuer config 文件所在目录的路径。未配置 issuer 时服务仍会启动，但 `/api/apply-apikey` 和 `/admin/jwt-grants` 创建接口会返回 `503`。
+
+### 4. 启动服务
 
 本地启动：
 
@@ -105,7 +131,7 @@ docker network create transit-hub-net
 docker compose up -d --build
 ```
 
-容器启动前同样需要先准备 `.env`，并在 `configs/` 下放置真实的 provider 配置。容器会固定监听 `:8080`，加入 external Docker network `transit-hub-net`，挂载 `./data` 保存 SQLite 数据库，并以只读方式挂载 `./configs` 读取上游配置。
+容器启动前同样需要先准备 `.env`，并在 `configs/providers/` 下放置真实的 provider 配置。容器会固定监听 `:8080`，加入 external Docker network `transit-hub-net`，挂载 `./data` 保存 SQLite 数据库，并以只读方式挂载 `./configs` 读取 provider 和 issuer 配置。
 
 生产部署时后端不映射宿主机端口，对外入口由 `transit-hub-website` 提供。website 容器会在同一个 `transit-hub-net` 网络内通过服务名 `transit-hub:8080` 访问后端。
 
@@ -149,6 +175,42 @@ curl -sS -X PATCH http://localhost:8080/admin/api-keys/key_xxx \
 # 软删除客户端 API Key（历史日志保留）
 curl -sS -X DELETE http://localhost:8080/admin/api-keys/key_xxx \
   -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+## 创建 JWT Grant 并自动申请 dk API Key
+
+管理员可以创建一个 JWT grant，设置该 JWT 最多能发放多少个 API Key。响应里的 `jwt` 只会返回这一次：
+
+```bash
+curl -sS -X POST http://localhost:8080/admin/jwt-grants \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"desktop rollout","issue_quota":100}'
+```
+
+客户端拿到 JWT 后调用公开申请接口：
+
+```bash
+curl -sS -X POST http://localhost:8080/api/apply-apikey \
+  -H "Authorization: Bearer $JWT_GRANT" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"my desktop"}'
+```
+
+申请成功会返回一次性明文 `dk_...` API Key。默认发放额度为 50 次请求和 100000 tokens；后续可以在管理站 API Keys 页面调大、禁用或改成不限额。
+
+管理 grant：
+
+```bash
+# 列出 JWT grants（不会返回 jwt 明文）
+curl -sS http://localhost:8080/admin/jwt-grants \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# 修改颁发额度或禁用 grant
+curl -sS -X PATCH http://localhost:8080/admin/jwt-grants/jti_xxx \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"issue_quota":200,"status":"active"}'
 ```
 
 ## 管理网站
@@ -233,7 +295,7 @@ curl -sS http://localhost:8080/admin/providers \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-修改 `configs/*.yaml` 后热重载：
+修改 `configs/providers/*.yaml` 后热重载：
 
 ```bash
 curl -sS -X POST http://localhost:8080/admin/providers/reload \
@@ -274,7 +336,7 @@ make tidy
 
 ## 安全和数据
 
-- `.env`、真实 `configs/*.yaml`、`data/`、SQLite 数据库文件不会提交到 Git。
+- `.env`、真实 `configs/providers/*.yaml`、真实 `configs/issuer/*`、`data/`、SQLite 数据库文件不会提交到 Git。
 - Admin Token 只用于管理接口，客户端请求必须使用创建出来的客户端 API Key。
 - 上游密钥只应放在真实 provider YAML 中，不要放入示例文件。
 - API Key 明文不入库，数据库保存哈希；但 SQLite 数据库仍包含用量和请求日志，应按敏感数据处理。

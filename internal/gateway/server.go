@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/linlay/transit-hub/internal/config"
+	"github.com/linlay/transit-hub/internal/issuer"
 	"github.com/linlay/transit-hub/internal/provider"
 	"github.com/linlay/transit-hub/internal/store"
 )
@@ -17,6 +18,7 @@ import (
 type Gateway struct {
 	env      config.Env
 	store    *store.Store
+	issuer   *issuer.Service
 	registry *provider.Registry
 	client   *http.Client
 	logger   *log.Logger
@@ -25,6 +27,7 @@ type Gateway struct {
 type Options struct {
 	Env      config.Env
 	Store    *store.Store
+	Issuer   *issuer.Service
 	Registry *provider.Registry
 	Client   *http.Client
 	Logger   *log.Logger
@@ -46,6 +49,7 @@ func New(options Options) *Gateway {
 	return &Gateway{
 		env:      options.Env,
 		store:    options.Store,
+		issuer:   options.Issuer,
 		registry: options.Registry,
 		client:   client,
 		logger:   logger,
@@ -81,6 +85,9 @@ func (g *Gateway) Handler() http.Handler {
 		r.Get("/api-keys/{id}/usage", g.apiKeyUsage)
 		r.Get("/api-keys/{id}/logs", g.apiKeyLogs)
 		r.Get("/api-keys/{id}/sessions", g.apiKeySessions)
+		r.Post("/jwt-grants", g.createJWTGrant)
+		r.Get("/jwt-grants", g.listJWTGrants)
+		r.Patch("/jwt-grants/{jti}", g.patchJWTGrant)
 		r.Get("/model-prices", g.listModelPrices)
 		r.Post("/model-prices", g.createModelPrice)
 		r.Patch("/model-prices/{id}", g.patchModelPrice)
@@ -96,6 +103,7 @@ func (g *Gateway) Handler() http.Handler {
 		r.Delete("/routes/{public_model}/pool", g.clearRoutePool)
 	})
 
+	r.Post("/api/apply-apikey", g.applyAPIKey)
 	r.Post("/v1/chat/completions", g.proxy("openai", "openai_chat_completions"))
 	r.Post("/v1/messages", g.proxy("anthropic", "anthropic_messages"))
 	return r

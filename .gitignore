@@ -28,3 +28,11 @@ configs/*.yaml
 configs/*.yml
 !configs/*.example.yaml
 !configs/*.example.yml
+configs/providers/*.yaml
+configs/providers/*.yml
+!configs/providers/*.example.yaml
+!configs/providers/*.example.yml
+configs/issuer/*
+!configs/issuer/
+!configs/issuer/*.example.yaml
+!configs/issuer/*.example.yml

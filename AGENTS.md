@@ -38,14 +38,15 @@ internal/usage/
   usage.go                usage 字段提取和缺失 usage 时的 token 估算。
 
 configs/
-  *.example.yaml          provider 配置示例，不会被运行时加载。
+  providers/             provider 配置目录。
+  issuer/                JWT grant issuer 配置和密钥目录。
 ```
 
 ## 运行时流程
 
 1. `main.go` 调用 `config.LoadEnv()` 读取 `.env` 和系统环境变量。
 2. `store.Open()` 打开 SQLite，自动创建 `api_keys`、`request_logs`、`route_overrides` 表。
-3. `config.LoadProviderConfigs()` 读取 `CONFIG_DIR` 下非 `*.example.yaml` 的 YAML 文件。
+3. `config.LoadProviderConfigs()` 读取 `CONFIG_DIR/providers` 下非 `*.example.yaml` 的 YAML 文件。
 4. `provider.NewRegistry()` 根据 provider 配置构建公开模型到上游模型、账号池的路由表。
 5. `gateway.New(...).Handler()` 注册公开代理接口和 `/admin` 管理接口。
 6. 公开请求先校验客户端 API Key，再解析 `model`，查找路由，应用数据库中的 pool override，选择健康账号，改写请求体中的 `model` 后转发上游。
@@ -57,7 +58,7 @@ configs/
 
 - `ADDR`：监听地址，默认 `:8080`。
 - `DB_PATH`：SQLite 路径，默认 `data/transit-hub.db`。
-- `CONFIG_DIR`：provider 配置目录，默认 `configs`。
+- `CONFIG_DIR`：配置根目录，默认 `configs`；provider 配置位于 `CONFIG_DIR/providers`。
 - `ADMIN_TOKEN`：Admin API 令牌，必填。
 - `LOG_LEVEL`：预留日志级别，默认 `info`。
 - `UPSTREAM_TIMEOUT`：上游 HTTP 超时，默认 `5m`。
@@ -66,7 +67,7 @@ configs/
 
 ### Provider YAML
 
-运行时只加载 `CONFIG_DIR` 下的 `.yaml` 或 `.yml`，并跳过文件名包含 `.example.` 的示例文件。真实配置通常从 `configs/*.example.yaml` 复制得到，且被 `.gitignore` 忽略。
+运行时只加载 `CONFIG_DIR/providers` 下的 `.yaml` 或 `.yml`，并跳过文件名包含 `.example.` 的示例文件。真实配置通常从 `configs/providers/*.example.yaml` 复制得到，且被 `.gitignore` 忽略。
 
 主要字段：
 
@@ -96,7 +97,7 @@ configs/
 
 ## 注意事项
 
-- 不要提交 `.env`、真实 `configs/*.yaml`、SQLite 数据库或上游密钥。
+- 不要提交 `.env`、真实 `configs/providers/*.yaml`、真实 `configs/issuer/*`、SQLite 数据库或上游密钥。
 - `*.example.yaml` 是模板，不会被运行时加载。修改真实 provider 配置后，需要重启服务或调用 `POST /admin/providers/reload`。
 - Admin API 支持 `Authorization: Bearer $ADMIN_TOKEN` 或 `x-admin-token: $ADMIN_TOKEN`。
 - 公开代理接口支持 `Authorization: Bearer <client-key>` 或 `x-api-key: <client-key>`。

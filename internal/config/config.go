@@ -19,6 +19,7 @@ type Env struct {
 	Addr                    string
 	DBPath                  string
 	ConfigDir               string
+	IssuerConfigPath        string
 	AdminToken              string
 	AdminUsername           string
 	AdminPassword           string
@@ -63,13 +64,35 @@ type AccountConfig struct {
 	AuthScheme string            `yaml:"auth_scheme" json:"auth_scheme,omitempty"`
 }
 
+type IssuerConfig struct {
+	PrivateKeyPath            string
+	PublicKeyPath             string
+	Issuer                    string
+	Audience                  string
+	DefaultJWTTTL             time.Duration
+	DefaultAPIKeyRequestQuota int64
+	DefaultAPIKeyTokenQuota   int64
+}
+
+type issuerConfigFile struct {
+	PrivateKeyPath            string `yaml:"private_key_path"`
+	PublicKeyPath             string `yaml:"public_key_path"`
+	Issuer                    string `yaml:"issuer"`
+	Audience                  string `yaml:"audience"`
+	DefaultJWTTTL             string `yaml:"default_jwt_ttl"`
+	DefaultAPIKeyRequestQuota int64  `yaml:"default_api_key_request_quota"`
+	DefaultAPIKeyTokenQuota   int64  `yaml:"default_api_key_token_quota"`
+}
+
 func LoadEnv() (Env, error) {
 	_ = godotenv.Load()
 
+	configDir := getEnv("CONFIG_DIR", "configs")
 	env := Env{
 		Addr:                    getEnv("ADDR", ":8080"),
 		DBPath:                  getEnv("DB_PATH", "data/transit-hub.db"),
-		ConfigDir:               getEnv("CONFIG_DIR", "configs"),
+		ConfigDir:               configDir,
+		IssuerConfigPath:        getEnv("ISSUER_CONFIG_PATH", filepath.Join(configDir, "issuer", "config.yaml")),
 		AdminToken:              os.Getenv("ADMIN_TOKEN"),
 		AdminUsername:           getEnv("ADMIN_USERNAME", "admin"),
 		AdminPassword:           os.Getenv("ADMIN_PASSWORD"),
@@ -100,8 +123,67 @@ func LoadEnv() (Env, error) {
 	return env, nil
 }
 
+func LoadIssuerConfig(path string) (IssuerConfig, bool, error) {
+	if strings.TrimSpace(path) == "" {
+		return IssuerConfig{}, false, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return IssuerConfig{}, false, nil
+		}
+		return IssuerConfig{}, false, fmt.Errorf("read issuer config %s: %w", path, err)
+	}
+	var raw issuerConfigFile
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return IssuerConfig{}, false, fmt.Errorf("parse issuer config %s: %w", path, err)
+	}
+	cfg := IssuerConfig{
+		PrivateKeyPath:            resolveRelativePath(filepath.Dir(path), raw.PrivateKeyPath),
+		PublicKeyPath:             resolveRelativePath(filepath.Dir(path), raw.PublicKeyPath),
+		Issuer:                    strings.TrimSpace(raw.Issuer),
+		Audience:                  strings.TrimSpace(raw.Audience),
+		DefaultJWTTTL:             720 * time.Hour,
+		DefaultAPIKeyRequestQuota: raw.DefaultAPIKeyRequestQuota,
+		DefaultAPIKeyTokenQuota:   raw.DefaultAPIKeyTokenQuota,
+	}
+	if strings.TrimSpace(raw.DefaultJWTTTL) != "" {
+		parsed, err := time.ParseDuration(strings.TrimSpace(raw.DefaultJWTTTL))
+		if err != nil {
+			return IssuerConfig{}, false, fmt.Errorf("default_jwt_ttl is invalid: %w", err)
+		}
+		cfg.DefaultJWTTTL = parsed
+	}
+	if cfg.Issuer == "" {
+		cfg.Issuer = "transit-hub"
+	}
+	if cfg.Audience == "" {
+		cfg.Audience = "api-key-grant"
+	}
+	if strings.TrimSpace(cfg.PrivateKeyPath) == "" {
+		return IssuerConfig{}, false, errors.New("private_key_path is required")
+	}
+	if strings.TrimSpace(cfg.PublicKeyPath) == "" {
+		return IssuerConfig{}, false, errors.New("public_key_path is required")
+	}
+	if cfg.DefaultJWTTTL <= 0 {
+		return IssuerConfig{}, false, errors.New("default_jwt_ttl must be positive")
+	}
+	if cfg.DefaultAPIKeyRequestQuota < 0 || cfg.DefaultAPIKeyTokenQuota < 0 {
+		return IssuerConfig{}, false, errors.New("default api key quotas must be >= 0")
+	}
+	if cfg.DefaultAPIKeyRequestQuota == 0 {
+		cfg.DefaultAPIKeyRequestQuota = 50
+	}
+	if cfg.DefaultAPIKeyTokenQuota == 0 {
+		cfg.DefaultAPIKeyTokenQuota = 100000
+	}
+	return cfg, true, nil
+}
+
 func LoadProviderConfigs(dir string) ([]ProviderConfig, error) {
-	matches, err := providerFiles(dir)
+	providerDir := ProviderConfigDir(dir)
+	matches, err := providerFiles(providerDir)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +204,17 @@ func LoadProviderConfigs(dir string) ([]ProviderConfig, error) {
 		configs = append(configs, cfg)
 	}
 	return configs, nil
+}
+
+func ProviderConfigDir(configDir string) string {
+	configDir = strings.TrimSpace(configDir)
+	if configDir == "" {
+		configDir = "configs"
+	}
+	if filepath.Base(filepath.Clean(configDir)) == "providers" {
+		return configDir
+	}
+	return filepath.Join(configDir, "providers")
 }
 
 func ValidateProviderConfig(cfg ProviderConfig) error {
@@ -290,4 +383,12 @@ func getCSVEnv(key string, fallback []string) []string {
 		return fallback
 	}
 	return items
+}
+
+func resolveRelativePath(baseDir, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(baseDir, path)
 }

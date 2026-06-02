@@ -20,6 +20,8 @@ type apiKeyResponse struct {
 	Name          string     `json:"name"`
 	Description   string     `json:"description"`
 	KeyPrefix     string     `json:"key_prefix"`
+	Source        string     `json:"source"`
+	IssuerJTI     string     `json:"issuer_jti,omitempty"`
 	Status        string     `json:"status"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	ForcedExpired bool       `json:"forced_expired"`
@@ -260,6 +262,8 @@ func toAPIKeyResponse(key store.APIKey) apiKeyResponse {
 		Name:          key.Name,
 		Description:   key.Description,
 		KeyPrefix:     key.KeyPrefix,
+		Source:        key.Source,
+		IssuerJTI:     key.IssuerJTI,
 		Status:        key.Status,
 		ExpiresAt:     key.ExpiresAt,
 		ForcedExpired: key.ForcedExpired,

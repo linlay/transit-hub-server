@@ -60,7 +60,7 @@ func (s *Store) SearchAPIKeys(ctx context.Context, params APIKeyListParams) (API
 	queryArgs := append([]any{}, args...)
 	queryArgs = append(queryArgs, limit, offset)
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT id, name, description, key_prefix, status, expires_at, forced_expired, request_quota, token_quota,
+		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota,
 		       used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		%s

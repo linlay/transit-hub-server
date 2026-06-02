@@ -2,10 +2,15 @@ package gateway
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -13,6 +18,7 @@ import (
 	"time"
 
 	"github.com/linlay/transit-hub/internal/config"
+	"github.com/linlay/transit-hub/internal/issuer"
 	"github.com/linlay/transit-hub/internal/provider"
 	"github.com/linlay/transit-hub/internal/store"
 )
@@ -218,6 +224,155 @@ func TestAdminCreateKeyReturnsPlainTextOnce(t *testing.T) {
 	}
 	if bytes.Contains(listRec.Body.Bytes(), []byte(`"key"`)) {
 		t.Fatalf("list response leaked plain key: %s", listRec.Body.String())
+	}
+}
+
+func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
+	issuerSvc := newTestIssuer(t)
+	app, db, _ := newTestGatewayWithKeyAndIssuer(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")}, store.CreateAPIKeyParams{Name: "test"}, issuerSvc)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/jwt-grants", bytes.NewBufferString(`{
+		"name":"desktop grant",
+		"issue_quota":1
+	}`))
+	createReq.Header.Set("Authorization", "Bearer admin")
+	createRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("grant create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var grantPayload map[string]any
+	if err := json.Unmarshal(createRec.Body.Bytes(), &grantPayload); err != nil {
+		t.Fatal(err)
+	}
+	token, _ := grantPayload["jwt"].(string)
+	jti, _ := grantPayload["jti"].(string)
+	if token == "" || jti == "" {
+		t.Fatalf("grant response missing token or jti: %#v", grantPayload)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/admin/jwt-grants", nil)
+	listReq.Header.Set("Authorization", "Bearer admin")
+	listRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("grant list status = %d, body = %s", listRec.Code, listRec.Body.String())
+	}
+	if bytes.Contains(listRec.Body.Bytes(), []byte(`"jwt"`)) {
+		t.Fatalf("grant list leaked jwt: %s", listRec.Body.String())
+	}
+
+	applyReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{"name":"desktop"}`))
+	applyReq.Header.Set("Authorization", "Bearer "+token)
+	applyRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(applyRec, applyReq)
+	if applyRec.Code != http.StatusCreated {
+		t.Fatalf("apply status = %d, body = %s", applyRec.Code, applyRec.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(applyRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	plainKey, _ := created["key"].(string)
+	if !strings.HasPrefix(plainKey, "dk_") {
+		t.Fatalf("expected dk key, got %#v", created["key"])
+	}
+	key, err := db.FindAPIKeyByPlainText(t.Context(), plainKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Source != "jwt" || key.IssuerJTI != jti || key.RequestQuota != 50 || key.TokenQuota != 100000 {
+		t.Fatalf("unexpected issued key: %#v", key)
+	}
+	grant, err := db.GetJWTGrant(t.Context(), jti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.IssuedCount != 1 {
+		t.Fatalf("issued_count = %d", grant.IssuedCount)
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{}`))
+	secondReq.Header.Set("Authorization", "Bearer "+token)
+	secondRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(secondRec, secondReq)
+	if secondRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second apply status = %d, body = %s", secondRec.Code, secondRec.Body.String())
+	}
+}
+
+func TestApplyAPIKeyRejectsInvalidExpiredDisabledAndMissingIssuer(t *testing.T) {
+	missingIssuerApp, _, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")})
+	missingReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{}`))
+	missingReq.Header.Set("Authorization", "Bearer invalid")
+	missingRec := httptest.NewRecorder()
+	missingIssuerApp.Handler().ServeHTTP(missingRec, missingReq)
+	if missingRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("missing issuer status = %d, body = %s", missingRec.Code, missingRec.Body.String())
+	}
+
+	issuerSvc := newTestIssuer(t)
+	app, db, _ := newTestGatewayWithKeyAndIssuer(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")}, store.CreateAPIKeyParams{Name: "test"}, issuerSvc)
+
+	jti := store.GenerateJTI()
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	token, err := issuerSvc.SignGrant(jti, expiresAt, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateJWTGrant(t.Context(), store.CreateJWTGrantParams{
+		JTI:        jti,
+		Name:       "disabled",
+		IssueQuota: 10,
+		ExpiresAt:  &expiresAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tamperedSuffix := "x"
+	if strings.HasSuffix(token, tamperedSuffix) {
+		tamperedSuffix = "y"
+	}
+	tampered := token[:len(token)-1] + tamperedSuffix
+	invalidReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{}`))
+	invalidReq.Header.Set("Authorization", "Bearer "+tampered)
+	invalidRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(invalidRec, invalidReq)
+	if invalidRec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid jwt status = %d, body = %s", invalidRec.Code, invalidRec.Body.String())
+	}
+
+	disabled := "disabled"
+	if _, err := db.UpdateJWTGrant(t.Context(), jti, store.JWTGrantPatch{Status: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	disabledReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{}`))
+	disabledReq.Header.Set("Authorization", "Bearer "+token)
+	disabledRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(disabledRec, disabledReq)
+	if disabledRec.Code != http.StatusForbidden {
+		t.Fatalf("disabled grant status = %d, body = %s", disabledRec.Code, disabledRec.Body.String())
+	}
+
+	expiredJTI := store.GenerateJTI()
+	expiredAt := time.Now().UTC().Add(-time.Hour)
+	expiredToken, err := issuerSvc.SignGrant(expiredJTI, expiredAt, time.Now().UTC().Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateJWTGrant(t.Context(), store.CreateJWTGrantParams{
+		JTI:        expiredJTI,
+		Name:       "expired",
+		IssueQuota: 10,
+		ExpiresAt:  &expiredAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	expiredReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{}`))
+	expiredReq.Header.Set("Authorization", "Bearer "+expiredToken)
+	expiredRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(expiredRec, expiredReq)
+	if expiredRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expired jwt status = %d, body = %s", expiredRec.Code, expiredRec.Body.String())
 	}
 }
 
@@ -442,6 +597,11 @@ func newTestGateway(t *testing.T, providers []config.ProviderConfig) (*Gateway, 
 
 func newTestGatewayWithKey(t *testing.T, providers []config.ProviderConfig, keyParams store.CreateAPIKeyParams) (*Gateway, *store.Store, string) {
 	t.Helper()
+	return newTestGatewayWithKeyAndIssuer(t, providers, keyParams, nil)
+}
+
+func newTestGatewayWithKeyAndIssuer(t *testing.T, providers []config.ProviderConfig, keyParams store.CreateAPIKeyParams, issuerSvc *issuer.Service) (*Gateway, *store.Store, string) {
+	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -471,10 +631,47 @@ func newTestGatewayWithKey(t *testing.T, providers []config.ProviderConfig, keyP
 			CircuitCooldown:         time.Hour,
 		},
 		Store:    db,
+		Issuer:   issuerSvc,
 		Registry: registry,
 		Client:   upstreamClient(t),
 	})
 	return app, db, created.PlainText
+}
+
+func newTestIssuer(t *testing.T) *issuer.Service {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	privatePath := filepath.Join(dir, "private.pem")
+	publicPath := filepath.Join(dir, "public.pem")
+	privatePEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	publicBytes, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicBytes})
+	if err := os.WriteFile(privatePath, privatePEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(publicPath, publicPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service, err := issuer.New(config.IssuerConfig{
+		PrivateKeyPath:            privatePath,
+		PublicKeyPath:             publicPath,
+		Issuer:                    "test-issuer",
+		Audience:                  "test-audience",
+		DefaultJWTTTL:             time.Hour,
+		DefaultAPIKeyRequestQuota: 50,
+		DefaultAPIKeyTokenQuota:   100000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
 }
 
 func upstreamClient(t *testing.T) *http.Client {
