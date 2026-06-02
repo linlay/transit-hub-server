@@ -104,8 +104,8 @@ public_key_path: public.pem
 issuer: transit-hub
 audience: api-key-grant
 default_jwt_ttl: 720h
-default_api_key_request_quota: 50
-default_api_key_token_quota: 100000
+default_api_key_request_quota: 500
+default_api_key_token_quota: 2000000
 ```
 
 `private_key_path` 和 `public_key_path` 支持相对 issuer config 文件所在目录的路径。未配置 issuer 时服务仍会启动，但 `/api/apply-apikey` 和 `/admin/jwt-grants` 创建接口会返回 `503`。
@@ -147,7 +147,7 @@ curl -sS -X POST http://localhost:8080/admin/api-keys \
   -d '{"name":"demo","request_quota":1000,"token_quota":100000,"allowed_models":["deepseek-chat"]}'
 ```
 
-响应里的 `key` 只会返回这一次，请妥善保存。配额字段为 `0` 表示不限额。`allowed_models` 是该 key 可调用的公开模型名白名单；省略或传空数组表示不允许调用任何模型。
+响应里的 `key` 只会返回这一次，请妥善保存。配额字段为 `0` 表示不限额。`allowed_models` 是该 key 可调用的公开模型名白名单，创建和修改时必须至少包含一个公开模型名；已有空白名单 key 不允许调用任何模型。
 
 常用管理命令：
 
@@ -185,13 +185,13 @@ curl -sS -X DELETE http://localhost:8080/admin/api-keys/key_xxx \
 
 ## 创建 JWT Grant 并自动申请 dk API Key
 
-管理员可以创建一个 JWT grant，设置该 JWT 最多能发放多少个 API Key。响应里的 `jwt` 只会返回这一次：
+管理员可以创建一个 JWT grant，设置该 JWT 最多能发放多少个 API Key。响应里的 `jwt` 会保存到数据库，后续可通过详情接口再次查看：
 
 ```bash
 curl -sS -X POST http://localhost:8080/admin/jwt-grants \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"desktop rollout","issue_quota":100,"request_quota":50,"token_quota":100000,"allowed_models":[]}'
+  -d '{"name":"desktop rollout","issue_quota":100,"request_quota":500,"token_quota":2000000,"allowed_models":["deepseek-chat"]}'
 ```
 
 客户端拿到 JWT 后调用公开申请接口：
@@ -203,7 +203,7 @@ curl -sS -X POST http://localhost:8080/api/apply-apikey \
   -d '{"name":"my desktop"}'
 ```
 
-申请成功会返回一次性明文 `dk_...` API Key，并通过 `issuer_jti` 追溯到签发它的 JWT Grant。`issue_quota` 控制该 grant 最多发放多少个 API Key，`request_quota`、`token_quota`、`allowed_models` 控制每个新发出 API Key 的初始限制；额度字段为 `0` 表示不限额，`allowed_models: []` 表示不限制模型。
+申请成功会返回一次性明文 `dk_...` API Key，并通过 `issuer_jti` 追溯到签发它的 JWT Grant。`issue_quota` 控制该 grant 最多发放多少个 API Key，`request_quota`、`token_quota`、`allowed_models` 控制每个新发出 API Key 的初始限制；额度字段为 `0` 表示不限额，`allowed_models` 必须至少包含一个公开模型名。
 
 管理 grant：
 
@@ -212,11 +212,19 @@ curl -sS -X POST http://localhost:8080/api/apply-apikey \
 curl -sS http://localhost:8080/admin/jwt-grants \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
+# 查看单个 JWT grant（会返回 jwt 明文；旧数据可能为空）
+curl -sS http://localhost:8080/admin/jwt-grants/jti_xxx \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
 # 修改颁发额度或禁用 grant
 curl -sS -X PATCH http://localhost:8080/admin/jwt-grants/jti_xxx \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"issue_quota":200,"request_quota":100,"token_quota":200000,"allowed_models":[],"status":"active"}'
+  -d '{"issue_quota":200,"request_quota":500,"token_quota":2000000,"allowed_models":["deepseek-chat"],"status":"active"}'
+
+# 删除 JWT grant（不会删除或禁用已经发放的 API Key）
+curl -sS -X DELETE http://localhost:8080/admin/jwt-grants/jti_xxx \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
 ## 管理网站

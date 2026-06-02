@@ -25,6 +25,7 @@ type jwtGrantResponse struct {
 	RequestQuota   int64      `json:"request_quota"`
 	TokenQuota     int64      `json:"token_quota"`
 	AllowedModels  []string   `json:"allowed_models"`
+	JWT            string     `json:"jwt,omitempty"`
 	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
 	LastIssuedAt   *time.Time `json:"last_issued_at,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
@@ -104,6 +105,7 @@ func (g *Gateway) createJWTGrant(w http.ResponseWriter, r *http.Request) {
 		RequestQuota:  requestQuota,
 		TokenQuota:    tokenQuota,
 		AllowedModels: allowedModels,
+		JWT:           jwt,
 		ExpiresAt:     expiresAt,
 	})
 	if err != nil {
@@ -111,7 +113,7 @@ func (g *Gateway) createJWTGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, createJWTGrantResponse{
-		jwtGrantResponse: toJWTGrantResponse(grant),
+		jwtGrantResponse: toJWTGrantResponse(grant, false),
 		JWT:              jwt,
 	})
 }
@@ -130,7 +132,7 @@ func (g *Gateway) listJWTGrants(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]jwtGrantResponse, 0, len(result.Items))
 	for _, grant := range result.Items {
-		items = append(items, toJWTGrantResponse(grant))
+		items = append(items, toJWTGrantResponse(grant, false))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":  items,
@@ -138,6 +140,19 @@ func (g *Gateway) listJWTGrants(w http.ResponseWriter, r *http.Request) {
 		"limit":  result.Limit,
 		"offset": result.Offset,
 	})
+}
+
+func (g *Gateway) getJWTGrant(w http.ResponseWriter, r *http.Request) {
+	grant, err := g.store.GetJWTGrant(r.Context(), chi.URLParam(r, "jti"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "jwt grant not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toJWTGrantResponse(grant, true))
 }
 
 func (g *Gateway) patchJWTGrant(w http.ResponseWriter, r *http.Request) {
@@ -173,7 +188,20 @@ func (g *Gateway) patchJWTGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, toJWTGrantResponse(grant))
+	writeJSON(w, http.StatusOK, toJWTGrantResponse(grant, false))
+}
+
+func (g *Gateway) deleteJWTGrant(w http.ResponseWriter, r *http.Request) {
+	grant, err := g.store.DeleteJWTGrant(r.Context(), chi.URLParam(r, "jti"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "jwt grant not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toJWTGrantResponse(grant, false))
 }
 
 func (g *Gateway) applyAPIKey(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +260,7 @@ func (g *Gateway) requireIssuer(w http.ResponseWriter) (*issuer.Service, bool) {
 	return g.issuer, true
 }
 
-func toJWTGrantResponse(grant store.JWTGrant) jwtGrantResponse {
+func toJWTGrantResponse(grant store.JWTGrant, includeJWT bool) jwtGrantResponse {
 	remaining := int64(0)
 	unlimited := grant.IssueQuota == 0
 	if grant.IssueQuota > 0 {
@@ -241,7 +269,7 @@ func toJWTGrantResponse(grant store.JWTGrant) jwtGrantResponse {
 			remaining = 0
 		}
 	}
-	return jwtGrantResponse{
+	response := jwtGrantResponse{
 		JTI:            grant.JTI,
 		Name:           grant.Name,
 		Description:    grant.Description,
@@ -258,4 +286,8 @@ func toJWTGrantResponse(grant store.JWTGrant) jwtGrantResponse {
 		CreatedAt:      grant.CreatedAt,
 		UpdatedAt:      grant.UpdatedAt,
 	}
+	if includeJWT {
+		response.JWT = grant.JWT
+	}
+	return response
 }

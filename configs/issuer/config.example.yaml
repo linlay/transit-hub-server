@@ -3,5 +3,5 @@ public_key_path: public.pem
 issuer: transit-hub
 audience: api-key-grant
 default_jwt_ttl: 720h
-default_api_key_request_quota: 50
-default_api_key_token_quota: 100000
+default_api_key_request_quota: 500
+default_api_key_token_quota: 2000000

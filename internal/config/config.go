@@ -173,10 +173,10 @@ func LoadIssuerConfig(path string) (IssuerConfig, bool, error) {
 		return IssuerConfig{}, false, errors.New("default api key quotas must be >= 0")
 	}
 	if cfg.DefaultAPIKeyRequestQuota == 0 {
-		cfg.DefaultAPIKeyRequestQuota = 50
+		cfg.DefaultAPIKeyRequestQuota = 500
 	}
 	if cfg.DefaultAPIKeyTokenQuota == 0 {
-		cfg.DefaultAPIKeyTokenQuota = 100000
+		cfg.DefaultAPIKeyTokenQuota = 2000000
 	}
 	return cfg, true, nil
 }

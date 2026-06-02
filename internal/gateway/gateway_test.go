@@ -191,7 +191,7 @@ func TestAPIKeyModelWhitelistAllowsDeniesAndPreservesRouteNotFound(t *testing.T)
 	}
 }
 
-func TestAPIKeyModelWhitelistEmptyAllowsAllModels(t *testing.T) {
+func TestAPIKeyModelWhitelistEmptyDeniesAllModels(t *testing.T) {
 	var hits int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&hits, 1)
@@ -207,10 +207,10 @@ func TestAPIKeyModelWhitelistEmptyAllowsAllModels(t *testing.T) {
 	req := proxyRequest(plainKey)
 	rec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if got := atomic.LoadInt64(&hits); got != 1 {
+	if got := atomic.LoadInt64(&hits); got != 0 {
 		t.Fatalf("upstream hits = %d", got)
 	}
 }
@@ -292,7 +292,8 @@ func TestAdminCreateKeyReturnsPlainTextOnce(t *testing.T) {
 	createReq := httptest.NewRequest(http.MethodPost, "/admin/api-keys", bytes.NewBufferString(`{
 		"name":"admin-created",
 		"request_quota":10,
-		"token_quota":100
+		"token_quota":100,
+		"allowed_models":["public-model"]
 	}`))
 	createReq.Header.Set("Authorization", "Bearer admin")
 	createRec := httptest.NewRecorder()
@@ -307,8 +308,8 @@ func TestAdminCreateKeyReturnsPlainTextOnce(t *testing.T) {
 	if key, _ := created["key"].(string); !strings.HasPrefix(key, "th_") {
 		t.Fatalf("plain key missing from create response: %#v", created["key"])
 	}
-	if allowed, _ := created["allowed_models"].([]any); len(allowed) != 0 {
-		t.Fatalf("expected empty allowed_models by default: %#v", created["allowed_models"])
+	if allowed, _ := created["allowed_models"].([]any); len(allowed) != 1 || allowed[0] != "public-model" {
+		t.Fatalf("unexpected allowed_models: %#v", created["allowed_models"])
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/admin/api-keys", nil)
@@ -341,6 +342,17 @@ func TestAdminAPIKeyAllowedModelsCreatePatchAndValidation(t *testing.T) {
 	app.Handler().ServeHTTP(invalidCreateRec, invalidCreateReq)
 	if invalidCreateRec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid create status = %d, body = %s", invalidCreateRec.Code, invalidCreateRec.Body.String())
+	}
+
+	emptyCreateReq := httptest.NewRequest(http.MethodPost, "/admin/api-keys", bytes.NewBufferString(`{
+		"name":"empty",
+		"allowed_models":[]
+	}`))
+	emptyCreateReq.Header.Set("Authorization", "Bearer admin")
+	emptyCreateRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(emptyCreateRec, emptyCreateReq)
+	if emptyCreateRec.Code != http.StatusBadRequest {
+		t.Fatalf("empty create status = %d, body = %s", emptyCreateRec.Code, emptyCreateRec.Body.String())
 	}
 
 	createReq := httptest.NewRequest(http.MethodPost, "/admin/api-keys", bytes.NewBufferString(`{
@@ -399,23 +411,26 @@ func TestAdminAPIKeyAllowedModelsCreatePatchAndValidation(t *testing.T) {
 	clearReq.Header.Set("Authorization", "Bearer admin")
 	clearRec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(clearRec, clearReq)
-	if clearRec.Code != http.StatusOK {
+	if clearRec.Code != http.StatusBadRequest {
 		t.Fatalf("clear status = %d, body = %s", clearRec.Code, clearRec.Body.String())
-	}
-	var cleared struct {
-		AllowedModels []string `json:"allowed_models"`
-	}
-	if err := json.Unmarshal(clearRec.Body.Bytes(), &cleared); err != nil {
-		t.Fatal(err)
-	}
-	if len(cleared.AllowedModels) != 0 {
-		t.Fatalf("expected cleared allowed_models: %#v", cleared.AllowedModels)
 	}
 }
 
 func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 	issuerSvc := newTestIssuer(t)
 	app, db, _ := newTestGatewayWithKeyAndIssuer(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")}, store.CreateAPIKeyParams{Name: "test"}, issuerSvc)
+
+	emptyCreateReq := httptest.NewRequest(http.MethodPost, "/admin/jwt-grants", bytes.NewBufferString(`{
+		"name":"empty grant",
+		"issue_quota":1,
+		"allowed_models":[]
+	}`))
+	emptyCreateReq.Header.Set("Authorization", "Bearer admin")
+	emptyCreateRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(emptyCreateRec, emptyCreateReq)
+	if emptyCreateRec.Code != http.StatusBadRequest {
+		t.Fatalf("empty grant create status = %d, body = %s", emptyCreateRec.Code, emptyCreateRec.Body.String())
+	}
 
 	createReq := httptest.NewRequest(http.MethodPost, "/admin/jwt-grants", bytes.NewBufferString(`{
 		"name":"desktop grant",
@@ -455,6 +470,21 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 	}
 	if !bytes.Contains(listRec.Body.Bytes(), []byte(`"allowed_models":["public-model"]`)) {
 		t.Fatalf("grant list missing allowed_models: %s", listRec.Body.String())
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/admin/jwt-grants/"+jti, nil)
+	detailReq.Header.Set("Authorization", "Bearer admin")
+	detailRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(detailRec, detailReq)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("grant detail status = %d, body = %s", detailRec.Code, detailRec.Body.String())
+	}
+	var detailPayload map[string]any
+	if err := json.Unmarshal(detailRec.Body.Bytes(), &detailPayload); err != nil {
+		t.Fatal(err)
+	}
+	if detailPayload["jwt"] != token {
+		t.Fatalf("grant detail jwt mismatch: %#v", detailPayload["jwt"])
 	}
 
 	applyReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{"name":"desktop","description":"ignored"}`))
@@ -581,6 +611,16 @@ func TestJWTGrantPatchAffectsFutureIssuedKeysOnly(t *testing.T) {
 		t.Fatalf("patch grant status = %d, body = %s", patchRec.Code, patchRec.Body.String())
 	}
 
+	emptyPatchReq := httptest.NewRequest(http.MethodPatch, "/admin/jwt-grants/"+createdGrant.JTI, bytes.NewBufferString(`{
+		"allowed_models":[]
+	}`))
+	emptyPatchReq.Header.Set("Authorization", "Bearer admin")
+	emptyPatchRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(emptyPatchRec, emptyPatchReq)
+	if emptyPatchRec.Code != http.StatusBadRequest {
+		t.Fatalf("empty grant patch status = %d, body = %s", emptyPatchRec.Code, emptyPatchRec.Body.String())
+	}
+
 	secondReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{"name":"second"}`))
 	secondReq.Header.Set("Authorization", "Bearer "+createdGrant.JWT)
 	secondRec := httptest.NewRecorder()
@@ -607,6 +647,85 @@ func TestJWTGrantPatchAffectsFutureIssuedKeysOnly(t *testing.T) {
 	}
 }
 
+func TestDeleteJWTGrantDoesNotDeleteIssuedAPIKeys(t *testing.T) {
+	var hits int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	issuerSvc := newTestIssuer(t)
+	app, _, _ := newTestGatewayWithKeyAndIssuer(t, []config.ProviderConfig{openAIProvider(upstream.URL)}, store.CreateAPIKeyParams{Name: "test"}, issuerSvc)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/jwt-grants", bytes.NewBufferString(`{
+		"name":"deletable grant",
+		"issue_quota":2,
+		"allowed_models":["public-model"]
+	}`))
+	createReq.Header.Set("Authorization", "Bearer admin")
+	createRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("grant create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var grant struct {
+		JTI string `json:"jti"`
+		JWT string `json:"jwt"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &grant); err != nil {
+		t.Fatal(err)
+	}
+
+	applyReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{"name":"issued-before-delete"}`))
+	applyReq.Header.Set("Authorization", "Bearer "+grant.JWT)
+	applyRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(applyRec, applyReq)
+	if applyRec.Code != http.StatusCreated {
+		t.Fatalf("apply status = %d, body = %s", applyRec.Code, applyRec.Body.String())
+	}
+	var issued struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(applyRec.Body.Bytes(), &issued); err != nil {
+		t.Fatal(err)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/admin/jwt-grants/"+grant.JTI, nil)
+	deleteReq.Header.Set("Authorization", "Bearer admin")
+	deleteRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete grant status = %d, body = %s", deleteRec.Code, deleteRec.Body.String())
+	}
+
+	proxyReq := proxyRequest(issued.Key)
+	proxyRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(proxyRec, proxyReq)
+	if proxyRec.Code != http.StatusOK {
+		t.Fatalf("issued key proxy status = %d, body = %s", proxyRec.Code, proxyRec.Body.String())
+	}
+	if got := atomic.LoadInt64(&hits); got != 1 {
+		t.Fatalf("upstream hits = %d", got)
+	}
+
+	secondApplyReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{"name":"after-delete"}`))
+	secondApplyReq.Header.Set("Authorization", "Bearer "+grant.JWT)
+	secondApplyRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(secondApplyRec, secondApplyReq)
+	if secondApplyRec.Code != http.StatusForbidden {
+		t.Fatalf("apply after delete status = %d, body = %s", secondApplyRec.Code, secondApplyRec.Body.String())
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/admin/jwt-grants/"+grant.JTI, nil)
+	detailReq.Header.Set("Authorization", "Bearer admin")
+	detailRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(detailRec, detailReq)
+	if detailRec.Code != http.StatusNotFound {
+		t.Fatalf("detail after delete status = %d, body = %s", detailRec.Code, detailRec.Body.String())
+	}
+}
+
 func TestJWTGrantListFilters(t *testing.T) {
 	issuerSvc := newTestIssuer(t)
 	app, db, _ := newTestGatewayWithKeyAndIssuer(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")}, store.CreateAPIKeyParams{Name: "test"}, issuerSvc)
@@ -614,7 +733,8 @@ func TestJWTGrantListFilters(t *testing.T) {
 	createReq := httptest.NewRequest(http.MethodPost, "/admin/jwt-grants", bytes.NewBufferString(`{
 		"name":"desktop rollout",
 		"description":"mac clients",
-		"issue_quota":10
+		"issue_quota":10,
+		"allowed_models":["public-model"]
 	}`))
 	createReq.Header.Set("Authorization", "Bearer admin")
 	createRec := httptest.NewRecorder()
@@ -629,10 +749,11 @@ func TestJWTGrantListFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.CreateJWTGrant(t.Context(), store.CreateJWTGrantParams{
-		JTI:        store.GenerateJTI(),
-		Name:       "archived rollout",
-		Status:     "disabled",
-		IssueQuota: 10,
+		JTI:           store.GenerateJTI(),
+		Name:          "archived rollout",
+		Status:        "disabled",
+		IssueQuota:    10,
+		AllowedModels: []string{"public-model"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1049,8 +1170,8 @@ func newTestIssuer(t *testing.T) *issuer.Service {
 		Issuer:                    "test-issuer",
 		Audience:                  "test-audience",
 		DefaultJWTTTL:             time.Hour,
-		DefaultAPIKeyRequestQuota: 50,
-		DefaultAPIKeyTokenQuota:   100000,
+		DefaultAPIKeyRequestQuota: 500,
+		DefaultAPIKeyTokenQuota:   2000000,
 	})
 	if err != nil {
 		t.Fatal(err)

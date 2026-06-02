@@ -314,7 +314,7 @@ func toAPIKeyResponse(key store.APIKey) apiKeyResponse {
 func (g *Gateway) validateAllowedModels(models []string) ([]string, error) {
 	normalized := store.NormalizeAllowedModels(models)
 	if len(normalized) == 0 {
-		return normalized, nil
+		return nil, errors.New("allowed_models must include at least one model")
 	}
 	knownModels := map[string]struct{}{}
 	for _, model := range g.registry.PublicModels() {
