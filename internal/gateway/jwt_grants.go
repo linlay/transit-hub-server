@@ -204,8 +204,7 @@ func (g *Gateway) applyAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created, err := g.store.IssueAPIKeyFromJWTGrant(r.Context(), claims.JTI, store.CreateAPIKeyParams{
-		Name:        req.Name,
-		Description: req.Description,
+		Name: req.Name,
 	}, now)
 	if errors.Is(err, store.ErrGrantQuotaExhausted) {
 		writeError(w, http.StatusTooManyRequests, err.Error())

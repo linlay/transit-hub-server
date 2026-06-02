@@ -457,7 +457,7 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 		t.Fatalf("grant list missing allowed_models: %s", listRec.Body.String())
 	}
 
-	applyReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{"name":"desktop"}`))
+	applyReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{"name":"desktop","description":"ignored"}`))
 	applyReq.Header.Set("Authorization", "Bearer "+token)
 	applyRec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(applyRec, applyReq)
@@ -478,6 +478,9 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 	}
 	if key.Source != "jwt" || key.IssuerJTI != jti || key.RequestQuota != 25 || key.TokenQuota != 2500 || strings.Join(key.AllowedModels, ",") != "public-model" {
 		t.Fatalf("unexpected issued key: %#v", key)
+	}
+	if key.Description != "" {
+		t.Fatalf("description should be ignored, got %q", key.Description)
 	}
 	filterReq := httptest.NewRequest(http.MethodGet, "/admin/api-keys?source=jwt&issuer_jti="+jti, nil)
 	filterReq.Header.Set("Authorization", "Bearer admin")
