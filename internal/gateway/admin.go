@@ -27,6 +27,7 @@ type apiKeyResponse struct {
 	ForcedExpired bool       `json:"forced_expired"`
 	RequestQuota  int64      `json:"request_quota"`
 	TokenQuota    int64      `json:"token_quota"`
+	AllowedModels []string   `json:"allowed_models"`
 	UsedRequests  int64      `json:"used_requests"`
 	UsedTokens    int64      `json:"used_tokens"`
 	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`
@@ -36,11 +37,12 @@ type apiKeyResponse struct {
 }
 
 type createAPIKeyRequest struct {
-	Name         string     `json:"name"`
-	Description  string     `json:"description"`
-	ExpiresAt    *time.Time `json:"expires_at"`
-	RequestQuota int64      `json:"request_quota"`
-	TokenQuota   int64      `json:"token_quota"`
+	Name          string     `json:"name"`
+	Description   string     `json:"description"`
+	ExpiresAt     *time.Time `json:"expires_at"`
+	RequestQuota  int64      `json:"request_quota"`
+	TokenQuota    int64      `json:"token_quota"`
+	AllowedModels []string   `json:"allowed_models"`
 }
 
 type createAPIKeyResponse struct {
@@ -49,18 +51,24 @@ type createAPIKeyResponse struct {
 }
 
 type patchAPIKeyRequest struct {
-	Name          *string      `json:"name"`
-	Description   *string      `json:"description"`
-	Status        *string      `json:"status"`
-	ExpiresAt     optionalTime `json:"expires_at"`
-	ForcedExpired *bool        `json:"forced_expired"`
-	RequestQuota  *int64       `json:"request_quota"`
-	TokenQuota    *int64       `json:"token_quota"`
+	Name          *string             `json:"name"`
+	Description   *string             `json:"description"`
+	Status        *string             `json:"status"`
+	ExpiresAt     optionalTime        `json:"expires_at"`
+	ForcedExpired *bool               `json:"forced_expired"`
+	RequestQuota  *int64              `json:"request_quota"`
+	TokenQuota    *int64              `json:"token_quota"`
+	AllowedModels optionalStringSlice `json:"allowed_models"`
 }
 
 type optionalTime struct {
 	Set   bool
 	Value *time.Time
+}
+
+type optionalStringSlice struct {
+	Set   bool
+	Value []string
 }
 
 func (t *optionalTime) UnmarshalJSON(data []byte) error {
@@ -75,6 +83,11 @@ func (t *optionalTime) UnmarshalJSON(data []byte) error {
 	}
 	t.Value = &parsed
 	return nil
+}
+
+func (s *optionalStringSlice) UnmarshalJSON(data []byte) error {
+	s.Set = true
+	return json.Unmarshal(data, &s.Value)
 }
 
 func (g *Gateway) adminAuth(next http.Handler) http.Handler {
@@ -110,12 +123,18 @@ func (g *Gateway) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
+	allowedModels, err := g.validateAllowedModels(req.AllowedModels)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	created, err := g.store.CreateAPIKey(r.Context(), store.CreateAPIKeyParams{
-		Name:         req.Name,
-		Description:  req.Description,
-		ExpiresAt:    req.ExpiresAt,
-		RequestQuota: req.RequestQuota,
-		TokenQuota:   req.TokenQuota,
+		Name:          req.Name,
+		Description:   req.Description,
+		ExpiresAt:     req.ExpiresAt,
+		RequestQuota:  req.RequestQuota,
+		TokenQuota:    req.TokenQuota,
+		AllowedModels: allowedModels,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -171,15 +190,26 @@ func (g *Gateway) patchAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
+	allowedModels := req.AllowedModels.Value
+	if req.AllowedModels.Set {
+		var err error
+		allowedModels, err = g.validateAllowedModels(req.AllowedModels.Value)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	key, err := g.store.UpdateAPIKey(r.Context(), chi.URLParam(r, "id"), store.APIKeyPatch{
-		Name:          req.Name,
-		Description:   req.Description,
-		Status:        req.Status,
-		ExpiresAtSet:  req.ExpiresAt.Set,
-		ExpiresAt:     req.ExpiresAt.Value,
-		ForcedExpired: req.ForcedExpired,
-		RequestQuota:  req.RequestQuota,
-		TokenQuota:    req.TokenQuota,
+		Name:             req.Name,
+		Description:      req.Description,
+		Status:           req.Status,
+		ExpiresAtSet:     req.ExpiresAt.Set,
+		ExpiresAt:        req.ExpiresAt.Value,
+		ForcedExpired:    req.ForcedExpired,
+		RequestQuota:     req.RequestQuota,
+		TokenQuota:       req.TokenQuota,
+		AllowedModelsSet: req.AllowedModels.Set,
+		AllowedModels:    allowedModels,
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "api key not found")
@@ -269,6 +299,7 @@ func toAPIKeyResponse(key store.APIKey) apiKeyResponse {
 		ForcedExpired: key.ForcedExpired,
 		RequestQuota:  key.RequestQuota,
 		TokenQuota:    key.TokenQuota,
+		AllowedModels: key.AllowedModels,
 		UsedRequests:  key.UsedRequests,
 		UsedTokens:    key.UsedTokens,
 		LastUsedAt:    key.LastUsedAt,
@@ -276,6 +307,27 @@ func toAPIKeyResponse(key store.APIKey) apiKeyResponse {
 		CreatedAt:     key.CreatedAt,
 		UpdatedAt:     key.UpdatedAt,
 	}
+}
+
+func (g *Gateway) validateAllowedModels(models []string) ([]string, error) {
+	normalized := store.NormalizeAllowedModels(models)
+	if len(normalized) == 0 {
+		return normalized, nil
+	}
+	knownModels := map[string]struct{}{}
+	for _, model := range g.registry.PublicModels() {
+		knownModels[model] = struct{}{}
+	}
+	unknown := []string{}
+	for _, model := range normalized {
+		if _, ok := knownModels[model]; !ok {
+			unknown = append(unknown, model)
+		}
+	}
+	if len(unknown) > 0 {
+		return nil, errors.New("unknown allowed_models: " + strings.Join(unknown, ", "))
+	}
+	return normalized, nil
 }
 
 func pagination(r *http.Request, defaultLimit, maxLimit int) (int, int) {

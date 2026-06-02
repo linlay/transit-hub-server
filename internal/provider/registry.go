@@ -163,6 +163,22 @@ func (r *Registry) HasPoolForModel(publicModel, poolName string) bool {
 	return false
 }
 
+func (r *Registry) PublicModels() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	seen := map[string]struct{}{}
+	models := make([]string, 0, len(r.routes))
+	for _, route := range r.routes {
+		if _, exists := seen[route.PublicModel]; exists {
+			continue
+		}
+		seen[route.PublicModel] = struct{}{}
+		models = append(models, route.PublicModel)
+	}
+	sort.Strings(models)
+	return models
+}
+
 func (r *Registry) Snapshot(overrides map[string]string) Snapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

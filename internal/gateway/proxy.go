@@ -81,6 +81,22 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "model route not found")
 			return
 		}
+		if !store.APIKeyAllowsModel(key, route.PublicModel) {
+			g.logCompletedRequest(r, key.ID, store.RequestLog{
+				Protocol:      protocol,
+				PublicModel:   route.PublicModel,
+				UpstreamModel: route.UpstreamModel,
+				Provider:      route.ProviderName,
+				Pool:          route.PoolName,
+				StatusCode:    http.StatusForbidden,
+				Latency:       time.Since(started),
+				RequestTokens: usage.EstimateTokens(body),
+				Estimated:     true,
+				ErrorType:     "model_not_allowed",
+			})
+			writeError(w, http.StatusForbidden, "model not allowed for api key")
+			return
+		}
 		if override, exists, err := g.store.GetRouteOverride(r.Context(), envelope.Model); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return

@@ -122,6 +122,99 @@ func TestAnthropicProxyUsesNativePathAndXAPIKey(t *testing.T) {
 	}
 }
 
+func TestAPIKeyModelWhitelistAllowsDeniesAndPreservesRouteNotFound(t *testing.T) {
+	var hits int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	providerConfig := openAIProvider(upstream.URL)
+	providerConfig.Models = append(providerConfig.Models, config.ModelConfig{
+		Public:   "other-model",
+		Upstream: "other-upstream",
+		Pool:     "primary",
+	})
+	app, db, plainKey := newTestGatewayWithKey(t, []config.ProviderConfig{providerConfig}, store.CreateAPIKeyParams{
+		Name:          "limited-models",
+		AllowedModels: []string{"public-model"},
+	})
+
+	allowedReq := proxyRequestWithModel(plainKey, "public-model")
+	allowedRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(allowedRec, allowedReq)
+	if allowedRec.Code != http.StatusOK {
+		t.Fatalf("allowed status = %d, body = %s", allowedRec.Code, allowedRec.Body.String())
+	}
+	if got := atomic.LoadInt64(&hits); got != 1 {
+		t.Fatalf("upstream hits after allowed request = %d", got)
+	}
+
+	deniedReq := proxyRequestWithModel(plainKey, "other-model")
+	deniedRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(deniedRec, deniedReq)
+	if deniedRec.Code != http.StatusForbidden {
+		t.Fatalf("denied status = %d, body = %s", deniedRec.Code, deniedRec.Body.String())
+	}
+	if got := atomic.LoadInt64(&hits); got != 1 {
+		t.Fatalf("upstream was called for denied model: hits = %d", got)
+	}
+
+	missingReq := proxyRequestWithModel(plainKey, "missing-model")
+	missingRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(missingRec, missingReq)
+	if missingRec.Code != http.StatusNotFound {
+		t.Fatalf("missing route status = %d, body = %s", missingRec.Code, missingRec.Body.String())
+	}
+	if got := atomic.LoadInt64(&hits); got != 1 {
+		t.Fatalf("upstream was called for missing route: hits = %d", got)
+	}
+
+	key, err := db.FindAPIKeyByPlainText(t.Context(), plainKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs, err := db.ListRequestLogs(t.Context(), store.RequestLogQuery{APIKeyID: key.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundDeniedLog := false
+	for _, log := range logs.Items {
+		if log.PublicModel == "other-model" && log.StatusCode == http.StatusForbidden && log.ErrorType == "model_not_allowed" {
+			foundDeniedLog = true
+			break
+		}
+	}
+	if !foundDeniedLog {
+		t.Fatalf("missing model_not_allowed log: %#v", logs.Items)
+	}
+}
+
+func TestAPIKeyModelWhitelistDefaultsToEmpty(t *testing.T) {
+	var hits int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	app, _, plainKey := newTestGatewayWithKey(t, []config.ProviderConfig{openAIProvider(upstream.URL)}, store.CreateAPIKeyParams{
+		Name:          "empty-models",
+		AllowedModels: []string{},
+	})
+
+	req := proxyRequest(plainKey)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt64(&hits); got != 0 {
+		t.Fatalf("upstream hits = %d", got)
+	}
+}
+
 func TestQuotaAndForcedExpirationRejectRequests(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
@@ -214,6 +307,9 @@ func TestAdminCreateKeyReturnsPlainTextOnce(t *testing.T) {
 	if key, _ := created["key"].(string); !strings.HasPrefix(key, "th_") {
 		t.Fatalf("plain key missing from create response: %#v", created["key"])
 	}
+	if allowed, _ := created["allowed_models"].([]any); len(allowed) != 0 {
+		t.Fatalf("expected empty allowed_models by default: %#v", created["allowed_models"])
+	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/admin/api-keys", nil)
 	listReq.Header.Set("x-admin-token", "admin")
@@ -224,6 +320,96 @@ func TestAdminCreateKeyReturnsPlainTextOnce(t *testing.T) {
 	}
 	if bytes.Contains(listRec.Body.Bytes(), []byte(`"key"`)) {
 		t.Fatalf("list response leaked plain key: %s", listRec.Body.String())
+	}
+}
+
+func TestAdminAPIKeyAllowedModelsCreatePatchAndValidation(t *testing.T) {
+	providerConfig := openAIProvider("https://upstream.invalid")
+	providerConfig.Models = append(providerConfig.Models, config.ModelConfig{
+		Public:   "other-model",
+		Upstream: "other-upstream",
+		Pool:     "primary",
+	})
+	app, _, _ := newTestGateway(t, []config.ProviderConfig{providerConfig})
+
+	invalidCreateReq := httptest.NewRequest(http.MethodPost, "/admin/api-keys", bytes.NewBufferString(`{
+		"name":"invalid",
+		"allowed_models":["missing-model"]
+	}`))
+	invalidCreateReq.Header.Set("Authorization", "Bearer admin")
+	invalidCreateRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(invalidCreateRec, invalidCreateReq)
+	if invalidCreateRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid create status = %d, body = %s", invalidCreateRec.Code, invalidCreateRec.Body.String())
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/api-keys", bytes.NewBufferString(`{
+		"name":"model-scoped",
+		"allowed_models":[" public-model ","other-model","public-model"]
+	}`))
+	createReq.Header.Set("Authorization", "Bearer admin")
+	createRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		ID            string   `json:"id"`
+		AllowedModels []string `json:"allowed_models"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID == "" || strings.Join(created.AllowedModels, ",") != "other-model,public-model" {
+		t.Fatalf("unexpected created key allowed_models: %#v", created)
+	}
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/admin/api-keys/"+created.ID, bytes.NewBufferString(`{
+		"allowed_models":["public-model"]
+	}`))
+	patchReq.Header.Set("Authorization", "Bearer admin")
+	patchRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, body = %s", patchRec.Code, patchRec.Body.String())
+	}
+	var patched struct {
+		AllowedModels []string `json:"allowed_models"`
+	}
+	if err := json.Unmarshal(patchRec.Body.Bytes(), &patched); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(patched.AllowedModels, ",") != "public-model" {
+		t.Fatalf("unexpected patched allowed_models: %#v", patched.AllowedModels)
+	}
+
+	invalidPatchReq := httptest.NewRequest(http.MethodPatch, "/admin/api-keys/"+created.ID, bytes.NewBufferString(`{
+		"allowed_models":["missing-model"]
+	}`))
+	invalidPatchReq.Header.Set("Authorization", "Bearer admin")
+	invalidPatchRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(invalidPatchRec, invalidPatchReq)
+	if invalidPatchRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid patch status = %d, body = %s", invalidPatchRec.Code, invalidPatchRec.Body.String())
+	}
+
+	clearReq := httptest.NewRequest(http.MethodPatch, "/admin/api-keys/"+created.ID, bytes.NewBufferString(`{
+		"allowed_models":[]
+	}`))
+	clearReq.Header.Set("Authorization", "Bearer admin")
+	clearRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(clearRec, clearReq)
+	if clearRec.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, body = %s", clearRec.Code, clearRec.Body.String())
+	}
+	var cleared struct {
+		AllowedModels []string `json:"allowed_models"`
+	}
+	if err := json.Unmarshal(clearRec.Body.Bytes(), &cleared); err != nil {
+		t.Fatal(err)
+	}
+	if len(cleared.AllowedModels) != 0 {
+		t.Fatalf("expected cleared allowed_models: %#v", cleared.AllowedModels)
 	}
 }
 
@@ -281,7 +467,7 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if key.Source != "jwt" || key.IssuerJTI != jti || key.RequestQuota != 50 || key.TokenQuota != 100000 {
+	if key.Source != "jwt" || key.IssuerJTI != jti || key.RequestQuota != 50 || key.TokenQuota != 100000 || len(key.AllowedModels) != 0 {
 		t.Fatalf("unexpected issued key: %#v", key)
 	}
 	grant, err := db.GetJWTGrant(t.Context(), jti)
@@ -328,11 +514,11 @@ func TestApplyAPIKeyRejectsInvalidExpiredDisabledAndMissingIssuer(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	tamperedSuffix := "x"
-	if strings.HasSuffix(token, tamperedSuffix) {
-		tamperedSuffix = "y"
+	tokenParts := strings.Split(token, ".")
+	if len(tokenParts) != 3 {
+		t.Fatalf("unexpected token shape: %q", token)
 	}
-	tampered := token[:len(token)-1] + tamperedSuffix
+	tampered := tokenParts[0] + "." + tokenParts[1] + ".invalid-signature"
 	invalidReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{}`))
 	invalidReq.Header.Set("Authorization", "Bearer "+tampered)
 	invalidRec := httptest.NewRecorder()
@@ -615,6 +801,9 @@ func newTestGatewayWithKeyAndIssuer(t *testing.T, providers []config.ProviderCon
 	if err != nil {
 		t.Fatal(err)
 	}
+	if keyParams.AllowedModels == nil {
+		keyParams.AllowedModels = publicModelsFromConfigs(providers)
+	}
 	created, err := db.CreateAPIKey(t.Context(), keyParams)
 	if err != nil {
 		t.Fatal(err)
@@ -636,6 +825,21 @@ func newTestGatewayWithKeyAndIssuer(t *testing.T, providers []config.ProviderCon
 		Client:   upstreamClient(t),
 	})
 	return app, db, created.PlainText
+}
+
+func publicModelsFromConfigs(providers []config.ProviderConfig) []string {
+	seen := map[string]struct{}{}
+	models := []string{}
+	for _, providerConfig := range providers {
+		for _, model := range providerConfig.Models {
+			if _, exists := seen[model.Public]; exists {
+				continue
+			}
+			seen[model.Public] = struct{}{}
+			models = append(models, model.Public)
+		}
+	}
+	return models
 }
 
 func newTestIssuer(t *testing.T) *issuer.Service {
@@ -680,10 +884,12 @@ func upstreamClient(t *testing.T) *http.Client {
 }
 
 func proxyRequest(plainKey string) *http.Request {
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
-		"model":"public-model",
-		"messages":[{"role":"user","content":"hi"}]
-	}`))
+	return proxyRequestWithModel(plainKey, "public-model")
+}
+
+func proxyRequestWithModel(plainKey, model string) *http.Request {
+	body := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+plainKey)
 	return req
 }

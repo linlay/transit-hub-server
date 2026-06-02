@@ -7,10 +7,12 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -45,6 +47,7 @@ type APIKey struct {
 	ForcedExpired bool       `json:"forced_expired"`
 	RequestQuota  int64      `json:"request_quota"`
 	TokenQuota    int64      `json:"token_quota"`
+	AllowedModels []string   `json:"allowed_models"`
 	UsedRequests  int64      `json:"used_requests"`
 	UsedTokens    int64      `json:"used_tokens"`
 	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`
@@ -54,14 +57,15 @@ type APIKey struct {
 }
 
 type CreateAPIKeyParams struct {
-	Name         string
-	Description  string
-	Prefix       string
-	Source       string
-	IssuerJTI    string
-	ExpiresAt    *time.Time
-	RequestQuota int64
-	TokenQuota   int64
+	Name          string
+	Description   string
+	Prefix        string
+	Source        string
+	IssuerJTI     string
+	ExpiresAt     *time.Time
+	RequestQuota  int64
+	TokenQuota    int64
+	AllowedModels []string
 }
 
 type CreatedAPIKey struct {
@@ -70,14 +74,16 @@ type CreatedAPIKey struct {
 }
 
 type APIKeyPatch struct {
-	Name          *string
-	Description   *string
-	Status        *string
-	ExpiresAtSet  bool
-	ExpiresAt     *time.Time
-	ForcedExpired *bool
-	RequestQuota  *int64
-	TokenQuota    *int64
+	Name             *string
+	Description      *string
+	Status           *string
+	ExpiresAtSet     bool
+	ExpiresAt        *time.Time
+	ForcedExpired    *bool
+	RequestQuota     *int64
+	TokenQuota       *int64
+	AllowedModelsSet bool
+	AllowedModels    []string
 }
 
 type RequestLog struct {
@@ -150,6 +156,11 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 	if source != "admin" && source != "jwt" {
 		return CreatedAPIKey{}, errors.New("source must be admin or jwt")
 	}
+	allowedModels := NormalizeAllowedModels(params.AllowedModels)
+	allowedModelsJSON, err := encodeAllowedModels(allowedModels)
+	if err != nil {
+		return CreatedAPIKey{}, err
+	}
 
 	plain, err := GeneratePlainAPIKey(params.Prefix)
 	if err != nil {
@@ -168,6 +179,7 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 		ForcedExpired: false,
 		RequestQuota:  params.RequestQuota,
 		TokenQuota:    params.TokenQuota,
+		AllowedModels: allowedModels,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -181,9 +193,9 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 	_, err = exec(`
 		INSERT INTO api_keys (
 			id, key_hash, key_prefix, name, description, source, issuer_jti, status, expires_at, forced_expired,
-			request_quota, token_quota, used_requests, used_tokens, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
-	`, key.ID, HashKey(plain), key.KeyPrefix, key.Name, key.Description, key.Source, key.IssuerJTI, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, formatTime(key.CreatedAt), formatTime(key.UpdatedAt))
+			request_quota, token_quota, allowed_models, used_requests, used_tokens, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+	`, key.ID, HashKey(plain), key.KeyPrefix, key.Name, key.Description, key.Source, key.IssuerJTI, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, allowedModelsJSON, formatTime(key.CreatedAt), formatTime(key.UpdatedAt))
 	if err != nil {
 		return CreatedAPIKey{}, err
 	}
@@ -193,7 +205,7 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota,
-		       used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
+		       allowed_models, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -217,7 +229,7 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 func (s *Store) GetAPIKey(ctx context.Context, id string) (APIKey, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota,
-		       used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
+		       allowed_models, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE id = ?
 	`, id)
@@ -227,7 +239,7 @@ func (s *Store) GetAPIKey(ctx context.Context, id string) (APIKey, error) {
 func (s *Store) FindAPIKeyByPlainText(ctx context.Context, plain string) (APIKey, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota,
-		       used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
+		       allowed_models, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE key_hash = ? AND deleted_at IS NULL
 	`, HashKey(plain))
@@ -278,14 +290,21 @@ func (s *Store) UpdateAPIKey(ctx context.Context, id string, patch APIKeyPatch) 
 		}
 		key.TokenQuota = *patch.TokenQuota
 	}
+	if patch.AllowedModelsSet {
+		key.AllowedModels = NormalizeAllowedModels(patch.AllowedModels)
+	}
+	allowedModelsJSON, err := encodeAllowedModels(key.AllowedModels)
+	if err != nil {
+		return APIKey{}, err
+	}
 	key.UpdatedAt = time.Now().UTC()
 
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE api_keys
 		SET name = ?, description = ?, status = ?, expires_at = ?, forced_expired = ?,
-		    request_quota = ?, token_quota = ?, updated_at = ?
+		    request_quota = ?, token_quota = ?, allowed_models = ?, updated_at = ?
 		WHERE id = ?
-	`, key.Name, key.Description, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, formatTime(key.UpdatedAt), key.ID)
+	`, key.Name, key.Description, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, allowedModelsJSON, formatTime(key.UpdatedAt), key.ID)
 	if err != nil {
 		return APIKey{}, err
 	}
@@ -450,6 +469,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			forced_expired INTEGER NOT NULL DEFAULT 0,
 			request_quota INTEGER NOT NULL DEFAULT 0,
 			token_quota INTEGER NOT NULL DEFAULT 0,
+			allowed_models TEXT NOT NULL DEFAULT '[]',
 			used_requests INTEGER NOT NULL DEFAULT 0,
 			used_tokens INTEGER NOT NULL DEFAULT 0,
 			last_used_at TEXT,
@@ -514,6 +534,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE api_keys ADD COLUMN issuer_jti TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE api_keys ADD COLUMN last_used_at TEXT`,
 		`ALTER TABLE api_keys ADD COLUMN deleted_at TEXT`,
+		`ALTER TABLE api_keys ADD COLUMN allowed_models TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE request_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE request_logs ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE request_logs ADD COLUMN cost_microusd INTEGER NOT NULL DEFAULT 0`,
@@ -605,6 +626,7 @@ func scanAPIKey(scanner apiKeyScanner) (APIKey, error) {
 	var key APIKey
 	var expiresAt, lastUsedAt, deletedAt sql.NullString
 	var forcedExpired int
+	var allowedModels string
 	var createdAt, updatedAt string
 	err := scanner.Scan(
 		&key.ID,
@@ -618,6 +640,7 @@ func scanAPIKey(scanner apiKeyScanner) (APIKey, error) {
 		&forcedExpired,
 		&key.RequestQuota,
 		&key.TokenQuota,
+		&allowedModels,
 		&key.UsedRequests,
 		&key.UsedTokens,
 		&lastUsedAt,
@@ -631,6 +654,11 @@ func scanAPIKey(scanner apiKeyScanner) (APIKey, error) {
 	if err != nil {
 		return APIKey{}, err
 	}
+	decodedAllowedModels, err := decodeAllowedModels(allowedModels)
+	if err != nil {
+		return APIKey{}, err
+	}
+	key.AllowedModels = decodedAllowedModels
 	if expiresAt.Valid {
 		parsed, err := parseTime(expiresAt.String)
 		if err != nil {
@@ -707,6 +735,56 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func NormalizeAllowedModels(models []string) []string {
+	seen := map[string]struct{}{}
+	normalized := make([]string, 0, len(models))
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if _, exists := seen[model]; exists {
+			continue
+		}
+		seen[model] = struct{}{}
+		normalized = append(normalized, model)
+	}
+	sort.Strings(normalized)
+	return normalized
+}
+
+func APIKeyAllowsModel(key APIKey, publicModel string) bool {
+	publicModel = strings.TrimSpace(publicModel)
+	if publicModel == "" {
+		return false
+	}
+	for _, model := range key.AllowedModels {
+		if model == publicModel {
+			return true
+		}
+	}
+	return false
+}
+
+func encodeAllowedModels(models []string) (string, error) {
+	raw, err := json.Marshal(NormalizeAllowedModels(models))
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func decodeAllowedModels(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return []string{}, nil
+	}
+	var models []string
+	if err := json.Unmarshal([]byte(value), &models); err != nil {
+		return nil, err
+	}
+	return NormalizeAllowedModels(models), nil
 }
 
 func keyPrefix(value string) string {

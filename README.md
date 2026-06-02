@@ -144,10 +144,10 @@ Admin API 需要携带 `Authorization: Bearer $ADMIN_TOKEN` 或 `x-admin-token: 
 curl -sS -X POST http://localhost:8080/admin/api-keys \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"demo","request_quota":1000,"token_quota":100000}'
+  -d '{"name":"demo","request_quota":1000,"token_quota":100000,"allowed_models":["deepseek-chat"]}'
 ```
 
-响应里的 `key` 只会返回这一次，请妥善保存。配额字段为 `0` 表示不限额。
+响应里的 `key` 只会返回这一次，请妥善保存。配额字段为 `0` 表示不限额。`allowed_models` 是该 key 可调用的公开模型名白名单；省略或传空数组表示不允许调用任何模型。
 
 常用管理命令：
 
@@ -171,6 +171,12 @@ curl -sS -X PATCH http://localhost:8080/admin/api-keys/key_xxx \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"forced_expired":true}'
+
+# 修改可调用模型白名单
+curl -sS -X PATCH http://localhost:8080/admin/api-keys/key_xxx \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"allowed_models":["deepseek-chat"]}'
 
 # 软删除客户端 API Key（历史日志保留）
 curl -sS -X DELETE http://localhost:8080/admin/api-keys/key_xxx \
@@ -197,7 +203,7 @@ curl -sS -X POST http://localhost:8080/api/apply-apikey \
   -d '{"name":"my desktop"}'
 ```
 
-申请成功会返回一次性明文 `dk_...` API Key。默认发放额度为 50 次请求和 100000 tokens；后续可以在管理站 API Keys 页面调大、禁用或改成不限额。
+申请成功会返回一次性明文 `dk_...` API Key。默认发放额度为 50 次请求和 100000 tokens，默认不授权任何模型；后续可以在管理站 API Keys 页面配置可调用模型、调大额度、禁用或改成不限额。
 
 管理 grant：
 
