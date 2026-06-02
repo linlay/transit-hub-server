@@ -72,22 +72,24 @@ type APIKeyPatch struct {
 }
 
 type RequestLog struct {
-	APIKeyID       string
-	Protocol       string
-	PublicModel    string
-	UpstreamModel  string
-	Provider       string
-	Pool           string
-	Account        string
-	DeviceID       string
-	Source         string
-	StatusCode     int
-	Latency        time.Duration
-	RequestTokens  int64
-	ResponseTokens int64
-	CostMicroUSD   int64
-	Estimated      bool
-	ErrorType      string
+	APIKeyID        string
+	Protocol        string
+	PublicModel     string
+	UpstreamModel   string
+	Provider        string
+	Pool            string
+	Account         string
+	DeviceID        string
+	Source          string
+	StatusCode      int
+	Latency         time.Duration
+	RequestTokens   int64
+	ResponseTokens  int64
+	CacheHitTokens  int64
+	CacheMissTokens int64
+	CostMicroUSD    int64
+	Estimated       bool
+	ErrorType       string
 }
 
 func Open(path string) (*Store, error) {
@@ -308,11 +310,11 @@ func (s *Store) AddUsageAndLog(ctx context.Context, keyID string, log RequestLog
 		INSERT INTO request_logs (
 			api_key_id, protocol, public_model, upstream_model, provider, pool, account,
 			device_id, source, status_code, latency_ms, request_tokens, response_tokens,
-			cost_microusd, estimated, error_type, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			cache_hit_tokens, cache_miss_tokens, cost_microusd, estimated, error_type, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, keyID, log.Protocol, log.PublicModel, log.UpstreamModel, log.Provider, log.Pool, log.Account,
 		deviceID, source, log.StatusCode, log.Latency.Milliseconds(), log.RequestTokens, log.ResponseTokens,
-		log.CostMicroUSD, boolInt(log.Estimated), log.ErrorType, formatTime(now))
+		log.CacheHitTokens, log.CacheMissTokens, log.CostMicroUSD, boolInt(log.Estimated), log.ErrorType, formatTime(now))
 	if err != nil {
 		return err
 	}
@@ -434,6 +436,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			latency_ms INTEGER NOT NULL,
 			request_tokens INTEGER NOT NULL,
 			response_tokens INTEGER NOT NULL,
+			cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
 			cost_microusd INTEGER NOT NULL DEFAULT 0,
 			estimated INTEGER NOT NULL DEFAULT 0,
 			error_type TEXT NOT NULL DEFAULT '',
@@ -461,6 +465,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE request_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE request_logs ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE request_logs ADD COLUMN cost_microusd INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE request_logs ADD COLUMN cache_hit_tokens INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE request_logs ADD COLUMN cache_miss_tokens INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isDuplicateColumnError(err) {
 			return err
@@ -492,6 +498,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			protocol TEXT NOT NULL,
 			public_model TEXT NOT NULL,
 			input_cost_microusd_per_1m INTEGER NOT NULL DEFAULT 0,
+			input_cache_hit_cost_microusd_per_1m INTEGER,
 			output_cost_microusd_per_1m INTEGER NOT NULL DEFAULT 0,
 			currency TEXT NOT NULL DEFAULT 'USD',
 			created_at TEXT NOT NULL,
@@ -516,10 +523,22 @@ func (s *Store) migrate(ctx context.Context) error {
 			ON api_keys(deleted_at, status);
 		CREATE INDEX IF NOT EXISTS idx_request_logs_created_at
 			ON request_logs(created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_request_logs_provider_created_at
+			ON request_logs(provider, created_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_api_key_sessions_last_seen
 			ON api_key_sessions(last_seen_at DESC);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE model_prices ADD COLUMN input_cache_hit_cost_microusd_per_1m INTEGER`,
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isDuplicateColumnError(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 type apiKeyScanner interface {
@@ -604,6 +623,17 @@ func nullableTime(value *time.Time) any {
 		return nil
 	}
 	return formatTime(value.UTC())
+}
+
+func nullableInt64(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func negativePtr(value *int64) bool {
+	return value != nil && *value < 0
 }
 
 func formatTime(value time.Time) string {

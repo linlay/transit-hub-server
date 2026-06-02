@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -351,6 +352,86 @@ func TestProxyRecordsSessionAndEstimatedCost(t *testing.T) {
 	}
 	if sessions.Total != 1 || !sessions.Items[0].Active || sessions.Items[0].TokenCount != 7 {
 		t.Fatalf("unexpected sessions: %#v", sessions)
+	}
+}
+
+func TestProxyRecordsDeepSeekCacheAndProviderUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_cache_hit_tokens":4,"prompt_cache_miss_tokens":6}}`))
+	}))
+	defer upstream.Close()
+
+	app, db, plainKey := newTestGateway(t, []config.ProviderConfig{openAIProvider(upstream.URL)})
+	inputCacheHitCost := int64(500_000)
+	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{
+		Protocol:                             "openai",
+		PublicModel:                          "public-model",
+		InputCostMicroUSDPer1MTokens:         2_000_000,
+		InputCacheHitCostMicroUSDPer1MTokens: &inputCacheHitCost,
+		OutputCostMicroUSDPer1MTokens:        4_000_000,
+		Currency:                             "USD",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := proxyRequest(plainKey)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	key, err := db.FindAPIKeyByPlainText(req.Context(), plainKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.UsedTokens != 15 {
+		t.Fatalf("used_tokens = %d", key.UsedTokens)
+	}
+	logs, err := db.ListRequestLogs(t.Context(), store.RequestLogQuery{APIKeyID: key.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logs.Total != 1 {
+		t.Fatalf("logs total = %d", logs.Total)
+	}
+	log := logs.Items[0]
+	if log.CacheHitTokens != 4 || log.CacheMissTokens != 6 || log.CacheTotalTokens != 10 {
+		t.Fatalf("unexpected cache tokens: %#v", log)
+	}
+	if log.CacheHitRate == nil || math.Abs(*log.CacheHitRate-0.4) > 0.0001 {
+		t.Fatalf("cache hit rate = %#v", log.CacheHitRate)
+	}
+	if log.CostMicroUSD != 34 {
+		t.Fatalf("cost_microusd = %d", log.CostMicroUSD)
+	}
+
+	traffic, err := db.Traffic(t.Context(), store.TrafficQuery{APIKeyID: key.ID, Bucket: "day"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(traffic) != 1 || traffic[0].Requests != 1 || traffic[0].TotalTokens != 15 || traffic[0].CacheHitTokens != 4 || traffic[0].CacheMissTokens != 6 {
+		t.Fatalf("unexpected traffic: %#v", traffic)
+	}
+
+	providers, err := db.ProviderUsage(t.Context(), store.ProviderUsageQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(providers) != 1 {
+		t.Fatalf("provider usage count = %d: %#v", len(providers), providers)
+	}
+	if providers[0].Provider != "test-openai" || providers[0].Requests != 1 || providers[0].TotalTokens != 15 || providers[0].CacheHitTokens != 4 || providers[0].CostMicroUSD != 34 {
+		t.Fatalf("unexpected provider usage: %#v", providers[0])
+	}
+
+	usageReq := httptest.NewRequest(http.MethodGet, "/admin/providers/usage", nil)
+	usageReq.Header.Set("Authorization", "Bearer admin")
+	usageRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(usageRec, usageReq)
+	if usageRec.Code != http.StatusOK {
+		t.Fatalf("provider usage status = %d, body = %s", usageRec.Code, usageRec.Body.String())
 	}
 }
 

@@ -9,9 +9,11 @@ import (
 )
 
 type Tokens struct {
-	Request  int64
-	Response int64
-	OK       bool
+	Request   int64
+	Response  int64
+	CacheHit  int64
+	CacheMiss int64
+	OK        bool
 }
 
 func EstimateTokens(data []byte) int64 {
@@ -68,20 +70,27 @@ func extractFromPayload(payload map[string]any) Tokens {
 		return Tokens{}
 	}
 
+	cacheHit := number(usageMap["prompt_cache_hit_tokens"])
+	cacheMiss := number(usageMap["prompt_cache_miss_tokens"])
 	request := number(usageMap["prompt_tokens"]) + number(usageMap["input_tokens"])
 	response := number(usageMap["completion_tokens"]) + number(usageMap["output_tokens"])
 	total := number(usageMap["total_tokens"])
 
-	if request == 0 && response == 0 && total == 0 {
+	if request == 0 && cacheHit+cacheMiss > 0 {
+		request = cacheHit + cacheMiss
+	}
+	if request == 0 && response == 0 && total == 0 && cacheHit == 0 && cacheMiss == 0 {
 		return Tokens{}
 	}
 	if total > 0 && request == 0 && response == 0 {
 		response = total
 	}
 	return Tokens{
-		Request:  request,
-		Response: response,
-		OK:       true,
+		Request:   request,
+		Response:  response,
+		CacheHit:  cacheHit,
+		CacheMiss: cacheMiss,
+		OK:        true,
 	}
 }
 

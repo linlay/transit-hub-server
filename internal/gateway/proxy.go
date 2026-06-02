@@ -40,6 +40,14 @@ type copyResult struct {
 	Bytes  int64
 }
 
+type observedUsage struct {
+	RequestTokens   int64
+	ResponseTokens  int64
+	CacheHitTokens  int64
+	CacheMissTokens int64
+	Estimated       bool
+}
+
 func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
@@ -144,7 +152,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			g.logger.Printf("copy upstream response failed: %v", copyErr)
 		}
 
-		requestTokens, responseTokens, estimated := observedTokens(body, result.Sample, envelope.Stream || isEventStream(resp.Header))
+		observed := observedTokens(body, result.Sample, envelope.Stream || isEventStream(resp.Header))
 		errorType := ""
 		if copyErr != nil {
 			errorType = "response_copy_error"
@@ -152,18 +160,20 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			errorType = "upstream_status"
 		}
 		g.logCompletedRequest(r, key.ID, store.RequestLog{
-			Protocol:       protocol,
-			PublicModel:    route.PublicModel,
-			UpstreamModel:  route.UpstreamModel,
-			Provider:       route.ProviderName,
-			Pool:           route.PoolName,
-			Account:        account.Name,
-			StatusCode:     resp.StatusCode,
-			Latency:        time.Since(started),
-			RequestTokens:  requestTokens,
-			ResponseTokens: responseTokens,
-			Estimated:      estimated,
-			ErrorType:      errorType,
+			Protocol:        protocol,
+			PublicModel:     route.PublicModel,
+			UpstreamModel:   route.UpstreamModel,
+			Provider:        route.ProviderName,
+			Pool:            route.PoolName,
+			Account:         account.Name,
+			StatusCode:      resp.StatusCode,
+			Latency:         time.Since(started),
+			RequestTokens:   observed.RequestTokens,
+			ResponseTokens:  observed.ResponseTokens,
+			CacheHitTokens:  observed.CacheHitTokens,
+			CacheMissTokens: observed.CacheMissTokens,
+			Estimated:       observed.Estimated,
+			ErrorType:       errorType,
 		})
 	}
 }
@@ -250,7 +260,7 @@ func rewriteModel(body []byte, upstreamModel string) ([]byte, error) {
 	return json.Marshal(payload)
 }
 
-func observedTokens(requestBody, responseSample []byte, stream bool) (int64, int64, bool) {
+func observedTokens(requestBody, responseSample []byte, stream bool) observedUsage {
 	var observed usage.Tokens
 	if stream {
 		observed = usage.ExtractFromSSE(responseSample)
@@ -258,9 +268,19 @@ func observedTokens(requestBody, responseSample []byte, stream bool) (int64, int
 		observed = usage.ExtractFromJSON(responseSample)
 	}
 	if observed.OK {
-		return observed.Request, observed.Response, false
+		return observedUsage{
+			RequestTokens:   observed.Request,
+			ResponseTokens:  observed.Response,
+			CacheHitTokens:  observed.CacheHit,
+			CacheMissTokens: observed.CacheMiss,
+			Estimated:       false,
+		}
 	}
-	return usage.EstimateTokens(requestBody), usage.EstimateTokens(responseSample), true
+	return observedUsage{
+		RequestTokens:  usage.EstimateTokens(requestBody),
+		ResponseTokens: usage.EstimateTokens(responseSample),
+		Estimated:      true,
+	}
 }
 
 func copyResponse(w http.ResponseWriter, body io.Reader, flush bool) (copyResult, error) {
@@ -371,6 +391,8 @@ func (g *Gateway) logCompletedRequest(r *http.Request, keyID string, logEntry st
 			logEntry.PublicModel,
 			logEntry.RequestTokens,
 			logEntry.ResponseTokens,
+			logEntry.CacheHitTokens,
+			logEntry.CacheMissTokens,
 		)
 		if err != nil {
 			g.logger.Printf("estimate request cost failed: %v", err)

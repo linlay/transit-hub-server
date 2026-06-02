@@ -12,11 +12,12 @@ import (
 )
 
 type modelPriceRequest struct {
-	Protocol                      string `json:"protocol"`
-	PublicModel                   string `json:"public_model"`
-	InputCostMicroUSDPer1MTokens  int64  `json:"input_cost_microusd_per_1m_tokens"`
-	OutputCostMicroUSDPer1MTokens int64  `json:"output_cost_microusd_per_1m_tokens"`
-	Currency                      string `json:"currency"`
+	Protocol                             string `json:"protocol"`
+	PublicModel                          string `json:"public_model"`
+	InputCostMicroUSDPer1MTokens         int64  `json:"input_cost_microusd_per_1m_tokens"`
+	InputCacheHitCostMicroUSDPer1MTokens *int64 `json:"input_cache_hit_cost_microusd_per_1m_tokens"`
+	OutputCostMicroUSDPer1MTokens        int64  `json:"output_cost_microusd_per_1m_tokens"`
+	Currency                             string `json:"currency"`
 }
 
 func (g *Gateway) overview(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +98,23 @@ func (g *Gateway) requestLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (g *Gateway) providerUsage(w http.ResponseWriter, r *http.Request) {
+	from, to, err := parseTimeRange(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	items, err := g.store.ProviderUsage(r.Context(), store.ProviderUsageQuery{
+		From: from,
+		To:   to,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (g *Gateway) sessions(w http.ResponseWriter, r *http.Request) {
 	limit, offset := pagination(r, 100, 500)
 	result, err := g.store.ListAPISessions(r.Context(), store.APISessionQuery{
@@ -149,11 +167,12 @@ func (g *Gateway) createModelPrice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	price, err := g.store.UpsertModelPrice(r.Context(), store.ModelPriceParams{
-		Protocol:                      req.Protocol,
-		PublicModel:                   req.PublicModel,
-		InputCostMicroUSDPer1MTokens:  req.InputCostMicroUSDPer1MTokens,
-		OutputCostMicroUSDPer1MTokens: req.OutputCostMicroUSDPer1MTokens,
-		Currency:                      req.Currency,
+		Protocol:                             req.Protocol,
+		PublicModel:                          req.PublicModel,
+		InputCostMicroUSDPer1MTokens:         req.InputCostMicroUSDPer1MTokens,
+		InputCacheHitCostMicroUSDPer1MTokens: req.InputCacheHitCostMicroUSDPer1MTokens,
+		OutputCostMicroUSDPer1MTokens:        req.OutputCostMicroUSDPer1MTokens,
+		Currency:                             req.Currency,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -169,11 +188,12 @@ func (g *Gateway) patchModelPrice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	price, err := g.store.UpdateModelPrice(r.Context(), chi.URLParam(r, "id"), store.ModelPriceParams{
-		Protocol:                      req.Protocol,
-		PublicModel:                   req.PublicModel,
-		InputCostMicroUSDPer1MTokens:  req.InputCostMicroUSDPer1MTokens,
-		OutputCostMicroUSDPer1MTokens: req.OutputCostMicroUSDPer1MTokens,
-		Currency:                      req.Currency,
+		Protocol:                             req.Protocol,
+		PublicModel:                          req.PublicModel,
+		InputCostMicroUSDPer1MTokens:         req.InputCostMicroUSDPer1MTokens,
+		InputCacheHitCostMicroUSDPer1MTokens: req.InputCacheHitCostMicroUSDPer1MTokens,
+		OutputCostMicroUSDPer1MTokens:        req.OutputCostMicroUSDPer1MTokens,
+		Currency:                             req.Currency,
 	})
 	if errors.Is(err, store.ErrPriceNotFound) {
 		writeError(w, http.StatusNotFound, "model price not found")

@@ -89,6 +89,7 @@ func (g *Gateway) Handler() http.Handler {
 		r.Post("/users", g.createAdminUser)
 		r.Patch("/users/{id}", g.patchAdminUser)
 		r.Delete("/users/{id}", g.deleteAdminUser)
+		r.Get("/providers/usage", g.providerUsage)
 		r.Get("/providers", g.listProviders)
 		r.Post("/providers/reload", g.reloadProviders)
 		r.Put("/routes/{public_model}/pool", g.setRoutePool)
