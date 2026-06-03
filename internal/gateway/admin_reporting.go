@@ -112,7 +112,15 @@ func (g *Gateway) providerUsage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	accountItems, err := g.store.ProviderAccountUsage(r.Context(), store.ProviderUsageQuery{
+		From: from,
+		To:   to,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "account_items": accountItems})
 }
 
 func (g *Gateway) sessions(w http.ResponseWriter, r *http.Request) {

@@ -24,6 +24,18 @@ type APIKeyListResult struct {
 	Offset int      `json:"offset"`
 }
 
+type APIKeyBatchParams struct {
+	Action    string
+	IDs       []string
+	IssuerJTI string
+}
+
+type APIKeyBatchResult struct {
+	Action  string `json:"action"`
+	Matched int64  `json:"matched"`
+	Updated int64  `json:"updated"`
+}
+
 func (s *Store) SearchAPIKeys(ctx context.Context, params APIKeyListParams) (APIKeyListResult, error) {
 	limit := params.Limit
 	if limit <= 0 || limit > 200 {
@@ -120,4 +132,97 @@ func (s *Store) DeleteAPIKey(ctx context.Context, id string) (APIKey, error) {
 	}
 	key.UpdatedAt = now
 	return key, nil
+}
+
+func (s *Store) BatchAPIKeys(ctx context.Context, params APIKeyBatchParams) (APIKeyBatchResult, error) {
+	action := strings.ToLower(strings.TrimSpace(params.Action))
+	if action != "delete" && action != "inactive" {
+		return APIKeyBatchResult{}, fmt.Errorf("action must be delete or inactive")
+	}
+	where, args, err := apiKeyBatchWhere(params)
+	if err != nil {
+		return APIKeyBatchResult{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return APIKeyBatchResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var matched int64
+	if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM api_keys WHERE deleted_at IS NULL AND %s`, where), args...).Scan(&matched); err != nil {
+		return APIKeyBatchResult{}, err
+	}
+
+	now := time.Now().UTC()
+	updateArgs := []any{}
+	query := ""
+	if action == "delete" {
+		updateArgs = append(updateArgs, formatTime(now), formatTime(now))
+		query = fmt.Sprintf(`
+			UPDATE api_keys
+			SET status = 'disabled',
+			    forced_expired = 1,
+			    deleted_at = COALESCE(deleted_at, ?),
+			    updated_at = ?
+			WHERE deleted_at IS NULL AND %s
+		`, where)
+	} else {
+		updateArgs = append(updateArgs, formatTime(now))
+		query = fmt.Sprintf(`
+			UPDATE api_keys
+			SET status = 'disabled',
+			    updated_at = ?
+			WHERE deleted_at IS NULL AND %s
+		`, where)
+	}
+	updateArgs = append(updateArgs, args...)
+	result, err := tx.ExecContext(ctx, query, updateArgs...)
+	if err != nil {
+		return APIKeyBatchResult{}, err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return APIKeyBatchResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return APIKeyBatchResult{}, err
+	}
+	return APIKeyBatchResult{Action: action, Matched: matched, Updated: updated}, nil
+}
+
+func apiKeyBatchWhere(params APIKeyBatchParams) (string, []any, error) {
+	ids := []string{}
+	seen := map[string]struct{}{}
+	for _, id := range params.IDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	issuerJTI := strings.TrimSpace(params.IssuerJTI)
+	if len(ids) == 0 && issuerJTI == "" {
+		return "", nil, fmt.Errorf("ids or issuer_jti is required")
+	}
+
+	clauses := []string{}
+	args := []any{}
+	if len(ids) > 0 {
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+		clauses = append(clauses, "id IN ("+placeholders+")")
+		for _, id := range ids {
+			args = append(args, id)
+		}
+	}
+	if issuerJTI != "" {
+		clauses = append(clauses, "issuer_jti = ?")
+		args = append(args, issuerJTI)
+	}
+	return "(" + strings.Join(clauses, " OR ") + ")", args, nil
 }

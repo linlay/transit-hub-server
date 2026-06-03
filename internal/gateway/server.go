@@ -79,6 +79,7 @@ func (g *Gateway) Handler() http.Handler {
 		r.Get("/sessions", g.sessions)
 		r.Post("/api-keys", g.createAPIKey)
 		r.Get("/api-keys", g.listAPIKeys)
+		r.Post("/api-keys/batch", g.batchAPIKeys)
 		r.Get("/api-keys/{id}", g.getAPIKey)
 		r.Patch("/api-keys/{id}", g.patchAPIKey)
 		r.Delete("/api-keys/{id}", g.deleteAPIKey)

@@ -149,6 +149,17 @@ type ProviderUsage struct {
 	AverageLatency   float64  `json:"average_latency_ms"`
 }
 
+type ProviderAccountUsage struct {
+	Provider       string `json:"provider"`
+	Pool           string `json:"pool"`
+	Account        string `json:"account"`
+	Requests       int64  `json:"requests"`
+	RequestTokens  int64  `json:"request_tokens"`
+	ResponseTokens int64  `json:"response_tokens"`
+	TotalTokens    int64  `json:"total_tokens"`
+	ErrorRequests  int64  `json:"error_requests"`
+}
+
 type APISessionQuery struct {
 	APIKeyID     string
 	Search       string
@@ -543,6 +554,43 @@ func (s *Store) ProviderUsage(ctx context.Context, query ProviderUsageQuery) ([]
 		item.TotalTokens = item.RequestTokens + item.ResponseTokens
 		item.CacheTotalTokens = item.CacheHitTokens + item.CacheMissTokens
 		item.CacheHitRate = cacheHitRate(item.CacheHitTokens, item.CacheMissTokens)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) ProviderAccountUsage(ctx context.Context, query ProviderUsageQuery) ([]ProviderAccountUsage, error) {
+	where, args := requestLogWhere("", query.From, query.To)
+	if where == "" {
+		where = "WHERE provider <> '' AND account <> ''"
+	} else {
+		where += " AND provider <> '' AND account <> ''"
+	}
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT provider,
+		       pool,
+		       account,
+		       COUNT(*) AS requests,
+		       COALESCE(SUM(request_tokens), 0),
+		       COALESCE(SUM(response_tokens), 0),
+		       COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0)
+		FROM request_logs
+		%s
+		GROUP BY provider, pool, account
+		ORDER BY provider ASC, pool ASC, requests DESC, account ASC
+	`, where), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []ProviderAccountUsage{}
+	for rows.Next() {
+		var item ProviderAccountUsage
+		if err := rows.Scan(&item.Provider, &item.Pool, &item.Account, &item.Requests, &item.RequestTokens, &item.ResponseTokens, &item.ErrorRequests); err != nil {
+			return nil, err
+		}
+		item.TotalTokens = item.RequestTokens + item.ResponseTokens
 		items = append(items, item)
 	}
 	return items, rows.Err()

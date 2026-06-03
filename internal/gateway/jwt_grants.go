@@ -192,7 +192,7 @@ func (g *Gateway) patchJWTGrant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) deleteJWTGrant(w http.ResponseWriter, r *http.Request) {
-	grant, err := g.store.DeleteJWTGrant(r.Context(), chi.URLParam(r, "jti"))
+	grant, err := g.store.DeleteJWTGrantWithAPIKeys(r.Context(), chi.URLParam(r, "jti"), parseBoolQuery(r, "delete_api_keys"))
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "jwt grant not found")
 		return

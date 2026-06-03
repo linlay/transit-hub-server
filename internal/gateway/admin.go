@@ -61,6 +61,12 @@ type patchAPIKeyRequest struct {
 	AllowedModels optionalStringSlice `json:"allowed_models"`
 }
 
+type batchAPIKeysRequest struct {
+	Action    string   `json:"action"`
+	IDs       []string `json:"ids"`
+	IssuerJTI string   `json:"issuer_jti"`
+}
+
 type optionalTime struct {
 	Set   bool
 	Value *time.Time
@@ -235,6 +241,24 @@ func (g *Gateway) deleteAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toAPIKeyResponse(key))
+}
+
+func (g *Gateway) batchAPIKeys(w http.ResponseWriter, r *http.Request) {
+	var req batchAPIKeysRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	result, err := g.store.BatchAPIKeys(r.Context(), store.APIKeyBatchParams{
+		Action:    req.Action,
+		IDs:       req.IDs,
+		IssuerJTI: req.IssuerJTI,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (g *Gateway) listProviders(w http.ResponseWriter, r *http.Request) {

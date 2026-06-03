@@ -726,6 +726,67 @@ func TestDeleteJWTGrantDoesNotDeleteIssuedAPIKeys(t *testing.T) {
 	}
 }
 
+func TestDeleteJWTGrantCanDeleteIssuedAPIKeys(t *testing.T) {
+	issuerSvc := newTestIssuer(t)
+	app, db, _ := newTestGatewayWithKeyAndIssuer(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")}, store.CreateAPIKeyParams{Name: "test"}, issuerSvc)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/jwt-grants", bytes.NewBufferString(`{
+		"name":"delete issued keys",
+		"issue_quota":2,
+		"allowed_models":["public-model"]
+	}`))
+	createReq.Header.Set("Authorization", "Bearer admin")
+	createRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("grant create status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var grant struct {
+		JTI string `json:"jti"`
+		JWT string `json:"jwt"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &grant); err != nil {
+		t.Fatal(err)
+	}
+
+	applyReq := httptest.NewRequest(http.MethodPost, "/api/apply-apikey", bytes.NewBufferString(`{"name":"issued-before-delete"}`))
+	applyReq.Header.Set("Authorization", "Bearer "+grant.JWT)
+	applyRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(applyRec, applyReq)
+	if applyRec.Code != http.StatusCreated {
+		t.Fatalf("apply status = %d, body = %s", applyRec.Code, applyRec.Body.String())
+	}
+	var issued struct {
+		ID  string `json:"id"`
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(applyRec.Body.Bytes(), &issued); err != nil {
+		t.Fatal(err)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/admin/jwt-grants/"+grant.JTI+"?delete_api_keys=true", nil)
+	deleteReq.Header.Set("Authorization", "Bearer admin")
+	deleteRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete grant status = %d, body = %s", deleteRec.Code, deleteRec.Body.String())
+	}
+
+	key, err := db.GetAPIKey(t.Context(), issued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Status != "disabled" || !key.ForcedExpired || key.DeletedAt == nil {
+		t.Fatalf("issued key was not soft-deleted: %#v", key)
+	}
+	proxyReq := proxyRequest(issued.Key)
+	proxyRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(proxyRec, proxyReq)
+	if proxyRec.Code != http.StatusUnauthorized {
+		t.Fatalf("issued key proxy status = %d, body = %s", proxyRec.Code, proxyRec.Body.String())
+	}
+}
+
 func TestJWTGrantListFilters(t *testing.T) {
 	issuerSvc := newTestIssuer(t)
 	app, db, _ := newTestGatewayWithKeyAndIssuer(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")}, store.CreateAPIKeyParams{Name: "test"}, issuerSvc)
@@ -944,6 +1005,85 @@ func TestSoftDeletedAPIKeyCannotProxyButHistoryRemains(t *testing.T) {
 	}
 }
 
+func TestBatchAPIKeysInactiveByIDs(t *testing.T) {
+	app, db, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")})
+	created, err := db.CreateAPIKey(t.Context(), store.CreateAPIKeyParams{
+		Name:          "batch inactive",
+		AllowedModels: []string{"public-model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api-keys/batch", bytes.NewBufferString(`{
+		"action":"inactive",
+		"ids":["`+created.ID+`"]
+	}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("batch inactive status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	key, err := db.GetAPIKey(t.Context(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Status != "disabled" || key.ForcedExpired || key.DeletedAt != nil {
+		t.Fatalf("unexpected inactive key state: %#v", key)
+	}
+}
+
+func TestBatchAPIKeysDeleteByIssuerJTI(t *testing.T) {
+	app, db, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")})
+	jti := store.GenerateJTI()
+	created, err := db.CreateAPIKey(t.Context(), store.CreateAPIKeyParams{
+		Name:          "issued key",
+		Source:        "jwt",
+		IssuerJTI:     jti,
+		AllowedModels: []string{"public-model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api-keys/batch", bytes.NewBufferString(`{
+		"action":"delete",
+		"issuer_jti":"`+jti+`"
+	}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("batch delete status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var result store.APIKeyBatchResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Matched != 1 || result.Updated != 1 {
+		t.Fatalf("unexpected batch result: %#v", result)
+	}
+	key, err := db.GetAPIKey(t.Context(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Status != "disabled" || !key.ForcedExpired || key.DeletedAt == nil {
+		t.Fatalf("unexpected deleted key state: %#v", key)
+	}
+}
+
+func TestBatchAPIKeysRequiresSelector(t *testing.T) {
+	app, _, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")})
+	req := httptest.NewRequest(http.MethodPost, "/admin/api-keys/batch", bytes.NewBufferString(`{"action":"delete"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("batch empty selector status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestProxyRecordsSessionAndEstimatedCost(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1067,6 +1207,16 @@ func TestProxyRecordsDeepSeekCacheAndProviderUsage(t *testing.T) {
 	if providers[0].Provider != "test-openai" || providers[0].Requests != 1 || providers[0].TotalTokens != 15 || providers[0].CacheHitTokens != 4 || providers[0].CostMicroUSD != 34 {
 		t.Fatalf("unexpected provider usage: %#v", providers[0])
 	}
+	accountUsage, err := db.ProviderAccountUsage(t.Context(), store.ProviderUsageQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accountUsage) != 1 {
+		t.Fatalf("provider account usage count = %d: %#v", len(accountUsage), accountUsage)
+	}
+	if accountUsage[0].Provider != "test-openai" || accountUsage[0].Pool != "primary" || accountUsage[0].Account != "acct1" || accountUsage[0].Requests != 1 || accountUsage[0].TotalTokens != 15 {
+		t.Fatalf("unexpected provider account usage: %#v", accountUsage[0])
+	}
 
 	usageReq := httptest.NewRequest(http.MethodGet, "/admin/providers/usage", nil)
 	usageReq.Header.Set("Authorization", "Bearer admin")
@@ -1074,6 +1224,15 @@ func TestProxyRecordsDeepSeekCacheAndProviderUsage(t *testing.T) {
 	app.Handler().ServeHTTP(usageRec, usageReq)
 	if usageRec.Code != http.StatusOK {
 		t.Fatalf("provider usage status = %d, body = %s", usageRec.Code, usageRec.Body.String())
+	}
+	var usagePayload struct {
+		AccountItems []store.ProviderAccountUsage `json:"account_items"`
+	}
+	if err := json.Unmarshal(usageRec.Body.Bytes(), &usagePayload); err != nil {
+		t.Fatal(err)
+	}
+	if len(usagePayload.AccountItems) != 1 || usagePayload.AccountItems[0].Account != "acct1" {
+		t.Fatalf("unexpected provider usage response: %s", usageRec.Body.String())
 	}
 }
 

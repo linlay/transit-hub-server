@@ -253,11 +253,36 @@ func (s *Store) UpdateJWTGrant(ctx context.Context, jti string, patch JWTGrantPa
 }
 
 func (s *Store) DeleteJWTGrant(ctx context.Context, jti string) (JWTGrant, error) {
+	return s.DeleteJWTGrantWithAPIKeys(ctx, jti, false)
+}
+
+func (s *Store) DeleteJWTGrantWithAPIKeys(ctx context.Context, jti string, deleteAPIKeys bool) (JWTGrant, error) {
 	grant, err := s.GetJWTGrant(ctx, jti)
 	if err != nil {
 		return JWTGrant{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `DELETE FROM jwt_grants WHERE jti = ?`, strings.TrimSpace(jti))
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return JWTGrant{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	trimmedJTI := strings.TrimSpace(jti)
+	if deleteAPIKeys {
+		now := time.Now().UTC()
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE api_keys
+			SET status = 'disabled',
+			    forced_expired = 1,
+			    deleted_at = COALESCE(deleted_at, ?),
+			    updated_at = ?
+			WHERE deleted_at IS NULL AND issuer_jti = ?
+		`, formatTime(now), formatTime(now), trimmedJTI); err != nil {
+			return JWTGrant{}, err
+		}
+	}
+
+	result, err := tx.ExecContext(ctx, `DELETE FROM jwt_grants WHERE jti = ?`, trimmedJTI)
 	if err != nil {
 		return JWTGrant{}, err
 	}
@@ -267,6 +292,9 @@ func (s *Store) DeleteJWTGrant(ctx context.Context, jti string) (JWTGrant, error
 	}
 	if rowsAffected == 0 {
 		return JWTGrant{}, ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return JWTGrant{}, err
 	}
 	return grant, nil
 }
