@@ -6,11 +6,8 @@ headers: {}
 # endpoints:
 #   openai_chat_completions: /v1/chat/completions
 models:
-  - public: deepseek-chat
-    upstream: deepseek-chat
-    pool: primary
-  - public: deepseek-reasoner
-    upstream: deepseek-reasoner
+  - public: example-chat
+    upstream: example-upstream-chat
     pool: primary
 pools:
   - name: primary

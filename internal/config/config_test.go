@@ -38,8 +38,8 @@ protocol: openai
 base_url: https://api.deepseek.com
 default_pool: primary
 models:
-  - public: deepseek-chat
-    upstream: deepseek-chat
+  - public: example-chat
+    upstream: example-upstream-chat
 pools:
   - name: primary
     accounts:

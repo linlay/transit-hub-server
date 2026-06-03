@@ -66,8 +66,8 @@ base_url: https://api.deepseek.com
 default_pool: primary
 headers: {}
 models:
-  - public: deepseek-chat
-    upstream: deepseek-chat
+  - public: example-chat
+    upstream: example-upstream-chat
     pool: primary
 pools:
   - name: primary
@@ -144,7 +144,7 @@ Admin API 需要携带 `Authorization: Bearer $ADMIN_TOKEN` 或 `x-admin-token: 
 curl -sS -X POST http://localhost:8080/admin/api-keys \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"demo","request_quota":1000,"token_quota":100000,"allowed_models":["deepseek-chat"]}'
+  -d '{"name":"demo","request_quota":1000,"token_quota":100000,"allowed_models":["example-chat"]}'
 ```
 
 响应里的 `key` 只会返回这一次，请妥善保存。配额字段为 `0` 表示不限额。`allowed_models` 是该 key 可调用的公开模型名白名单，创建和修改时必须至少包含一个公开模型名；已有空白名单 key 不允许调用任何模型。
@@ -176,7 +176,7 @@ curl -sS -X PATCH http://localhost:8080/admin/api-keys/key_xxx \
 curl -sS -X PATCH http://localhost:8080/admin/api-keys/key_xxx \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"allowed_models":["deepseek-chat"]}'
+  -d '{"allowed_models":["example-chat"]}'
 
 # 软删除客户端 API Key（历史日志保留）
 curl -sS -X DELETE http://localhost:8080/admin/api-keys/key_xxx \
@@ -191,7 +191,7 @@ curl -sS -X DELETE http://localhost:8080/admin/api-keys/key_xxx \
 curl -sS -X POST http://localhost:8080/admin/jwt-grants \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"desktop rollout","issue_quota":100,"request_quota":500,"token_quota":2000000,"allowed_models":["deepseek-chat"]}'
+  -d '{"name":"desktop rollout","issue_quota":100,"request_quota":500,"token_quota":2000000,"allowed_models":["example-chat"]}'
 ```
 
 客户端拿到 JWT 后调用公开申请接口：
@@ -220,7 +220,7 @@ curl -sS http://localhost:8080/admin/jwt-grants/jti_xxx \
 curl -sS -X PATCH http://localhost:8080/admin/jwt-grants/jti_xxx \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"issue_quota":200,"request_quota":500,"token_quota":2000000,"allowed_models":["deepseek-chat"],"status":"active"}'
+  -d '{"issue_quota":200,"request_quota":500,"token_quota":2000000,"allowed_models":["example-chat"],"status":"active"}'
 
 # 删除 JWT grant（不会删除或禁用已经发放的 API Key）
 curl -sS -X DELETE http://localhost:8080/admin/jwt-grants/jti_xxx \
@@ -278,7 +278,7 @@ curl -sS http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $CLIENT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-chat",
+    "model": "example-chat",
     "messages": [
       {"role": "user", "content": "hello"}
     ]
@@ -319,7 +319,7 @@ curl -sS -X POST http://localhost:8080/admin/providers/reload \
 把某个公开模型临时切到指定 pool：
 
 ```bash
-curl -sS -X PUT http://localhost:8080/admin/routes/deepseek-chat/pool \
+curl -sS -X PUT http://localhost:8080/admin/routes/example-chat/pool \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"pool":"primary"}'
@@ -328,7 +328,7 @@ curl -sS -X PUT http://localhost:8080/admin/routes/deepseek-chat/pool \
 清除路由 pool 覆盖：
 
 ```bash
-curl -sS -X DELETE http://localhost:8080/admin/routes/deepseek-chat/pool \
+curl -sS -X DELETE http://localhost:8080/admin/routes/example-chat/pool \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
