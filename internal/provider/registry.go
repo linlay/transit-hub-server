@@ -96,7 +96,20 @@ type AccountSnapshot struct {
 	Circuit CircuitSnapshot `json:"circuit"`
 }
 
-var ErrNoHealthyAccount = errors.New("no healthy upstream account")
+var (
+	ErrNoHealthyAccount = errors.New("no healthy upstream account")
+	ErrProviderNotFound = errors.New("provider not found")
+	ErrRouteNotFound    = errors.New("provider route not found")
+	ErrPoolNotFound     = errors.New("pool not found")
+	ErrAccountNotFound  = errors.New("account not found")
+)
+
+type ConnectivityTarget struct {
+	ProviderName string
+	PublicModel  string
+	PoolName     string
+	AccountName  string
+}
 
 func NewRegistry(configs []config.ProviderConfig, options CircuitOptions) (*Registry, error) {
 	providers, routes, err := build(configs, options)
@@ -177,6 +190,67 @@ func (r *Registry) PublicModels() []string {
 	}
 	sort.Strings(models)
 	return models
+}
+
+func (r *Registry) ResolveConnectivityTarget(target ConnectivityTarget) (Route, *Account, error) {
+	providerName := strings.TrimSpace(target.ProviderName)
+	publicModel := strings.TrimSpace(target.PublicModel)
+	poolName := strings.TrimSpace(target.PoolName)
+	accountName := strings.TrimSpace(target.AccountName)
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	provider, ok := r.providers[providerName]
+	if !ok {
+		return Route{}, nil, ErrProviderNotFound
+	}
+
+	routes := make([]Route, 0)
+	for _, route := range r.routes {
+		if route.ProviderName != provider.Name {
+			continue
+		}
+		if publicModel != "" && route.PublicModel != publicModel {
+			continue
+		}
+		routes = append(routes, route)
+	}
+	if len(routes) == 0 {
+		return Route{}, nil, ErrRouteNotFound
+	}
+	sort.Slice(routes, func(i, j int) bool {
+		if routes[i].PublicModel != routes[j].PublicModel {
+			return routes[i].PublicModel < routes[j].PublicModel
+		}
+		return routes[i].UpstreamModel < routes[j].UpstreamModel
+	})
+	route := routes[0]
+
+	if poolName != "" {
+		pool, ok := provider.Pools[poolName]
+		if !ok {
+			return Route{}, nil, ErrPoolNotFound
+		}
+		route.PoolName = poolName
+		route.Pool = pool
+	}
+	if route.Pool == nil {
+		return Route{}, nil, ErrPoolNotFound
+	}
+
+	if accountName == "" {
+		if len(route.Pool.Accounts) == 0 {
+			return Route{}, nil, ErrAccountNotFound
+		}
+		return route, route.Pool.Accounts[0], nil
+	}
+	for _, account := range route.Pool.Accounts {
+		if account.Name == accountName {
+			return route, account, nil
+		}
+	}
+	return Route{}, nil, ErrAccountNotFound
 }
 
 func (r *Registry) Snapshot(overrides map[string]string) Snapshot {

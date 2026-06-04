@@ -236,15 +236,19 @@ func (g *Gateway) buildUpstreamRequest(r *http.Request, route provider.Route, ac
 	req.Header.Del("x-admin-token")
 	req.Header.Del("Content-Length")
 
-	for key, value := range route.Provider.Headers {
-		req.Header.Set(key, value)
-	}
-	for key, value := range account.Headers {
-		req.Header.Set(key, value)
-	}
-	account.ApplyAuth(req.Header, route.Protocol)
+	applyConfiguredUpstreamHeaders(req.Header, route, account)
 	req.ContentLength = int64(len(body))
 	return req, nil
+}
+
+func applyConfiguredUpstreamHeaders(headers http.Header, route provider.Route, account *provider.Account) {
+	for key, value := range route.Provider.Headers {
+		headers.Set(key, value)
+	}
+	for key, value := range account.Headers {
+		headers.Set(key, value)
+	}
+	account.ApplyAuth(headers, route.Protocol)
 }
 
 func parseRequestEnvelope(body []byte) (requestEnvelope, error) {

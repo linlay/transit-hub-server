@@ -1236,6 +1236,106 @@ func TestProxyRecordsDeepSeekCacheAndProviderUsage(t *testing.T) {
 	}
 }
 
+func TestAdminProviderConnectivityTestsExactAccountWithoutUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer second-key" {
+			t.Fatalf("unexpected upstream auth: %q", got)
+		}
+		if got := r.Header.Get("x-provider-test"); got != "yes" {
+			t.Fatalf("provider header missing: %q", got)
+		}
+		if got := r.Header.Get("x-account-test"); got != "second" {
+			t.Fatalf("account header missing: %q", got)
+		}
+		if got := r.Header.Get("x-admin-token"); got != "" {
+			t.Fatalf("admin token leaked upstream: %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["model"] != "upstream-model" {
+			t.Fatalf("unexpected probe model: %#v", body["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer upstream.Close()
+
+	providerConfig := openAIProvider(upstream.URL)
+	providerConfig.Headers = map[string]string{"x-provider-test": "yes"}
+	providerConfig.Pools = append(providerConfig.Pools, config.PoolConfig{
+		Name: "secondary",
+		Accounts: []config.AccountConfig{{
+			Name:    "acct2",
+			APIKey:  "second-key",
+			Weight:  1,
+			Headers: map[string]string{"x-account-test": "second"},
+		}},
+	})
+	app, db, plainKey := newTestGateway(t, []config.ProviderConfig{providerConfig})
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/providers/test", bytes.NewBufferString(`{
+		"provider":"test-openai",
+		"public_model":"public-model",
+		"pool":"secondary",
+		"account":"acct2"
+	}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	req.Header.Set("x-admin-token", "admin")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connectivity status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var result providerConnectivityTestResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || result.StatusCode != http.StatusOK || result.Provider != "test-openai" || result.Pool != "secondary" || result.Account != "acct2" {
+		t.Fatalf("unexpected connectivity result: %#v", result)
+	}
+	if result.PublicModel != "public-model" || result.UpstreamModel != "upstream-model" || result.Endpoint == "" {
+		t.Fatalf("unexpected route metadata: %#v", result)
+	}
+
+	key, err := db.FindAPIKeyByPlainText(t.Context(), plainKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.UsedRequests != 0 || key.UsedTokens != 0 {
+		t.Fatalf("admin connectivity test wrote user usage: %#v", key)
+	}
+}
+
+func TestAdminProviderConnectivityReportsUpstreamFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad upstream key"}}`))
+	}))
+	defer upstream.Close()
+
+	app, _, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider(upstream.URL)})
+	req := httptest.NewRequest(http.MethodPost, "/admin/providers/test", bytes.NewBufferString(`{"provider":"test-openai"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("connectivity status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var result providerConnectivityTestResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.OK || result.StatusCode != http.StatusUnauthorized || result.Error != "bad upstream key" {
+		t.Fatalf("unexpected failure result: %#v", result)
+	}
+}
+
 func newTestGateway(t *testing.T, providers []config.ProviderConfig) (*Gateway, *store.Store, string) {
 	t.Helper()
 	return newTestGatewayWithKey(t, providers, store.CreateAPIKeyParams{Name: "test"})
