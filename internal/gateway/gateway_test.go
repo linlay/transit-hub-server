@@ -1336,6 +1336,151 @@ func TestAdminProviderConnectivityReportsUpstreamFailure(t *testing.T) {
 	}
 }
 
+func TestAdminPlaygroundChatStreamsOpenAIExactAccountWithoutUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer second-key" {
+			t.Fatalf("unexpected upstream auth: %q", got)
+		}
+		if got := r.Header.Get("x-provider-test"); got != "yes" {
+			t.Fatalf("provider header missing: %q", got)
+		}
+		if got := r.Header.Get("x-account-test"); got != "second" {
+			t.Fatalf("account header missing: %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["model"] != "upstream-model" || body["stream"] != true {
+			t.Fatalf("unexpected playground body: %#v", body)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi \"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"there\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	providerConfig := openAIProvider(upstream.URL)
+	providerConfig.Headers = map[string]string{"x-provider-test": "yes"}
+	providerConfig.Pools = append(providerConfig.Pools, config.PoolConfig{
+		Name: "secondary",
+		Accounts: []config.AccountConfig{{
+			Name:    "acct2",
+			APIKey:  "second-key",
+			Weight:  1,
+			Headers: map[string]string{"x-account-test": "second"},
+		}},
+	})
+	app, db, plainKey := newTestGateway(t, []config.ProviderConfig{providerConfig})
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/playground/chat", bytes.NewBufferString(`{
+		"provider":"test-openai",
+		"public_model":"public-model",
+		"pool":"secondary",
+		"account":"acct2",
+		"messages":[{"role":"user","content":"hello"}],
+		"max_tokens":32
+	}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("playground status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"event: meta", `"account":"acct2"`, "event: delta", `"content":"hi "`, `"content":"there"`, "event: done"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("playground body missing %q: %s", want, body)
+		}
+	}
+
+	key, err := db.FindAPIKeyByPlainText(t.Context(), plainKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.UsedRequests != 0 || key.UsedTokens != 0 {
+		t.Fatalf("admin playground wrote user usage: %#v", key)
+	}
+}
+
+func TestAdminPlaygroundChatStreamsAnthropic(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("x-api-key"); got != "upstream-key" {
+			t.Fatalf("unexpected upstream auth: %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["model"] != "claude-upstream" || body["stream"] != true || body["system"] != "be brief" {
+			t.Fatalf("unexpected anthropic playground body: %#v", body)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: content_block_delta\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"claude\"}}\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
+	}))
+	defer upstream.Close()
+
+	app, _, _ := newTestGateway(t, []config.ProviderConfig{anthropicProvider(upstream.URL)})
+	req := httptest.NewRequest(http.MethodPost, "/admin/playground/chat", bytes.NewBufferString(`{
+		"provider":"test-anthropic",
+		"public_model":"claude-public",
+		"messages":[
+			{"role":"system","content":"be brief"},
+			{"role":"user","content":"hello"}
+		]
+	}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("playground status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"event: meta", `"protocol":"anthropic"`, "event: delta", `"content":"claude"`, "event: done"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("playground body missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestAdminPlaygroundChatReportsUpstreamFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad playground key"}}`))
+	}))
+	defer upstream.Close()
+
+	app, _, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider(upstream.URL)})
+	req := httptest.NewRequest(http.MethodPost, "/admin/playground/chat", bytes.NewBufferString(`{
+		"provider":"test-openai",
+		"public_model":"public-model",
+		"messages":[{"role":"user","content":"hello"}]
+	}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("playground status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"event: error", `"error":"bad playground key"`, `"status_code":401`, "event: done"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("playground body missing %q: %s", want, body)
+		}
+	}
+}
+
 func newTestGateway(t *testing.T, providers []config.ProviderConfig) (*Gateway, *store.Store, string) {
 	t.Helper()
 	return newTestGatewayWithKey(t, providers, store.CreateAPIKeyParams{Name: "test"})

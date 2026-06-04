@@ -102,6 +102,7 @@ func (g *Gateway) Handler() http.Handler {
 		r.Get("/providers/usage", g.providerUsage)
 		r.Get("/providers", g.listProviders)
 		r.Post("/providers/test", g.testProviderConnectivity)
+		r.Post("/playground/chat", g.playgroundChat)
 		r.Post("/providers/reload", g.reloadProviders)
 		r.Put("/routes/{public_model}/pool", g.setRoutePool)
 		r.Delete("/routes/{public_model}/pool", g.clearRoutePool)
