@@ -31,6 +31,7 @@ type Env struct {
 	UpstreamTimeout         time.Duration
 	CircuitFailureThreshold int
 	CircuitCooldown         time.Duration
+	Currency                string
 }
 
 type ProviderConfig struct {
@@ -104,6 +105,7 @@ func LoadEnv() (Env, error) {
 		UpstreamTimeout:         getDurationEnv("UPSTREAM_TIMEOUT", 5*time.Minute),
 		CircuitFailureThreshold: getIntEnv("CIRCUIT_FAILURE_THRESHOLD", 3),
 		CircuitCooldown:         getDurationEnv("CIRCUIT_COOLDOWN", 30*time.Second),
+		Currency:                getEnv("CURRENCY", "CNY"),
 	}
 	if strings.TrimSpace(env.AdminToken) == "" {
 		return Env{}, errors.New("ADMIN_TOKEN is required")

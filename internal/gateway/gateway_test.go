@@ -1095,8 +1095,8 @@ func TestProxyRecordsSessionAndEstimatedCost(t *testing.T) {
 	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{
 		Protocol:                      "openai",
 		PublicModel:                   "public-model",
-		InputCostMicroUSDPer1MTokens:  2_000_000,
-		OutputCostMicroUSDPer1MTokens: 4_000_000,
+		InputCostMicroPer1MTokens:  2_000_000,
+		OutputCostMicroPer1MTokens: 4_000_000,
 		Currency:                      "USD",
 	}); err != nil {
 		t.Fatal(err)
@@ -1122,8 +1122,8 @@ func TestProxyRecordsSessionAndEstimatedCost(t *testing.T) {
 	if logs.Total != 1 || logs.Items[0].DeviceID != "macbook-pro" || logs.Items[0].Source != "codex" {
 		t.Fatalf("unexpected log session fields: %#v", logs)
 	}
-	if logs.Items[0].CostMicroUSD != 22 {
-		t.Fatalf("cost_microusd = %d", logs.Items[0].CostMicroUSD)
+	if logs.Items[0].CostMicro != 22 {
+		t.Fatalf("cost_micro = %d", logs.Items[0].CostMicro)
 	}
 	sessions, err := db.ListAPISessions(t.Context(), store.APISessionQuery{
 		APIKeyID:     key.ID,
@@ -1149,9 +1149,9 @@ func TestProxyRecordsDeepSeekCacheAndProviderUsage(t *testing.T) {
 	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{
 		Protocol:                             "openai",
 		PublicModel:                          "public-model",
-		InputCostMicroUSDPer1MTokens:         2_000_000,
-		InputCacheHitCostMicroUSDPer1MTokens: &inputCacheHitCost,
-		OutputCostMicroUSDPer1MTokens:        4_000_000,
+		InputCostMicroPer1MTokens:         2_000_000,
+		InputCacheHitCostMicroPer1MTokens: &inputCacheHitCost,
+		OutputCostMicroPer1MTokens:        4_000_000,
 		Currency:                             "USD",
 	}); err != nil {
 		t.Fatal(err)
@@ -1185,8 +1185,8 @@ func TestProxyRecordsDeepSeekCacheAndProviderUsage(t *testing.T) {
 	if log.CacheHitRate == nil || math.Abs(*log.CacheHitRate-0.4) > 0.0001 {
 		t.Fatalf("cache hit rate = %#v", log.CacheHitRate)
 	}
-	if log.CostMicroUSD != 34 {
-		t.Fatalf("cost_microusd = %d", log.CostMicroUSD)
+	if log.CostMicro != 34 {
+		t.Fatalf("cost_micro = %d", log.CostMicro)
 	}
 
 	traffic, err := db.Traffic(t.Context(), store.TrafficQuery{APIKeyID: key.ID, Bucket: "day"})
@@ -1204,7 +1204,7 @@ func TestProxyRecordsDeepSeekCacheAndProviderUsage(t *testing.T) {
 	if len(providers) != 1 {
 		t.Fatalf("provider usage count = %d: %#v", len(providers), providers)
 	}
-	if providers[0].Provider != "test-openai" || providers[0].Requests != 1 || providers[0].TotalTokens != 15 || providers[0].CacheHitTokens != 4 || providers[0].CostMicroUSD != 34 {
+	if providers[0].Provider != "test-openai" || providers[0].Requests != 1 || providers[0].TotalTokens != 15 || providers[0].CacheHitTokens != 4 || providers[0].CostMicro != 34 {
 		t.Fatalf("unexpected provider usage: %#v", providers[0])
 	}
 	accountUsage, err := db.ProviderAccountUsage(t.Context(), store.ProviderUsageQuery{})

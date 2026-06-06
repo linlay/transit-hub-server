@@ -14,9 +14,9 @@ import (
 type modelPriceRequest struct {
 	Protocol                             string `json:"protocol"`
 	PublicModel                          string `json:"public_model"`
-	InputCostMicroUSDPer1MTokens         int64  `json:"input_cost_microusd_per_1m_tokens"`
-	InputCacheHitCostMicroUSDPer1MTokens *int64 `json:"input_cache_hit_cost_microusd_per_1m_tokens"`
-	OutputCostMicroUSDPer1MTokens        int64  `json:"output_cost_microusd_per_1m_tokens"`
+	InputCostMicroPer1MTokens         int64  `json:"input_cost_micro_per_1m_tokens"`
+	InputCacheHitCostMicroPer1MTokens *int64 `json:"input_cache_hit_cost_micro_per_1m_tokens"`
+	OutputCostMicroPer1MTokens        int64  `json:"output_cost_micro_per_1m_tokens"`
 	Currency                             string `json:"currency"`
 }
 
@@ -177,9 +177,9 @@ func (g *Gateway) createModelPrice(w http.ResponseWriter, r *http.Request) {
 	price, err := g.store.UpsertModelPrice(r.Context(), store.ModelPriceParams{
 		Protocol:                             req.Protocol,
 		PublicModel:                          req.PublicModel,
-		InputCostMicroUSDPer1MTokens:         req.InputCostMicroUSDPer1MTokens,
-		InputCacheHitCostMicroUSDPer1MTokens: req.InputCacheHitCostMicroUSDPer1MTokens,
-		OutputCostMicroUSDPer1MTokens:        req.OutputCostMicroUSDPer1MTokens,
+		InputCostMicroPer1MTokens:         req.InputCostMicroPer1MTokens,
+		InputCacheHitCostMicroPer1MTokens: req.InputCacheHitCostMicroPer1MTokens,
+		OutputCostMicroPer1MTokens:        req.OutputCostMicroPer1MTokens,
 		Currency:                             req.Currency,
 	})
 	if err != nil {
@@ -198,9 +198,9 @@ func (g *Gateway) patchModelPrice(w http.ResponseWriter, r *http.Request) {
 	price, err := g.store.UpdateModelPrice(r.Context(), chi.URLParam(r, "id"), store.ModelPriceParams{
 		Protocol:                             req.Protocol,
 		PublicModel:                          req.PublicModel,
-		InputCostMicroUSDPer1MTokens:         req.InputCostMicroUSDPer1MTokens,
-		InputCacheHitCostMicroUSDPer1MTokens: req.InputCacheHitCostMicroUSDPer1MTokens,
-		OutputCostMicroUSDPer1MTokens:        req.OutputCostMicroUSDPer1MTokens,
+		InputCostMicroPer1MTokens:         req.InputCostMicroPer1MTokens,
+		InputCacheHitCostMicroPer1MTokens: req.InputCacheHitCostMicroPer1MTokens,
+		OutputCostMicroPer1MTokens:        req.OutputCostMicroPer1MTokens,
 		Currency:                             req.Currency,
 	})
 	if errors.Is(err, store.ErrPriceNotFound) {

@@ -404,8 +404,8 @@ func (g *Gateway) logCompletedRequest(r *http.Request, keyID string, logEntry st
 		return
 	}
 	logEntry.DeviceID, logEntry.Source = sessionHeaders(r)
-	if logEntry.CostMicroUSD == 0 && logEntry.Protocol != "" && logEntry.PublicModel != "" {
-		cost, err := g.store.EstimateCostMicroUSD(
+	if logEntry.CostMicro == 0 && logEntry.Protocol != "" && logEntry.PublicModel != "" {
+		cost, err := g.store.EstimateCost(
 			r.Context(),
 			logEntry.Protocol,
 			logEntry.PublicModel,
@@ -417,7 +417,7 @@ func (g *Gateway) logCompletedRequest(r *http.Request, keyID string, logEntry st
 		if err != nil {
 			g.logger.Printf("estimate request cost failed: %v", err)
 		} else {
-			logEntry.CostMicroUSD = cost
+			logEntry.CostMicro = cost
 		}
 	}
 	if err := g.store.AddUsageAndLog(r.Context(), keyID, logEntry); err != nil {

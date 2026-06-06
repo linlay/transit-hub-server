@@ -102,7 +102,7 @@ type RequestLog struct {
 	ResponseTokens  int64
 	CacheHitTokens  int64
 	CacheMissTokens int64
-	CostMicroUSD    int64
+	CostMicro    int64
 	Estimated       bool
 	ErrorType       string
 }
@@ -360,11 +360,11 @@ func (s *Store) AddUsageAndLog(ctx context.Context, keyID string, log RequestLog
 		INSERT INTO request_logs (
 			api_key_id, protocol, public_model, upstream_model, provider, pool, account,
 			device_id, source, status_code, latency_ms, request_tokens, response_tokens,
-			cache_hit_tokens, cache_miss_tokens, cost_microusd, estimated, error_type, created_at
+			cache_hit_tokens, cache_miss_tokens, cost_micro, estimated, error_type, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, keyID, log.Protocol, log.PublicModel, log.UpstreamModel, log.Provider, log.Pool, log.Account,
 		deviceID, source, log.StatusCode, log.Latency.Milliseconds(), log.RequestTokens, log.ResponseTokens,
-		log.CacheHitTokens, log.CacheMissTokens, log.CostMicroUSD, boolInt(log.Estimated), log.ErrorType, formatTime(now))
+		log.CacheHitTokens, log.CacheMissTokens, log.CostMicro, boolInt(log.Estimated), log.ErrorType, formatTime(now))
 	if err != nil {
 		return err
 	}
@@ -495,7 +495,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			response_tokens INTEGER NOT NULL,
 			cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
 			cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
-			cost_microusd INTEGER NOT NULL DEFAULT 0,
+			cost_micro INTEGER NOT NULL DEFAULT 0,
 			estimated INTEGER NOT NULL DEFAULT 0,
 			error_type TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
@@ -541,7 +541,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE api_keys ADD COLUMN allowed_models TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE request_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE request_logs ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE request_logs ADD COLUMN cost_microusd INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE request_logs ADD COLUMN cost_micro INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE request_logs ADD COLUMN cache_hit_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE request_logs ADD COLUMN cache_miss_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE jwt_grants ADD COLUMN request_quota INTEGER NOT NULL DEFAULT 500`,
@@ -578,10 +578,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			id TEXT PRIMARY KEY,
 			protocol TEXT NOT NULL,
 			public_model TEXT NOT NULL,
-			input_cost_microusd_per_1m INTEGER NOT NULL DEFAULT 0,
-			input_cache_hit_cost_microusd_per_1m INTEGER,
-			output_cost_microusd_per_1m INTEGER NOT NULL DEFAULT 0,
-			currency TEXT NOT NULL DEFAULT 'USD',
+			input_cost_micro_per_1m INTEGER NOT NULL DEFAULT 0,
+			input_cache_hit_cost_micro_per_1m INTEGER,
+			output_cost_micro_per_1m INTEGER NOT NULL DEFAULT 0,
+			currency TEXT NOT NULL DEFAULT 'CNY',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			UNIQUE(protocol, public_model)
@@ -617,9 +617,20 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	for _, stmt := range []string{
-		`ALTER TABLE model_prices ADD COLUMN input_cache_hit_cost_microusd_per_1m INTEGER`,
+		`ALTER TABLE model_prices ADD COLUMN input_cache_hit_cost_micro_per_1m INTEGER`,
 	} {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isDuplicateColumnError(err) {
+			return err
+		}
+	}
+	// Rename columns from old microusd naming to micro naming (idempotent)
+	for _, stmt := range []string{
+		`ALTER TABLE model_prices RENAME COLUMN input_cost_microusd_per_1m TO input_cost_micro_per_1m`,
+		`ALTER TABLE model_prices RENAME COLUMN input_cache_hit_cost_microusd_per_1m TO input_cache_hit_cost_micro_per_1m`,
+		`ALTER TABLE model_prices RENAME COLUMN output_cost_microusd_per_1m TO output_cost_micro_per_1m`,
+		`ALTER TABLE request_logs RENAME COLUMN cost_microusd TO cost_micro`,
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isMissingColumnError(err) {
 			return err
 		}
 	}
@@ -805,6 +816,11 @@ func keyPrefix(value string) string {
 func isDuplicateColumnError(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }
+
+func isMissingColumnError(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "no such column")
+}
+
 
 func sanitizeSessionValue(value string) string {
 	value = strings.TrimSpace(value)

@@ -10,14 +10,15 @@ import (
 )
 
 var ErrPriceNotFound = errors.New("model price not found")
+var DefaultCurrency = "CNY"
 
 type ModelPrice struct {
 	ID                                   string    `json:"id"`
 	Protocol                             string    `json:"protocol"`
 	PublicModel                          string    `json:"public_model"`
-	InputCostMicroUSDPer1MTokens         int64     `json:"input_cost_microusd_per_1m_tokens"`
-	InputCacheHitCostMicroUSDPer1MTokens *int64    `json:"input_cache_hit_cost_microusd_per_1m_tokens"`
-	OutputCostMicroUSDPer1MTokens        int64     `json:"output_cost_microusd_per_1m_tokens"`
+	InputCostMicroPer1MTokens         int64     `json:"input_cost_micro_per_1m_tokens"`
+	InputCacheHitCostMicroPer1MTokens *int64    `json:"input_cache_hit_cost_micro_per_1m_tokens"`
+	OutputCostMicroPer1MTokens        int64     `json:"output_cost_micro_per_1m_tokens"`
 	Currency                             string    `json:"currency"`
 	CreatedAt                            time.Time `json:"created_at"`
 	UpdatedAt                            time.Time `json:"updated_at"`
@@ -26,9 +27,9 @@ type ModelPrice struct {
 type ModelPriceParams struct {
 	Protocol                             string
 	PublicModel                          string
-	InputCostMicroUSDPer1MTokens         int64
-	InputCacheHitCostMicroUSDPer1MTokens *int64
-	OutputCostMicroUSDPer1MTokens        int64
+	InputCostMicroPer1MTokens         int64
+	InputCacheHitCostMicroPer1MTokens *int64
+	OutputCostMicroPer1MTokens        int64
 	Currency                             string
 }
 
@@ -37,7 +38,7 @@ type Overview struct {
 	TotalTokens    int64           `json:"total_tokens"`
 	RequestTokens  int64           `json:"request_tokens"`
 	ResponseTokens int64           `json:"response_tokens"`
-	TotalCost      int64           `json:"total_cost_microusd"`
+	TotalCost      int64           `json:"total_cost_micro"`
 	ErrorRequests  int64           `json:"error_requests"`
 	AverageLatency float64         `json:"average_latency_ms"`
 	ActiveDevices  int64           `json:"active_devices"`
@@ -82,7 +83,7 @@ type TrafficBucket struct {
 	CacheMissTokens  int64    `json:"cache_miss_tokens"`
 	CacheTotalTokens int64    `json:"cache_total_tokens"`
 	CacheHitRate     *float64 `json:"cache_hit_rate"`
-	CostMicroUSD     int64    `json:"cost_microusd"`
+	CostMicro     int64    `json:"cost_micro"`
 	ErrorRequests    int64    `json:"error_requests"`
 	AverageLatency   float64  `json:"average_latency_ms"`
 }
@@ -116,7 +117,7 @@ type RequestLogEntry struct {
 	CacheMissTokens  int64     `json:"cache_miss_tokens"`
 	CacheTotalTokens int64     `json:"cache_total_tokens"`
 	CacheHitRate     *float64  `json:"cache_hit_rate"`
-	CostMicroUSD     int64     `json:"cost_microusd"`
+	CostMicro     int64     `json:"cost_micro"`
 	Estimated        bool      `json:"estimated"`
 	ErrorType        string    `json:"error_type"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -144,7 +145,7 @@ type ProviderUsage struct {
 	CacheMissTokens  int64    `json:"cache_miss_tokens"`
 	CacheTotalTokens int64    `json:"cache_total_tokens"`
 	CacheHitRate     *float64 `json:"cache_hit_rate"`
-	CostMicroUSD     int64    `json:"cost_microusd"`
+	CostMicro     int64    `json:"cost_micro"`
 	ErrorRequests    int64    `json:"error_requests"`
 	AverageLatency   float64  `json:"average_latency_ms"`
 }
@@ -197,28 +198,28 @@ func (s *Store) UpsertModelPrice(ctx context.Context, params ModelPriceParams) (
 	if protocol == "" || publicModel == "" {
 		return ModelPrice{}, errors.New("protocol and public_model are required")
 	}
-	if params.InputCostMicroUSDPer1MTokens < 0 || params.OutputCostMicroUSDPer1MTokens < 0 || negativePtr(params.InputCacheHitCostMicroUSDPer1MTokens) {
+	if params.InputCostMicroPer1MTokens < 0 || params.OutputCostMicroPer1MTokens < 0 || negativePtr(params.InputCacheHitCostMicroPer1MTokens) {
 		return ModelPrice{}, errors.New("cost values must be >= 0")
 	}
 	currency := strings.ToUpper(strings.TrimSpace(params.Currency))
 	if currency == "" {
-		currency = "USD"
+		currency = DefaultCurrency
 	}
 	now := time.Now().UTC()
 	id := newID("price")
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO model_prices (
-			id, protocol, public_model, input_cost_microusd_per_1m,
-			input_cache_hit_cost_microusd_per_1m, output_cost_microusd_per_1m,
+			id, protocol, public_model, input_cost_micro_per_1m,
+			input_cache_hit_cost_micro_per_1m, output_cost_micro_per_1m,
 			currency, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(protocol, public_model) DO UPDATE SET
-			input_cost_microusd_per_1m = excluded.input_cost_microusd_per_1m,
-			input_cache_hit_cost_microusd_per_1m = excluded.input_cache_hit_cost_microusd_per_1m,
-			output_cost_microusd_per_1m = excluded.output_cost_microusd_per_1m,
+			input_cost_micro_per_1m = excluded.input_cost_micro_per_1m,
+			input_cache_hit_cost_micro_per_1m = excluded.input_cache_hit_cost_micro_per_1m,
+			output_cost_micro_per_1m = excluded.output_cost_micro_per_1m,
 			currency = excluded.currency,
 			updated_at = excluded.updated_at
-	`, id, protocol, publicModel, params.InputCostMicroUSDPer1MTokens, nullableInt64(params.InputCacheHitCostMicroUSDPer1MTokens), params.OutputCostMicroUSDPer1MTokens, currency, formatTime(now), formatTime(now))
+	`, id, protocol, publicModel, params.InputCostMicroPer1MTokens, nullableInt64(params.InputCacheHitCostMicroPer1MTokens), params.OutputCostMicroPer1MTokens, currency, formatTime(now), formatTime(now))
 	if err != nil {
 		return ModelPrice{}, err
 	}
@@ -243,21 +244,21 @@ func (s *Store) UpdateModelPrice(ctx context.Context, id string, params ModelPri
 	if currency == "" {
 		currency = current.Currency
 	}
-	if params.InputCostMicroUSDPer1MTokens < 0 || params.OutputCostMicroUSDPer1MTokens < 0 || negativePtr(params.InputCacheHitCostMicroUSDPer1MTokens) {
+	if params.InputCostMicroPer1MTokens < 0 || params.OutputCostMicroPer1MTokens < 0 || negativePtr(params.InputCacheHitCostMicroPer1MTokens) {
 		return ModelPrice{}, errors.New("cost values must be >= 0")
 	}
-	inputCacheHitCost := current.InputCacheHitCostMicroUSDPer1MTokens
-	if params.InputCacheHitCostMicroUSDPer1MTokens != nil {
-		inputCacheHitCost = params.InputCacheHitCostMicroUSDPer1MTokens
+	inputCacheHitCost := current.InputCacheHitCostMicroPer1MTokens
+	if params.InputCacheHitCostMicroPer1MTokens != nil {
+		inputCacheHitCost = params.InputCacheHitCostMicroPer1MTokens
 	}
 	now := time.Now().UTC()
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE model_prices
-		SET protocol = ?, public_model = ?, input_cost_microusd_per_1m = ?,
-		    input_cache_hit_cost_microusd_per_1m = ?, output_cost_microusd_per_1m = ?,
+		SET protocol = ?, public_model = ?, input_cost_micro_per_1m = ?,
+		    input_cache_hit_cost_micro_per_1m = ?, output_cost_micro_per_1m = ?,
 		    currency = ?, updated_at = ?
 		WHERE id = ?
-	`, protocol, publicModel, params.InputCostMicroUSDPer1MTokens, nullableInt64(inputCacheHitCost), params.OutputCostMicroUSDPer1MTokens, currency, formatTime(now), id)
+	`, protocol, publicModel, params.InputCostMicroPer1MTokens, nullableInt64(inputCacheHitCost), params.OutputCostMicroPer1MTokens, currency, formatTime(now), id)
 	if err != nil {
 		return ModelPrice{}, err
 	}
@@ -277,8 +278,8 @@ func (s *Store) DeleteModelPrice(ctx context.Context, id string) error {
 
 func (s *Store) ListModelPrices(ctx context.Context) ([]ModelPrice, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, protocol, public_model, input_cost_microusd_per_1m,
-		       input_cache_hit_cost_microusd_per_1m, output_cost_microusd_per_1m,
+		SELECT id, protocol, public_model, input_cost_micro_per_1m,
+		       input_cache_hit_cost_micro_per_1m, output_cost_micro_per_1m,
 		       currency, created_at, updated_at
 		FROM model_prices
 		ORDER BY protocol ASC, public_model ASC
@@ -300,8 +301,8 @@ func (s *Store) ListModelPrices(ctx context.Context) ([]ModelPrice, error) {
 
 func (s *Store) GetModelPrice(ctx context.Context, protocol, publicModel string) (ModelPrice, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, protocol, public_model, input_cost_microusd_per_1m,
-		       input_cache_hit_cost_microusd_per_1m, output_cost_microusd_per_1m,
+		SELECT id, protocol, public_model, input_cost_micro_per_1m,
+		       input_cache_hit_cost_micro_per_1m, output_cost_micro_per_1m,
 		       currency, created_at, updated_at
 		FROM model_prices
 		WHERE protocol = ? AND public_model = ?
@@ -315,8 +316,8 @@ func (s *Store) GetModelPrice(ctx context.Context, protocol, publicModel string)
 
 func (s *Store) GetModelPriceByID(ctx context.Context, id string) (ModelPrice, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, protocol, public_model, input_cost_microusd_per_1m,
-		       input_cache_hit_cost_microusd_per_1m, output_cost_microusd_per_1m,
+		SELECT id, protocol, public_model, input_cost_micro_per_1m,
+		       input_cache_hit_cost_micro_per_1m, output_cost_micro_per_1m,
 		       currency, created_at, updated_at
 		FROM model_prices
 		WHERE id = ?
@@ -324,19 +325,19 @@ func (s *Store) GetModelPriceByID(ctx context.Context, id string) (ModelPrice, e
 	return scanModelPrice(row)
 }
 
-func (s *Store) EstimateCostMicroUSD(ctx context.Context, protocol, publicModel string, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens int64) (int64, error) {
+func (s *Store) EstimateCost(ctx context.Context, protocol, publicModel string, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens int64) (int64, error) {
 	price, ok, err := s.GetModelPrice(ctx, protocol, publicModel)
 	if err != nil || !ok {
 		return 0, err
 	}
-	if price.InputCacheHitCostMicroUSDPer1MTokens != nil && cacheHitTokens+cacheMissTokens > 0 {
+	if price.InputCacheHitCostMicroPer1MTokens != nil && cacheHitTokens+cacheMissTokens > 0 {
 		normalInputTokens := cacheMissTokens
 		if remainder := requestTokens - cacheHitTokens - cacheMissTokens; remainder > 0 {
 			normalInputTokens += remainder
 		}
-		return (cacheHitTokens*(*price.InputCacheHitCostMicroUSDPer1MTokens) + normalInputTokens*price.InputCostMicroUSDPer1MTokens + responseTokens*price.OutputCostMicroUSDPer1MTokens) / 1_000_000, nil
+		return (cacheHitTokens*(*price.InputCacheHitCostMicroPer1MTokens) + normalInputTokens*price.InputCostMicroPer1MTokens + responseTokens*price.OutputCostMicroPer1MTokens) / 1_000_000, nil
 	}
-	return (requestTokens*price.InputCostMicroUSDPer1MTokens + responseTokens*price.OutputCostMicroUSDPer1MTokens) / 1_000_000, nil
+	return (requestTokens*price.InputCostMicroPer1MTokens + responseTokens*price.OutputCostMicroPer1MTokens) / 1_000_000, nil
 }
 
 func (s *Store) Overview(ctx context.Context, activeWindow time.Duration) (Overview, error) {
@@ -346,7 +347,7 @@ func (s *Store) Overview(ctx context.Context, activeWindow time.Duration) (Overv
 			COUNT(*),
 			COALESCE(SUM(request_tokens), 0),
 			COALESCE(SUM(response_tokens), 0),
-			COALESCE(SUM(cost_microusd), 0),
+			COALESCE(SUM(cost_micro), 0),
 			COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0),
 			COALESCE(AVG(latency_ms), 0)
 		FROM request_logs
@@ -391,7 +392,7 @@ func (s *Store) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficBucke
 		       COALESCE(SUM(response_tokens), 0),
 		       COALESCE(SUM(cache_hit_tokens), 0),
 		       COALESCE(SUM(cache_miss_tokens), 0),
-		       COALESCE(SUM(cost_microusd), 0),
+		       COALESCE(SUM(cost_micro), 0),
 		       COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0),
 		       COALESCE(AVG(latency_ms), 0)
 		FROM request_logs
@@ -407,7 +408,7 @@ func (s *Store) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficBucke
 	buckets := []TrafficBucket{}
 	for rows.Next() {
 		var bucket TrafficBucket
-		if err := rows.Scan(&bucket.Bucket, &bucket.Requests, &bucket.RequestTokens, &bucket.ResponseTokens, &bucket.CacheHitTokens, &bucket.CacheMissTokens, &bucket.CostMicroUSD, &bucket.ErrorRequests, &bucket.AverageLatency); err != nil {
+		if err := rows.Scan(&bucket.Bucket, &bucket.Requests, &bucket.RequestTokens, &bucket.ResponseTokens, &bucket.CacheHitTokens, &bucket.CacheMissTokens, &bucket.CostMicro, &bucket.ErrorRequests, &bucket.AverageLatency); err != nil {
 			return nil, err
 		}
 		fillTrafficDerived(&bucket)
@@ -429,12 +430,12 @@ func (s *Store) APIKeyUsage(ctx context.Context, apiKeyID string, activeWindow t
 		       COALESCE(SUM(response_tokens), 0),
 		       COALESCE(SUM(cache_hit_tokens), 0),
 		       COALESCE(SUM(cache_miss_tokens), 0),
-		       COALESCE(SUM(cost_microusd), 0),
+		       COALESCE(SUM(cost_micro), 0),
 		       COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0),
 		       COALESCE(AVG(latency_ms), 0)
 		FROM request_logs
 		%s
-	`, where), args...).Scan(&summary.Requests, &summary.RequestTokens, &summary.ResponseTokens, &summary.CacheHitTokens, &summary.CacheMissTokens, &summary.CostMicroUSD, &summary.ErrorRequests, &summary.AverageLatency)
+	`, where), args...).Scan(&summary.Requests, &summary.RequestTokens, &summary.ResponseTokens, &summary.CacheHitTokens, &summary.CacheMissTokens, &summary.CostMicro, &summary.ErrorRequests, &summary.AverageLatency)
 	if err != nil {
 		return nil, err
 	}
@@ -482,7 +483,7 @@ func (s *Store) ListRequestLogs(ctx context.Context, query RequestLogQuery) (Req
 		SELECT l.id, l.api_key_id, COALESCE(k.name, ''), l.protocol, l.public_model, l.upstream_model,
 		       l.provider, l.pool, l.account, l.device_id, l.source, l.status_code, l.latency_ms,
 		       l.request_tokens, l.response_tokens, l.cache_hit_tokens, l.cache_miss_tokens,
-		       l.cost_microusd, l.estimated, l.error_type, l.created_at
+		       l.cost_micro, l.estimated, l.error_type, l.created_at
 		FROM request_logs l
 		LEFT JOIN api_keys k ON k.id = l.api_key_id
 		%s
@@ -498,7 +499,7 @@ func (s *Store) ListRequestLogs(ctx context.Context, query RequestLogQuery) (Req
 		var item RequestLogEntry
 		var estimated int
 		var createdAt string
-		if err := rows.Scan(&item.ID, &item.APIKeyID, &item.APIKeyName, &item.Protocol, &item.PublicModel, &item.UpstreamModel, &item.Provider, &item.Pool, &item.Account, &item.DeviceID, &item.Source, &item.StatusCode, &item.LatencyMS, &item.RequestTokens, &item.ResponseTokens, &item.CacheHitTokens, &item.CacheMissTokens, &item.CostMicroUSD, &estimated, &item.ErrorType, &createdAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.APIKeyID, &item.APIKeyName, &item.Protocol, &item.PublicModel, &item.UpstreamModel, &item.Provider, &item.Pool, &item.Account, &item.DeviceID, &item.Source, &item.StatusCode, &item.LatencyMS, &item.RequestTokens, &item.ResponseTokens, &item.CacheHitTokens, &item.CacheMissTokens, &item.CostMicro, &estimated, &item.ErrorType, &createdAt); err != nil {
 			return RequestLogListResult{}, err
 		}
 		item.Estimated = estimated != 0
@@ -532,7 +533,7 @@ func (s *Store) ProviderUsage(ctx context.Context, query ProviderUsageQuery) ([]
 		       COALESCE(SUM(response_tokens), 0),
 		       COALESCE(SUM(cache_hit_tokens), 0),
 		       COALESCE(SUM(cache_miss_tokens), 0),
-		       COALESCE(SUM(cost_microusd), 0),
+		       COALESCE(SUM(cost_micro), 0),
 		       COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0),
 		       COALESCE(AVG(latency_ms), 0)
 		FROM request_logs
@@ -548,7 +549,7 @@ func (s *Store) ProviderUsage(ctx context.Context, query ProviderUsageQuery) ([]
 	items := []ProviderUsage{}
 	for rows.Next() {
 		var item ProviderUsage
-		if err := rows.Scan(&item.Provider, &item.Requests, &item.RequestTokens, &item.ResponseTokens, &item.CacheHitTokens, &item.CacheMissTokens, &item.CostMicroUSD, &item.ErrorRequests, &item.AverageLatency); err != nil {
+		if err := rows.Scan(&item.Provider, &item.Requests, &item.RequestTokens, &item.ResponseTokens, &item.CacheHitTokens, &item.CacheMissTokens, &item.CostMicro, &item.ErrorRequests, &item.AverageLatency); err != nil {
 			return nil, err
 		}
 		item.TotalTokens = item.RequestTokens + item.ResponseTokens
@@ -802,9 +803,9 @@ func scanModelPrice(scanner modelPriceScanner) (ModelPrice, error) {
 		&price.ID,
 		&price.Protocol,
 		&price.PublicModel,
-		&price.InputCostMicroUSDPer1MTokens,
+		&price.InputCostMicroPer1MTokens,
 		&inputCacheHitCost,
-		&price.OutputCostMicroUSDPer1MTokens,
+		&price.OutputCostMicroPer1MTokens,
 		&price.Currency,
 		&createdAt,
 		&updatedAt,
@@ -816,7 +817,7 @@ func scanModelPrice(scanner modelPriceScanner) (ModelPrice, error) {
 		return ModelPrice{}, err
 	}
 	if inputCacheHitCost.Valid {
-		price.InputCacheHitCostMicroUSDPer1MTokens = &inputCacheHitCost.Int64
+		price.InputCacheHitCostMicroPer1MTokens = &inputCacheHitCost.Int64
 	}
 	parsedCreatedAt, err := parseTime(createdAt)
 	if err != nil {

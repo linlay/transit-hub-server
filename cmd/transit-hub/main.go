@@ -26,6 +26,7 @@ func main() {
 	}
 
 	db, err := store.Open(env.DBPath)
+	store.DefaultCurrency = env.Currency
 	if err != nil {
 		logger.Fatalf("open store: %v", err)
 	}
