@@ -102,7 +102,7 @@ type RequestLog struct {
 	ResponseTokens  int64
 	CacheHitTokens  int64
 	CacheMissTokens int64
-	CostMicro    int64
+	CostMicro       int64
 	Estimated       bool
 	ErrorType       string
 }
@@ -541,7 +541,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE api_keys ADD COLUMN allowed_models TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE request_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE request_logs ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE request_logs ADD COLUMN cost_micro INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE request_logs ADD COLUMN cache_hit_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE request_logs ADD COLUMN cache_miss_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE jwt_grants ADD COLUMN request_quota INTEGER NOT NULL DEFAULT 500`,
@@ -552,6 +551,16 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isDuplicateColumnError(err) {
 			return err
 		}
+	}
+	if err := s.migrateMicroColumns(ctx, []microColumnMigration{
+		{
+			Table:      "request_logs",
+			OldName:    "cost_microusd",
+			NewName:    "cost_micro",
+			Definition: "INTEGER NOT NULL DEFAULT 0",
+		},
+	}); err != nil {
+		return err
 	}
 	_, err = s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS admin_users (
@@ -616,25 +625,110 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, stmt := range []string{
-		`ALTER TABLE model_prices ADD COLUMN input_cache_hit_cost_micro_per_1m INTEGER`,
-	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isDuplicateColumnError(err) {
-			return err
-		}
-	}
-	// Rename columns from old microusd naming to micro naming (idempotent)
-	for _, stmt := range []string{
-		`ALTER TABLE model_prices RENAME COLUMN input_cost_microusd_per_1m TO input_cost_micro_per_1m`,
-		`ALTER TABLE model_prices RENAME COLUMN input_cache_hit_cost_microusd_per_1m TO input_cache_hit_cost_micro_per_1m`,
-		`ALTER TABLE model_prices RENAME COLUMN output_cost_microusd_per_1m TO output_cost_micro_per_1m`,
-		`ALTER TABLE request_logs RENAME COLUMN cost_microusd TO cost_micro`,
-	} {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isMissingColumnError(err) {
+	return s.migrateMicroColumns(ctx, []microColumnMigration{
+		{
+			Table:      "model_prices",
+			OldName:    "input_cost_microusd_per_1m",
+			NewName:    "input_cost_micro_per_1m",
+			Definition: "INTEGER NOT NULL DEFAULT 0",
+		},
+		{
+			Table:      "model_prices",
+			OldName:    "input_cache_hit_cost_microusd_per_1m",
+			NewName:    "input_cache_hit_cost_micro_per_1m",
+			Definition: "INTEGER",
+		},
+		{
+			Table:      "model_prices",
+			OldName:    "output_cost_microusd_per_1m",
+			NewName:    "output_cost_micro_per_1m",
+			Definition: "INTEGER NOT NULL DEFAULT 0",
+		},
+	})
+}
+
+type microColumnMigration struct {
+	Table      string
+	OldName    string
+	NewName    string
+	Definition string
+}
+
+func (s *Store) migrateMicroColumns(ctx context.Context, migrations []microColumnMigration) error {
+	for _, migration := range migrations {
+		if err := s.migrateMicroColumn(ctx, migration); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *Store) migrateMicroColumn(ctx context.Context, migration microColumnMigration) error {
+	columns, err := s.tableColumns(ctx, migration.Table)
+	if err != nil {
+		return err
+	}
+	_, hasOld := columns[migration.OldName]
+	_, hasNew := columns[migration.NewName]
+	switch {
+	case hasOld && hasNew:
+		_, err = s.db.ExecContext(ctx, fmt.Sprintf(
+			`UPDATE %s SET %s = COALESCE(NULLIF(%s, 0), %s, %s)`,
+			sqliteIdentifier(migration.Table),
+			sqliteIdentifier(migration.NewName),
+			sqliteIdentifier(migration.NewName),
+			sqliteIdentifier(migration.OldName),
+			sqliteIdentifier(migration.NewName),
+		))
+		return err
+	case hasOld:
+		_, err = s.db.ExecContext(ctx, fmt.Sprintf(
+			`ALTER TABLE %s RENAME COLUMN %s TO %s`,
+			sqliteIdentifier(migration.Table),
+			sqliteIdentifier(migration.OldName),
+			sqliteIdentifier(migration.NewName),
+		))
+		return err
+	case !hasNew:
+		_, err = s.db.ExecContext(ctx, fmt.Sprintf(
+			`ALTER TABLE %s ADD COLUMN %s %s`,
+			sqliteIdentifier(migration.Table),
+			sqliteIdentifier(migration.NewName),
+			migration.Definition,
+		))
+		return err
+	default:
+		return nil
+	}
+}
+
+func (s *Store) tableColumns(ctx context.Context, table string) (map[string]struct{}, error) {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, sqliteIdentifier(table)))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns := map[string]struct{}{}
+	for rows.Next() {
+		var (
+			cid          int
+			name         string
+			columnType   string
+			notNull      int
+			defaultValue any
+			primaryKey   int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return nil, err
+		}
+		columns[name] = struct{}{}
+	}
+	return columns, rows.Err()
+}
+
+func sqliteIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
 
 type apiKeyScanner interface {
@@ -816,11 +910,6 @@ func keyPrefix(value string) string {
 func isDuplicateColumnError(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }
-
-func isMissingColumnError(err error) bool {
-	return strings.Contains(strings.ToLower(err.Error()), "no such column")
-}
-
 
 func sanitizeSessionValue(value string) string {
 	value = strings.TrimSpace(value)
