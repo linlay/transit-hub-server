@@ -16,33 +16,35 @@ import (
 )
 
 type apiKeyResponse struct {
-	ID            string     `json:"id"`
-	Name          string     `json:"name"`
-	Description   string     `json:"description"`
-	KeyPrefix     string     `json:"key_prefix"`
-	Source        string     `json:"source"`
-	IssuerJTI     string     `json:"issuer_jti,omitempty"`
-	Status        string     `json:"status"`
-	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
-	ForcedExpired bool       `json:"forced_expired"`
-	RequestQuota  int64      `json:"request_quota"`
-	TokenQuota    int64      `json:"token_quota"`
-	AllowedModels []string   `json:"allowed_models"`
-	UsedRequests  int64      `json:"used_requests"`
-	UsedTokens    int64      `json:"used_tokens"`
-	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`
-	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Description   string            `json:"description"`
+	KeyPrefix     string            `json:"key_prefix"`
+	Source        string            `json:"source"`
+	IssuerJTI     string            `json:"issuer_jti,omitempty"`
+	Status        string            `json:"status"`
+	ExpiresAt     *time.Time        `json:"expires_at,omitempty"`
+	ForcedExpired bool              `json:"forced_expired"`
+	RequestQuota  int64             `json:"request_quota"`
+	TokenQuota    int64             `json:"token_quota"`
+	AllowedModels []string          `json:"allowed_models"`
+	RateLimits    []store.RateLimit `json:"rate_limits"`
+	UsedRequests  int64             `json:"used_requests"`
+	UsedTokens    int64             `json:"used_tokens"`
+	LastUsedAt    *time.Time        `json:"last_used_at,omitempty"`
+	DeletedAt     *time.Time        `json:"deleted_at,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
 }
 
 type createAPIKeyRequest struct {
-	Name          string     `json:"name"`
-	Description   string     `json:"description"`
-	ExpiresAt     *time.Time `json:"expires_at"`
-	RequestQuota  int64      `json:"request_quota"`
-	TokenQuota    int64      `json:"token_quota"`
-	AllowedModels []string   `json:"allowed_models"`
+	Name          string            `json:"name"`
+	Description   string            `json:"description"`
+	ExpiresAt     *time.Time        `json:"expires_at"`
+	RequestQuota  int64             `json:"request_quota"`
+	TokenQuota    int64             `json:"token_quota"`
+	AllowedModels []string          `json:"allowed_models"`
+	RateLimits    []store.RateLimit `json:"rate_limits"`
 }
 
 type createAPIKeyResponse struct {
@@ -51,14 +53,15 @@ type createAPIKeyResponse struct {
 }
 
 type patchAPIKeyRequest struct {
-	Name          *string             `json:"name"`
-	Description   *string             `json:"description"`
-	Status        *string             `json:"status"`
-	ExpiresAt     optionalTime        `json:"expires_at"`
-	ForcedExpired *bool               `json:"forced_expired"`
-	RequestQuota  *int64              `json:"request_quota"`
-	TokenQuota    *int64              `json:"token_quota"`
-	AllowedModels optionalStringSlice `json:"allowed_models"`
+	Name          *string                `json:"name"`
+	Description   *string                `json:"description"`
+	Status        *string                `json:"status"`
+	ExpiresAt     optionalTime           `json:"expires_at"`
+	ForcedExpired *bool                  `json:"forced_expired"`
+	RequestQuota  *int64                 `json:"request_quota"`
+	TokenQuota    *int64                 `json:"token_quota"`
+	AllowedModels optionalStringSlice    `json:"allowed_models"`
+	RateLimits    optionalRateLimitSlice `json:"rate_limits"`
 }
 
 type batchAPIKeysRequest struct {
@@ -77,6 +80,11 @@ type optionalStringSlice struct {
 	Value []string
 }
 
+type optionalRateLimitSlice struct {
+	Set   bool
+	Value []store.RateLimit
+}
+
 func (t *optionalTime) UnmarshalJSON(data []byte) error {
 	t.Set = true
 	if string(data) == "null" {
@@ -92,6 +100,11 @@ func (t *optionalTime) UnmarshalJSON(data []byte) error {
 }
 
 func (s *optionalStringSlice) UnmarshalJSON(data []byte) error {
+	s.Set = true
+	return json.Unmarshal(data, &s.Value)
+}
+
+func (s *optionalRateLimitSlice) UnmarshalJSON(data []byte) error {
 	s.Set = true
 	return json.Unmarshal(data, &s.Value)
 }
@@ -141,6 +154,7 @@ func (g *Gateway) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		RequestQuota:  req.RequestQuota,
 		TokenQuota:    req.TokenQuota,
 		AllowedModels: allowedModels,
+		RateLimits:    req.RateLimits,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -218,6 +232,8 @@ func (g *Gateway) patchAPIKey(w http.ResponseWriter, r *http.Request) {
 		TokenQuota:       req.TokenQuota,
 		AllowedModelsSet: req.AllowedModels.Set,
 		AllowedModels:    allowedModels,
+		RateLimitsSet:    req.RateLimits.Set,
+		RateLimits:       req.RateLimits.Value,
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "api key not found")
@@ -326,6 +342,7 @@ func toAPIKeyResponse(key store.APIKey) apiKeyResponse {
 		RequestQuota:  key.RequestQuota,
 		TokenQuota:    key.TokenQuota,
 		AllowedModels: key.AllowedModels,
+		RateLimits:    key.RateLimits,
 		UsedRequests:  key.UsedRequests,
 		UsedTokens:    key.UsedTokens,
 		LastUsedAt:    key.LastUsedAt,

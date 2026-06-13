@@ -8,7 +8,7 @@ Transit Hub 是一个 Go 编写的 LLM Chat API 中转网关。它对外提供 O
 
 - 统一客户端入口和客户端 API Key 管理。
 - 支持多上游 provider、多模型映射、多账号池和权重轮询。
-- 记录请求用量和请求日志，支持请求数、token 配额和过期控制。
+- 记录请求用量和请求日志，支持请求数、token、金额固定窗口限流和过期控制。
 - 在上游异常时用简单熔断机制临时摘除不健康账号。
 - 通过 Admin API 动态管理客户端 Key、查看 provider 状态、重载 provider 配置、覆盖模型路由池。
 
@@ -85,7 +85,7 @@ configs/
 
 ## 数据模型
 
-- `api_keys`：保存客户端 API Key 的哈希、状态、过期时间、强制过期标记、请求配额、token 配额、已用量。
+- `api_keys`：保存客户端 API Key 的哈希、状态、过期时间、强制过期标记、生命周期配额、固定窗口限流、已用量。
 - `request_logs`：保存每次请求的 key、协议、模型、provider、pool、account、状态码、延迟、token、错误类型。
 - `route_overrides`：保存公开模型到 pool 的临时覆盖，用于快速切换账号池。
 
@@ -93,6 +93,7 @@ configs/
 
 - `request_quota = 0` 表示请求数不限。
 - `token_quota = 0` 表示 token 不限。
+- `rate_limits` 支持 `1h`、`5h`、`1d`、`7d`、`30d` 固定窗口，窗口内的请求数、token 和金额额度为 `0` 时表示不限。
 - token 优先读取上游响应里的 `usage`；缺失时按请求和响应字节数粗略估算。
 
 ## 注意事项

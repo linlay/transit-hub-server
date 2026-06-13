@@ -10,20 +10,21 @@ import (
 )
 
 type JWTGrant struct {
-	JTI           string     `json:"jti"`
-	Name          string     `json:"name"`
-	Description   string     `json:"description"`
-	Status        string     `json:"status"`
-	IssueQuota    int64      `json:"issue_quota"`
-	IssuedCount   int64      `json:"issued_count"`
-	RequestQuota  int64      `json:"request_quota"`
-	TokenQuota    int64      `json:"token_quota"`
-	AllowedModels []string   `json:"allowed_models"`
-	JWT           string     `json:"jwt,omitempty"`
-	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
-	LastIssuedAt  *time.Time `json:"last_issued_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	JTI           string      `json:"jti"`
+	Name          string      `json:"name"`
+	Description   string      `json:"description"`
+	Status        string      `json:"status"`
+	IssueQuota    int64       `json:"issue_quota"`
+	IssuedCount   int64       `json:"issued_count"`
+	RequestQuota  int64       `json:"request_quota"`
+	TokenQuota    int64       `json:"token_quota"`
+	AllowedModels []string    `json:"allowed_models"`
+	RateLimits    []RateLimit `json:"rate_limits"`
+	JWT           string      `json:"jwt,omitempty"`
+	ExpiresAt     *time.Time  `json:"expires_at,omitempty"`
+	LastIssuedAt  *time.Time  `json:"last_issued_at,omitempty"`
+	CreatedAt     time.Time   `json:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at"`
 }
 
 type CreateJWTGrantParams struct {
@@ -35,6 +36,7 @@ type CreateJWTGrantParams struct {
 	RequestQuota  int64
 	TokenQuota    int64
 	AllowedModels []string
+	RateLimits    []RateLimit
 	JWT           string
 	ExpiresAt     *time.Time
 }
@@ -48,6 +50,8 @@ type JWTGrantPatch struct {
 	TokenQuota       *int64
 	AllowedModelsSet bool
 	AllowedModels    []string
+	RateLimitsSet    bool
+	RateLimits       []RateLimit
 }
 
 type JWTGrantListParams struct {
@@ -86,6 +90,14 @@ func (s *Store) CreateJWTGrant(ctx context.Context, params CreateJWTGrantParams)
 	if err != nil {
 		return JWTGrant{}, err
 	}
+	rateLimits, err := NormalizeRateLimits(params.RateLimits)
+	if err != nil {
+		return JWTGrant{}, err
+	}
+	rateLimitsJSON, err := encodeRateLimits(rateLimits)
+	if err != nil {
+		return JWTGrant{}, err
+	}
 	now := time.Now().UTC()
 	grant := JWTGrant{
 		JTI:           strings.TrimSpace(params.JTI),
@@ -96,6 +108,7 @@ func (s *Store) CreateJWTGrant(ctx context.Context, params CreateJWTGrantParams)
 		RequestQuota:  params.RequestQuota,
 		TokenQuota:    params.TokenQuota,
 		AllowedModels: allowedModels,
+		RateLimits:    rateLimits,
 		JWT:           strings.TrimSpace(params.JWT),
 		ExpiresAt:     params.ExpiresAt,
 		CreatedAt:     now,
@@ -104,9 +117,9 @@ func (s *Store) CreateJWTGrant(ctx context.Context, params CreateJWTGrantParams)
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO jwt_grants (
 			jti, name, description, status, issue_quota, issued_count,
-			request_quota, token_quota, allowed_models, jwt, expires_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
-	`, grant.JTI, grant.Name, grant.Description, grant.Status, grant.IssueQuota, grant.RequestQuota, grant.TokenQuota, allowedModelsJSON, grant.JWT,
+			request_quota, token_quota, allowed_models, rate_limits, jwt, expires_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, grant.JTI, grant.Name, grant.Description, grant.Status, grant.IssueQuota, grant.RequestQuota, grant.TokenQuota, allowedModelsJSON, rateLimitsJSON, grant.JWT,
 		nullableTime(grant.ExpiresAt), formatTime(grant.CreatedAt), formatTime(grant.UpdatedAt))
 	if err != nil {
 		return JWTGrant{}, err
@@ -158,7 +171,7 @@ func (s *Store) SearchJWTGrants(ctx context.Context, params JWTGrantListParams) 
 	queryArgs = append(queryArgs, limit, offset)
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT jti, name, description, status, issue_quota, issued_count,
-		       request_quota, token_quota, allowed_models, jwt, expires_at, last_issued_at, created_at, updated_at
+		       request_quota, token_quota, allowed_models, rate_limits, jwt, expires_at, last_issued_at, created_at, updated_at
 		FROM jwt_grants
 		%s
 		ORDER BY created_at DESC
@@ -186,7 +199,7 @@ func (s *Store) SearchJWTGrants(ctx context.Context, params JWTGrantListParams) 
 func (s *Store) GetJWTGrant(ctx context.Context, jti string) (JWTGrant, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT jti, name, description, status, issue_quota, issued_count,
-		       request_quota, token_quota, allowed_models, jwt, expires_at, last_issued_at, created_at, updated_at
+		       request_quota, token_quota, allowed_models, rate_limits, jwt, expires_at, last_issued_at, created_at, updated_at
 		FROM jwt_grants
 		WHERE jti = ?
 	`, strings.TrimSpace(jti))
@@ -236,16 +249,27 @@ func (s *Store) UpdateJWTGrant(ctx context.Context, jti string, patch JWTGrantPa
 	if patch.AllowedModelsSet {
 		grant.AllowedModels = NormalizeAllowedModels(patch.AllowedModels)
 	}
+	if patch.RateLimitsSet {
+		rateLimits, err := NormalizeRateLimits(patch.RateLimits)
+		if err != nil {
+			return JWTGrant{}, err
+		}
+		grant.RateLimits = rateLimits
+	}
 	allowedModelsJSON, err := encodeAllowedModels(grant.AllowedModels)
+	if err != nil {
+		return JWTGrant{}, err
+	}
+	rateLimitsJSON, err := encodeRateLimits(grant.RateLimits)
 	if err != nil {
 		return JWTGrant{}, err
 	}
 	grant.UpdatedAt = time.Now().UTC()
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE jwt_grants
-		SET name = ?, description = ?, status = ?, issue_quota = ?, request_quota = ?, token_quota = ?, allowed_models = ?, updated_at = ?
+		SET name = ?, description = ?, status = ?, issue_quota = ?, request_quota = ?, token_quota = ?, allowed_models = ?, rate_limits = ?, updated_at = ?
 		WHERE jti = ?
-	`, grant.Name, grant.Description, grant.Status, grant.IssueQuota, grant.RequestQuota, grant.TokenQuota, allowedModelsJSON, formatTime(grant.UpdatedAt), grant.JTI)
+	`, grant.Name, grant.Description, grant.Status, grant.IssueQuota, grant.RequestQuota, grant.TokenQuota, allowedModelsJSON, rateLimitsJSON, formatTime(grant.UpdatedAt), grant.JTI)
 	if err != nil {
 		return JWTGrant{}, err
 	}
@@ -308,7 +332,7 @@ func (s *Store) IssueAPIKeyFromJWTGrant(ctx context.Context, jti string, params 
 
 	grant, err := scanJWTGrant(tx.QueryRowContext(ctx, `
 		SELECT jti, name, description, status, issue_quota, issued_count,
-		       request_quota, token_quota, allowed_models, jwt, expires_at, last_issued_at, created_at, updated_at
+		       request_quota, token_quota, allowed_models, rate_limits, jwt, expires_at, last_issued_at, created_at, updated_at
 		FROM jwt_grants
 		WHERE jti = ?
 	`, strings.TrimSpace(jti)))
@@ -337,6 +361,7 @@ func (s *Store) IssueAPIKeyFromJWTGrant(ctx context.Context, jti string, params 
 	params.RequestQuota = grant.RequestQuota
 	params.TokenQuota = grant.TokenQuota
 	params.AllowedModels = grant.AllowedModels
+	params.RateLimits = grant.RateLimits
 	created, err := s.createAPIKeyInTx(ctx, tx, params)
 	if err != nil {
 		return CreatedAPIKey{}, err
@@ -368,7 +393,7 @@ type jwtGrantScanner interface {
 func scanJWTGrant(scanner jwtGrantScanner) (JWTGrant, error) {
 	var grant JWTGrant
 	var expiresAt, lastIssuedAt sql.NullString
-	var allowedModels string
+	var allowedModels, rateLimits string
 	var createdAt, updatedAt string
 	err := scanner.Scan(
 		&grant.JTI,
@@ -380,6 +405,7 @@ func scanJWTGrant(scanner jwtGrantScanner) (JWTGrant, error) {
 		&grant.RequestQuota,
 		&grant.TokenQuota,
 		&allowedModels,
+		&rateLimits,
 		&grant.JWT,
 		&expiresAt,
 		&lastIssuedAt,
@@ -397,6 +423,11 @@ func scanJWTGrant(scanner jwtGrantScanner) (JWTGrant, error) {
 		return JWTGrant{}, err
 	}
 	grant.AllowedModels = decodedAllowedModels
+	decodedRateLimits, err := decodeRateLimits(rateLimits)
+	if err != nil {
+		return JWTGrant{}, err
+	}
+	grant.RateLimits = decodedRateLimits
 	if expiresAt.Valid {
 		parsed, err := parseTime(expiresAt.String)
 		if err != nil {

@@ -14,32 +14,34 @@ import (
 )
 
 type jwtGrantResponse struct {
-	JTI            string     `json:"jti"`
-	Name           string     `json:"name"`
-	Description    string     `json:"description"`
-	Status         string     `json:"status"`
-	IssueQuota     int64      `json:"issue_quota"`
-	IssuedCount    int64      `json:"issued_count"`
-	IssueRemaining int64      `json:"issue_remaining"`
-	IssueUnlimited bool       `json:"issue_unlimited"`
-	RequestQuota   int64      `json:"request_quota"`
-	TokenQuota     int64      `json:"token_quota"`
-	AllowedModels  []string   `json:"allowed_models"`
-	JWT            string     `json:"jwt,omitempty"`
-	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
-	LastIssuedAt   *time.Time `json:"last_issued_at,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	JTI            string            `json:"jti"`
+	Name           string            `json:"name"`
+	Description    string            `json:"description"`
+	Status         string            `json:"status"`
+	IssueQuota     int64             `json:"issue_quota"`
+	IssuedCount    int64             `json:"issued_count"`
+	IssueRemaining int64             `json:"issue_remaining"`
+	IssueUnlimited bool              `json:"issue_unlimited"`
+	RequestQuota   int64             `json:"request_quota"`
+	TokenQuota     int64             `json:"token_quota"`
+	AllowedModels  []string          `json:"allowed_models"`
+	RateLimits     []store.RateLimit `json:"rate_limits"`
+	JWT            string            `json:"jwt,omitempty"`
+	ExpiresAt      *time.Time        `json:"expires_at,omitempty"`
+	LastIssuedAt   *time.Time        `json:"last_issued_at,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+	UpdatedAt      time.Time         `json:"updated_at"`
 }
 
 type createJWTGrantRequest struct {
-	Name          string     `json:"name"`
-	Description   string     `json:"description"`
-	IssueQuota    int64      `json:"issue_quota"`
-	RequestQuota  *int64     `json:"request_quota"`
-	TokenQuota    *int64     `json:"token_quota"`
-	AllowedModels []string   `json:"allowed_models"`
-	ExpiresAt     *time.Time `json:"expires_at"`
+	Name          string            `json:"name"`
+	Description   string            `json:"description"`
+	IssueQuota    int64             `json:"issue_quota"`
+	RequestQuota  *int64            `json:"request_quota"`
+	TokenQuota    *int64            `json:"token_quota"`
+	AllowedModels []string          `json:"allowed_models"`
+	RateLimits    []store.RateLimit `json:"rate_limits"`
+	ExpiresAt     *time.Time        `json:"expires_at"`
 }
 
 type createJWTGrantResponse struct {
@@ -48,13 +50,14 @@ type createJWTGrantResponse struct {
 }
 
 type patchJWTGrantRequest struct {
-	Name          *string             `json:"name"`
-	Description   *string             `json:"description"`
-	Status        *string             `json:"status"`
-	IssueQuota    *int64              `json:"issue_quota"`
-	RequestQuota  *int64              `json:"request_quota"`
-	TokenQuota    *int64              `json:"token_quota"`
-	AllowedModels optionalStringSlice `json:"allowed_models"`
+	Name          *string                `json:"name"`
+	Description   *string                `json:"description"`
+	Status        *string                `json:"status"`
+	IssueQuota    *int64                 `json:"issue_quota"`
+	RequestQuota  *int64                 `json:"request_quota"`
+	TokenQuota    *int64                 `json:"token_quota"`
+	AllowedModels optionalStringSlice    `json:"allowed_models"`
+	RateLimits    optionalRateLimitSlice `json:"rate_limits"`
 }
 
 type applyAPIKeyRequest struct {
@@ -105,6 +108,7 @@ func (g *Gateway) createJWTGrant(w http.ResponseWriter, r *http.Request) {
 		RequestQuota:  requestQuota,
 		TokenQuota:    tokenQuota,
 		AllowedModels: allowedModels,
+		RateLimits:    req.RateLimits,
 		JWT:           jwt,
 		ExpiresAt:     expiresAt,
 	})
@@ -179,6 +183,8 @@ func (g *Gateway) patchJWTGrant(w http.ResponseWriter, r *http.Request) {
 		TokenQuota:       req.TokenQuota,
 		AllowedModelsSet: req.AllowedModels.Set,
 		AllowedModels:    allowedModels,
+		RateLimitsSet:    req.RateLimits.Set,
+		RateLimits:       req.RateLimits.Value,
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "jwt grant not found")
@@ -281,6 +287,7 @@ func toJWTGrantResponse(grant store.JWTGrant, includeJWT bool) jwtGrantResponse 
 		RequestQuota:   grant.RequestQuota,
 		TokenQuota:     grant.TokenQuota,
 		AllowedModels:  grant.AllowedModels,
+		RateLimits:     grant.RateLimits,
 		ExpiresAt:      grant.ExpiresAt,
 		LastIssuedAt:   grant.LastIssuedAt,
 		CreatedAt:      grant.CreatedAt,

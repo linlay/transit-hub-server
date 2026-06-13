@@ -16,12 +16,13 @@ import (
 )
 
 type Gateway struct {
-	env      config.Env
-	store    *store.Store
-	issuer   *issuer.Service
-	registry *provider.Registry
-	client   *http.Client
-	logger   *log.Logger
+	env               config.Env
+	store             *store.Store
+	issuer            *issuer.Service
+	registry          *provider.Registry
+	client            *http.Client
+	logger            *log.Logger
+	rateLimitLocation *time.Location
 }
 
 type Options struct {
@@ -46,13 +47,23 @@ func New(options Options) *Gateway {
 	if logger == nil {
 		logger = log.Default()
 	}
+	rateLimitTimezone := strings.TrimSpace(options.Env.RateLimitTimezone)
+	if rateLimitTimezone == "" {
+		rateLimitTimezone = "Asia/Shanghai"
+	}
+	rateLimitLocation, err := time.LoadLocation(rateLimitTimezone)
+	if err != nil {
+		logger.Printf("invalid RATE_LIMIT_TIMEZONE %q, falling back to UTC: %v", rateLimitTimezone, err)
+		rateLimitLocation = time.UTC
+	}
 	return &Gateway{
-		env:      options.Env,
-		store:    options.Store,
-		issuer:   options.Issuer,
-		registry: options.Registry,
-		client:   client,
-		logger:   logger,
+		env:               options.Env,
+		store:             options.Store,
+		issuer:            options.Issuer,
+		registry:          options.Registry,
+		client:            client,
+		logger:            logger,
+		rateLimitLocation: rateLimitLocation,
 	}
 }
 

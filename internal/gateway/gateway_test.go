@@ -258,6 +258,127 @@ func TestQuotaAndForcedExpirationRejectRequests(t *testing.T) {
 	}
 }
 
+func TestFixedWindowRequestAndTokenRateLimitsRejectNextRequest(t *testing.T) {
+	tests := []struct {
+		name       string
+		limit      store.RateLimit
+		usage      string
+		wantReason string
+	}{
+		{
+			name:       "requests",
+			limit:      store.RateLimit{Window: store.RateLimitWindow1H, RequestQuota: 1},
+			usage:      `{"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
+			wantReason: "requests",
+		},
+		{
+			name:       "tokens",
+			limit:      store.RateLimit{Window: store.RateLimitWindow1H, TokenQuota: 2},
+			usage:      `{"usage":{"prompt_tokens":1,"completion_tokens":1}}`,
+			wantReason: "tokens",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var hits int64
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt64(&hits, 1)
+				_, _ = w.Write([]byte(tt.usage))
+			}))
+			defer upstream.Close()
+
+			app, _, plainKey := newTestGatewayWithKey(t, []config.ProviderConfig{openAIProvider(upstream.URL)}, store.CreateAPIKeyParams{
+				Name:       "window-limited",
+				RateLimits: []store.RateLimit{tt.limit},
+			})
+
+			firstRec := httptest.NewRecorder()
+			app.Handler().ServeHTTP(firstRec, proxyRequest(plainKey))
+			if firstRec.Code != http.StatusOK {
+				t.Fatalf("first status = %d, body = %s", firstRec.Code, firstRec.Body.String())
+			}
+
+			secondRec := httptest.NewRecorder()
+			app.Handler().ServeHTTP(secondRec, proxyRequest(plainKey))
+			if secondRec.Code != http.StatusTooManyRequests {
+				t.Fatalf("second status = %d, body = %s", secondRec.Code, secondRec.Body.String())
+			}
+			if retryAfter := secondRec.Header().Get("Retry-After"); retryAfter == "" {
+				t.Fatalf("Retry-After missing")
+			}
+			if !strings.Contains(secondRec.Body.String(), tt.wantReason) {
+				t.Fatalf("rate limit reason missing from body: %s", secondRec.Body.String())
+			}
+			if got := atomic.LoadInt64(&hits); got != 1 {
+				t.Fatalf("upstream hits = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestFixedWindowCostRateLimitRejectsNextRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":3,"completion_tokens":4}}`))
+	}))
+	defer upstream.Close()
+
+	app, db, plainKey := newTestGatewayWithKey(t, []config.ProviderConfig{openAIProvider(upstream.URL)}, store.CreateAPIKeyParams{
+		Name:       "cost-window-limited",
+		RateLimits: []store.RateLimit{{Window: store.RateLimitWindow1H, CostQuotaMicro: 22}},
+	})
+	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{
+		Protocol:                   "openai",
+		PublicModel:                "public-model",
+		InputCostMicroPer1MTokens:  2_000_000,
+		OutputCostMicroPer1MTokens: 4_000_000,
+		Currency:                   "CNY",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	firstRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(firstRec, proxyRequest(plainKey))
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("first status = %d, body = %s", firstRec.Code, firstRec.Body.String())
+	}
+
+	secondRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(secondRec, proxyRequest(plainKey))
+	if secondRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, body = %s", secondRec.Code, secondRec.Body.String())
+	}
+	if !strings.Contains(secondRec.Body.String(), "cost") {
+		t.Fatalf("cost reason missing from body: %s", secondRec.Body.String())
+	}
+}
+
+func TestCostRateLimitRequiresModelPrice(t *testing.T) {
+	var hits int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&hits, 1)
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	app, _, plainKey := newTestGatewayWithKey(t, []config.ProviderConfig{openAIProvider(upstream.URL)}, store.CreateAPIKeyParams{
+		Name:       "cost-window-limited",
+		RateLimits: []store.RateLimit{{Window: store.RateLimitWindow1H, CostQuotaMicro: 100}},
+	})
+
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, proxyRequest(plainKey))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "requires a model price") {
+		t.Fatalf("missing price message: %s", rec.Body.String())
+	}
+	if got := atomic.LoadInt64(&hits); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0", got)
+	}
+}
+
 func TestCircuitOpensAfterUpstreamFailure(t *testing.T) {
 	var hits int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -321,6 +442,44 @@ func TestAdminCreateKeyReturnsPlainTextOnce(t *testing.T) {
 	}
 	if bytes.Contains(listRec.Body.Bytes(), []byte(`"key"`)) {
 		t.Fatalf("list response leaked plain key: %s", listRec.Body.String())
+	}
+}
+
+func TestAdminModelPriceRequiresConfiguredCurrency(t *testing.T) {
+	app, _, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")})
+
+	invalidReq := httptest.NewRequest(http.MethodPost, "/admin/model-prices", bytes.NewBufferString(`{
+		"protocol":"openai",
+		"public_model":"public-model",
+		"input_cost_micro_per_1m_tokens":1000000,
+		"output_cost_micro_per_1m_tokens":2000000,
+		"currency":"USD"
+	}`))
+	invalidReq.Header.Set("Authorization", "Bearer admin")
+	invalidRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(invalidRec, invalidReq)
+	if invalidRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid currency status = %d, body = %s", invalidRec.Code, invalidRec.Body.String())
+	}
+
+	validReq := httptest.NewRequest(http.MethodPost, "/admin/model-prices", bytes.NewBufferString(`{
+		"protocol":"openai",
+		"public_model":"public-model",
+		"input_cost_micro_per_1m_tokens":1000000,
+		"output_cost_micro_per_1m_tokens":2000000
+	}`))
+	validReq.Header.Set("Authorization", "Bearer admin")
+	validRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(validRec, validReq)
+	if validRec.Code != http.StatusCreated {
+		t.Fatalf("valid currency status = %d, body = %s", validRec.Code, validRec.Body.String())
+	}
+	var price store.ModelPrice
+	if err := json.Unmarshal(validRec.Body.Bytes(), &price); err != nil {
+		t.Fatal(err)
+	}
+	if price.Currency != "CNY" {
+		t.Fatalf("currency = %q, want CNY", price.Currency)
 	}
 }
 
@@ -437,7 +596,8 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 		"issue_quota":1,
 		"request_quota":25,
 		"token_quota":2500,
-		"allowed_models":["public-model"]
+		"allowed_models":["public-model"],
+		"rate_limits":[{"window":"1h","request_quota":10,"token_quota":1000,"cost_quota_micro":5000000}]
 	}`))
 	createReq.Header.Set("Authorization", "Bearer admin")
 	createRec := httptest.NewRecorder()
@@ -456,6 +616,9 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 	}
 	if grantPayload["request_quota"].(float64) != 25 || grantPayload["token_quota"].(float64) != 2500 {
 		t.Fatalf("grant response missing quotas: %#v", grantPayload)
+	}
+	if rateLimits, _ := grantPayload["rate_limits"].([]any); len(rateLimits) != 1 {
+		t.Fatalf("grant response missing rate_limits: %#v", grantPayload["rate_limits"])
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/admin/jwt-grants", nil)
@@ -508,6 +671,9 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 	}
 	if key.Source != "jwt" || key.IssuerJTI != jti || key.RequestQuota != 25 || key.TokenQuota != 2500 || strings.Join(key.AllowedModels, ",") != "public-model" {
 		t.Fatalf("unexpected issued key: %#v", key)
+	}
+	if len(key.RateLimits) != 1 || key.RateLimits[0].Window != store.RateLimitWindow1H || key.RateLimits[0].RequestQuota != 10 || key.RateLimits[0].TokenQuota != 1000 || key.RateLimits[0].CostQuotaMicro != 5000000 {
+		t.Fatalf("unexpected issued key rate_limits: %#v", key.RateLimits)
 	}
 	if key.Description != "" {
 		t.Fatalf("description should be ignored, got %q", key.Description)
@@ -1093,11 +1259,11 @@ func TestProxyRecordsSessionAndEstimatedCost(t *testing.T) {
 
 	app, db, plainKey := newTestGateway(t, []config.ProviderConfig{openAIProvider(upstream.URL)})
 	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{
-		Protocol:                      "openai",
-		PublicModel:                   "public-model",
+		Protocol:                   "openai",
+		PublicModel:                "public-model",
 		InputCostMicroPer1MTokens:  2_000_000,
 		OutputCostMicroPer1MTokens: 4_000_000,
-		Currency:                      "USD",
+		Currency:                   "USD",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1147,12 +1313,12 @@ func TestProxyRecordsDeepSeekCacheAndProviderUsage(t *testing.T) {
 	app, db, plainKey := newTestGateway(t, []config.ProviderConfig{openAIProvider(upstream.URL)})
 	inputCacheHitCost := int64(500_000)
 	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{
-		Protocol:                             "openai",
-		PublicModel:                          "public-model",
+		Protocol:                          "openai",
+		PublicModel:                       "public-model",
 		InputCostMicroPer1MTokens:         2_000_000,
 		InputCacheHitCostMicroPer1MTokens: &inputCacheHitCost,
 		OutputCostMicroPer1MTokens:        4_000_000,
-		Currency:                             "USD",
+		Currency:                          "USD",
 	}); err != nil {
 		t.Fatal(err)
 	}

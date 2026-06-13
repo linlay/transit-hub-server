@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,6 +67,9 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if !g.enforceAPIKeyRateLimits(w, r, key) {
+			return
+		}
 
 		route, ok := g.registry.Resolve(protocol, envelope.Model)
 		if !ok {
@@ -105,6 +109,9 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 				writeError(w, http.StatusBadRequest, "route override references missing pool")
 				return
 			}
+		}
+		if !g.requireCostRateLimitPrice(w, r, key, protocol, route.PublicModel) {
+			return
 		}
 
 		account, err := route.PickAccount()
@@ -221,6 +228,49 @@ func (g *Gateway) authenticatePublicKey(w http.ResponseWriter, r *http.Request) 
 		return store.APIKey{}, false
 	}
 	return key, true
+}
+
+func (g *Gateway) enforceAPIKeyRateLimits(w http.ResponseWriter, r *http.Request, key store.APIKey) bool {
+	if len(key.RateLimits) == 0 {
+		return true
+	}
+	now := time.Now().UTC()
+	statuses, err := g.store.RateLimitStatuses(r.Context(), key.ID, key.RateLimits, now, g.rateLimitLocation)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return false
+	}
+	violation, exhausted := store.FirstRateLimitViolation(statuses)
+	if !exhausted {
+		return true
+	}
+	retryAfter := int(time.Until(violation.ResetsAt).Seconds())
+	if retryAfter < 1 {
+		retryAfter = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	writeError(w, http.StatusTooManyRequests, violation.Error())
+	return false
+}
+
+func (g *Gateway) requireCostRateLimitPrice(w http.ResponseWriter, r *http.Request, key store.APIKey, protocol, publicModel string) bool {
+	if !store.RateLimitsNeedCost(key.RateLimits) {
+		return true
+	}
+	price, ok, err := g.store.GetModelPrice(r.Context(), protocol, publicModel)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return false
+	}
+	if !ok {
+		writeError(w, http.StatusTooManyRequests, "cost rate limit requires a model price for "+publicModel)
+		return false
+	}
+	if !strings.EqualFold(price.Currency, g.configuredCurrency()) {
+		writeError(w, http.StatusTooManyRequests, "model price currency does not match configured currency")
+		return false
+	}
+	return true
 }
 
 func (g *Gateway) buildUpstreamRequest(r *http.Request, route provider.Route, account *provider.Account, endpointKey string, body []byte) (*http.Request, error) {

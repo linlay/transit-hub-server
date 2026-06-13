@@ -48,6 +48,8 @@ ADMIN_TOKEN=replace-with-a-long-random-token
 | `UPSTREAM_TIMEOUT` | `5m` | 上游请求超时 |
 | `CIRCUIT_FAILURE_THRESHOLD` | `3` | 连续失败多少次后熔断账号 |
 | `CIRCUIT_COOLDOWN` | `30s` | 熔断冷却时间 |
+| `CURRENCY` | `CNY` | 模型价格、成本统计和金额限流使用的全局货币 |
+| `RATE_LIMIT_TIMEZONE` | `Asia/Shanghai` | 固定窗口限流的本地时区 |
 
 ### 2. 配置上游 Provider
 
@@ -144,10 +146,12 @@ Admin API 需要携带 `Authorization: Bearer $ADMIN_TOKEN` 或 `x-admin-token: 
 curl -sS -X POST http://localhost:8080/admin/api-keys \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"demo","request_quota":1000,"token_quota":100000,"allowed_models":["example-chat"]}'
+  -d '{"name":"demo","request_quota":1000,"token_quota":100000,"allowed_models":["example-chat"],"rate_limits":[{"window":"1h","request_quota":100,"token_quota":200000,"cost_quota_micro":100000000}]}'
 ```
 
 响应里的 `key` 只会返回这一次，请妥善保存。配额字段为 `0` 表示不限额。`allowed_models` 是该 key 可调用的公开模型名白名单，创建和修改时必须至少包含一个公开模型名；已有空白名单 key 不允许调用任何模型。
+
+`rate_limits` 可选，支持 `1h`、`5h`、`1d`、`7d`、`30d` 固定窗口。每个窗口可分别限制 `request_quota`、`token_quota` 和 `cost_quota_micro`；金额以 micro currency 存储，`100000000` 表示 100 个 `CURRENCY` 单位。配置了金额限流的 key 必须先为对应模型配置价格。
 
 常用管理命令：
 
@@ -191,7 +195,7 @@ curl -sS -X DELETE http://localhost:8080/admin/api-keys/key_xxx \
 curl -sS -X POST http://localhost:8080/admin/jwt-grants \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"desktop rollout","issue_quota":100,"request_quota":500,"token_quota":2000000,"allowed_models":["example-chat"]}'
+  -d '{"name":"desktop rollout","issue_quota":100,"request_quota":500,"token_quota":2000000,"allowed_models":["example-chat"],"rate_limits":[{"window":"1d","request_quota":200,"token_quota":2000000,"cost_quota_micro":100000000}]}'
 ```
 
 客户端拿到 JWT 后调用公开申请接口：
@@ -203,7 +207,7 @@ curl -sS -X POST http://localhost:8080/api/apply-apikey \
   -d '{"name":"my desktop"}'
 ```
 
-申请成功会返回一次性明文 `dk_...` API Key，并通过 `issuer_jti` 追溯到签发它的 JWT Grant。`issue_quota` 控制该 grant 最多发放多少个 API Key，`request_quota`、`token_quota`、`allowed_models` 控制每个新发出 API Key 的初始限制；额度字段为 `0` 表示不限额，`allowed_models` 必须至少包含一个公开模型名。
+申请成功会返回一次性明文 `dk_...` API Key，并通过 `issuer_jti` 追溯到签发它的 JWT Grant。`issue_quota` 控制该 grant 最多发放多少个 API Key，`request_quota`、`token_quota`、`rate_limits`、`allowed_models` 控制每个新发出 API Key 的初始限制；额度字段为 `0` 表示不限额，`allowed_models` 必须至少包含一个公开模型名。
 
 管理 grant：
 

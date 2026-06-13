@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -12,12 +13,12 @@ import (
 )
 
 type modelPriceRequest struct {
-	Protocol                             string `json:"protocol"`
-	PublicModel                          string `json:"public_model"`
+	Protocol                          string `json:"protocol"`
+	PublicModel                       string `json:"public_model"`
 	InputCostMicroPer1MTokens         int64  `json:"input_cost_micro_per_1m_tokens"`
 	InputCacheHitCostMicroPer1MTokens *int64 `json:"input_cache_hit_cost_micro_per_1m_tokens"`
 	OutputCostMicroPer1MTokens        int64  `json:"output_cost_micro_per_1m_tokens"`
-	Currency                             string `json:"currency"`
+	Currency                          string `json:"currency"`
 }
 
 func (g *Gateway) overview(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +45,7 @@ func (g *Gateway) traffic(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) apiKeyUsage(w http.ResponseWriter, r *http.Request) {
-	usage, err := g.store.APIKeyUsage(r.Context(), chi.URLParam(r, "id"), g.env.SessionActiveWindow)
+	usage, err := g.store.APIKeyUsage(r.Context(), chi.URLParam(r, "id"), g.env.SessionActiveWindow, time.Now().UTC(), g.rateLimitLocation)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "api key not found")
 		return
@@ -174,13 +175,17 @@ func (g *Gateway) createModelPrice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
+	currency, ok := g.modelPriceCurrency(w, req.Currency)
+	if !ok {
+		return
+	}
 	price, err := g.store.UpsertModelPrice(r.Context(), store.ModelPriceParams{
-		Protocol:                             req.Protocol,
-		PublicModel:                          req.PublicModel,
+		Protocol:                          req.Protocol,
+		PublicModel:                       req.PublicModel,
 		InputCostMicroPer1MTokens:         req.InputCostMicroPer1MTokens,
 		InputCacheHitCostMicroPer1MTokens: req.InputCacheHitCostMicroPer1MTokens,
 		OutputCostMicroPer1MTokens:        req.OutputCostMicroPer1MTokens,
-		Currency:                             req.Currency,
+		Currency:                          currency,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -195,13 +200,17 @@ func (g *Gateway) patchModelPrice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
+	currency, ok := g.modelPriceCurrency(w, req.Currency)
+	if !ok {
+		return
+	}
 	price, err := g.store.UpdateModelPrice(r.Context(), chi.URLParam(r, "id"), store.ModelPriceParams{
-		Protocol:                             req.Protocol,
-		PublicModel:                          req.PublicModel,
+		Protocol:                          req.Protocol,
+		PublicModel:                       req.PublicModel,
 		InputCostMicroPer1MTokens:         req.InputCostMicroPer1MTokens,
 		InputCacheHitCostMicroPer1MTokens: req.InputCacheHitCostMicroPer1MTokens,
 		OutputCostMicroPer1MTokens:        req.OutputCostMicroPer1MTokens,
-		Currency:                             req.Currency,
+		Currency:                          currency,
 	})
 	if errors.Is(err, store.ErrPriceNotFound) {
 		writeError(w, http.StatusNotFound, "model price not found")
@@ -212,6 +221,16 @@ func (g *Gateway) patchModelPrice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, price)
+}
+
+func (g *Gateway) modelPriceCurrency(w http.ResponseWriter, requested string) (string, bool) {
+	currency := g.configuredCurrency()
+	requested = strings.ToUpper(strings.TrimSpace(requested))
+	if requested != "" && requested != currency {
+		writeError(w, http.StatusBadRequest, "currency must match configured currency "+currency)
+		return "", false
+	}
+	return currency, true
 }
 
 func (g *Gateway) deleteModelPrice(w http.ResponseWriter, r *http.Request) {

@@ -13,24 +13,24 @@ var ErrPriceNotFound = errors.New("model price not found")
 var DefaultCurrency = "CNY"
 
 type ModelPrice struct {
-	ID                                   string    `json:"id"`
-	Protocol                             string    `json:"protocol"`
-	PublicModel                          string    `json:"public_model"`
+	ID                                string    `json:"id"`
+	Protocol                          string    `json:"protocol"`
+	PublicModel                       string    `json:"public_model"`
 	InputCostMicroPer1MTokens         int64     `json:"input_cost_micro_per_1m_tokens"`
 	InputCacheHitCostMicroPer1MTokens *int64    `json:"input_cache_hit_cost_micro_per_1m_tokens"`
 	OutputCostMicroPer1MTokens        int64     `json:"output_cost_micro_per_1m_tokens"`
-	Currency                             string    `json:"currency"`
-	CreatedAt                            time.Time `json:"created_at"`
-	UpdatedAt                            time.Time `json:"updated_at"`
+	Currency                          string    `json:"currency"`
+	CreatedAt                         time.Time `json:"created_at"`
+	UpdatedAt                         time.Time `json:"updated_at"`
 }
 
 type ModelPriceParams struct {
-	Protocol                             string
-	PublicModel                          string
+	Protocol                          string
+	PublicModel                       string
 	InputCostMicroPer1MTokens         int64
 	InputCacheHitCostMicroPer1MTokens *int64
 	OutputCostMicroPer1MTokens        int64
-	Currency                             string
+	Currency                          string
 }
 
 type Overview struct {
@@ -83,7 +83,7 @@ type TrafficBucket struct {
 	CacheMissTokens  int64    `json:"cache_miss_tokens"`
 	CacheTotalTokens int64    `json:"cache_total_tokens"`
 	CacheHitRate     *float64 `json:"cache_hit_rate"`
-	CostMicro     int64    `json:"cost_micro"`
+	CostMicro        int64    `json:"cost_micro"`
 	ErrorRequests    int64    `json:"error_requests"`
 	AverageLatency   float64  `json:"average_latency_ms"`
 }
@@ -117,7 +117,7 @@ type RequestLogEntry struct {
 	CacheMissTokens  int64     `json:"cache_miss_tokens"`
 	CacheTotalTokens int64     `json:"cache_total_tokens"`
 	CacheHitRate     *float64  `json:"cache_hit_rate"`
-	CostMicro     int64     `json:"cost_micro"`
+	CostMicro        int64     `json:"cost_micro"`
 	Estimated        bool      `json:"estimated"`
 	ErrorType        string    `json:"error_type"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -145,7 +145,7 @@ type ProviderUsage struct {
 	CacheMissTokens  int64    `json:"cache_miss_tokens"`
 	CacheTotalTokens int64    `json:"cache_total_tokens"`
 	CacheHitRate     *float64 `json:"cache_hit_rate"`
-	CostMicro     int64    `json:"cost_micro"`
+	CostMicro        int64    `json:"cost_micro"`
 	ErrorRequests    int64    `json:"error_requests"`
 	AverageLatency   float64  `json:"average_latency_ms"`
 }
@@ -417,7 +417,7 @@ func (s *Store) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficBucke
 	return buckets, rows.Err()
 }
 
-func (s *Store) APIKeyUsage(ctx context.Context, apiKeyID string, activeWindow time.Duration) (map[string]any, error) {
+func (s *Store) APIKeyUsage(ctx context.Context, apiKeyID string, activeWindow time.Duration, now time.Time, loc *time.Location) (map[string]any, error) {
 	key, err := s.GetAPIKey(ctx, apiKeyID)
 	if err != nil {
 		return nil, err
@@ -455,11 +455,16 @@ func (s *Store) APIKeyUsage(ctx context.Context, apiKeyID string, activeWindow t
 			activeDevices++
 		}
 	}
+	rateLimitUsage, err := s.RateLimitStatuses(ctx, key.ID, key.RateLimits, now, loc)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{
-		"key":            key,
-		"summary":        summary,
-		"recent_traffic": traffic,
-		"active_devices": activeDevices,
+		"key":              key,
+		"summary":          summary,
+		"recent_traffic":   traffic,
+		"active_devices":   activeDevices,
+		"rate_limit_usage": rateLimitUsage,
 	}, nil
 }
 

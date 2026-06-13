@@ -32,6 +32,7 @@ type Env struct {
 	CircuitFailureThreshold int
 	CircuitCooldown         time.Duration
 	Currency                string
+	RateLimitTimezone       string
 }
 
 type ProviderConfig struct {
@@ -106,6 +107,7 @@ func LoadEnv() (Env, error) {
 		CircuitFailureThreshold: getIntEnv("CIRCUIT_FAILURE_THRESHOLD", 3),
 		CircuitCooldown:         getDurationEnv("CIRCUIT_COOLDOWN", 30*time.Second),
 		Currency:                getEnv("CURRENCY", "CNY"),
+		RateLimitTimezone:       getEnv("RATE_LIMIT_TIMEZONE", "Asia/Shanghai"),
 	}
 	if strings.TrimSpace(env.AdminToken) == "" {
 		return Env{}, errors.New("ADMIN_TOKEN is required")
@@ -121,6 +123,9 @@ func LoadEnv() (Env, error) {
 	}
 	if env.SessionActiveWindow <= 0 {
 		return Env{}, errors.New("SESSION_ACTIVE_WINDOW must be positive")
+	}
+	if _, err := time.LoadLocation(env.RateLimitTimezone); err != nil {
+		return Env{}, fmt.Errorf("RATE_LIMIT_TIMEZONE is invalid: %w", err)
 	}
 	return env, nil
 }

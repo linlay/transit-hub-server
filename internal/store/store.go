@@ -36,24 +36,25 @@ type Store struct {
 }
 
 type APIKey struct {
-	ID            string     `json:"id"`
-	Name          string     `json:"name"`
-	Description   string     `json:"description"`
-	KeyPrefix     string     `json:"key_prefix"`
-	Source        string     `json:"source"`
-	IssuerJTI     string     `json:"issuer_jti,omitempty"`
-	Status        string     `json:"status"`
-	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
-	ForcedExpired bool       `json:"forced_expired"`
-	RequestQuota  int64      `json:"request_quota"`
-	TokenQuota    int64      `json:"token_quota"`
-	AllowedModels []string   `json:"allowed_models"`
-	UsedRequests  int64      `json:"used_requests"`
-	UsedTokens    int64      `json:"used_tokens"`
-	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`
-	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID            string      `json:"id"`
+	Name          string      `json:"name"`
+	Description   string      `json:"description"`
+	KeyPrefix     string      `json:"key_prefix"`
+	Source        string      `json:"source"`
+	IssuerJTI     string      `json:"issuer_jti,omitempty"`
+	Status        string      `json:"status"`
+	ExpiresAt     *time.Time  `json:"expires_at,omitempty"`
+	ForcedExpired bool        `json:"forced_expired"`
+	RequestQuota  int64       `json:"request_quota"`
+	TokenQuota    int64       `json:"token_quota"`
+	AllowedModels []string    `json:"allowed_models"`
+	RateLimits    []RateLimit `json:"rate_limits"`
+	UsedRequests  int64       `json:"used_requests"`
+	UsedTokens    int64       `json:"used_tokens"`
+	LastUsedAt    *time.Time  `json:"last_used_at,omitempty"`
+	DeletedAt     *time.Time  `json:"deleted_at,omitempty"`
+	CreatedAt     time.Time   `json:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at"`
 }
 
 type CreateAPIKeyParams struct {
@@ -66,6 +67,7 @@ type CreateAPIKeyParams struct {
 	RequestQuota  int64
 	TokenQuota    int64
 	AllowedModels []string
+	RateLimits    []RateLimit
 }
 
 type CreatedAPIKey struct {
@@ -84,6 +86,8 @@ type APIKeyPatch struct {
 	TokenQuota       *int64
 	AllowedModelsSet bool
 	AllowedModels    []string
+	RateLimitsSet    bool
+	RateLimits       []RateLimit
 }
 
 type RequestLog struct {
@@ -161,6 +165,14 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 	if err != nil {
 		return CreatedAPIKey{}, err
 	}
+	rateLimits, err := NormalizeRateLimits(params.RateLimits)
+	if err != nil {
+		return CreatedAPIKey{}, err
+	}
+	rateLimitsJSON, err := encodeRateLimits(rateLimits)
+	if err != nil {
+		return CreatedAPIKey{}, err
+	}
 
 	plain, err := GeneratePlainAPIKey(params.Prefix)
 	if err != nil {
@@ -180,6 +192,7 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 		RequestQuota:  params.RequestQuota,
 		TokenQuota:    params.TokenQuota,
 		AllowedModels: allowedModels,
+		RateLimits:    rateLimits,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -193,9 +206,9 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 	_, err = exec(`
 		INSERT INTO api_keys (
 			id, key_hash, key_prefix, name, description, source, issuer_jti, status, expires_at, forced_expired,
-			request_quota, token_quota, allowed_models, used_requests, used_tokens, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
-	`, key.ID, HashKey(plain), key.KeyPrefix, key.Name, key.Description, key.Source, key.IssuerJTI, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, allowedModelsJSON, formatTime(key.CreatedAt), formatTime(key.UpdatedAt))
+			request_quota, token_quota, allowed_models, rate_limits, used_requests, used_tokens, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+	`, key.ID, HashKey(plain), key.KeyPrefix, key.Name, key.Description, key.Source, key.IssuerJTI, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, allowedModelsJSON, rateLimitsJSON, formatTime(key.CreatedAt), formatTime(key.UpdatedAt))
 	if err != nil {
 		return CreatedAPIKey{}, err
 	}
@@ -205,7 +218,7 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota,
-		       allowed_models, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
+		       allowed_models, rate_limits, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -229,7 +242,7 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 func (s *Store) GetAPIKey(ctx context.Context, id string) (APIKey, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota,
-		       allowed_models, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
+		       allowed_models, rate_limits, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE id = ?
 	`, id)
@@ -239,7 +252,7 @@ func (s *Store) GetAPIKey(ctx context.Context, id string) (APIKey, error) {
 func (s *Store) FindAPIKeyByPlainText(ctx context.Context, plain string) (APIKey, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota,
-		       allowed_models, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
+		       allowed_models, rate_limits, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE key_hash = ? AND deleted_at IS NULL
 	`, HashKey(plain))
@@ -293,7 +306,18 @@ func (s *Store) UpdateAPIKey(ctx context.Context, id string, patch APIKeyPatch) 
 	if patch.AllowedModelsSet {
 		key.AllowedModels = NormalizeAllowedModels(patch.AllowedModels)
 	}
+	if patch.RateLimitsSet {
+		rateLimits, err := NormalizeRateLimits(patch.RateLimits)
+		if err != nil {
+			return APIKey{}, err
+		}
+		key.RateLimits = rateLimits
+	}
 	allowedModelsJSON, err := encodeAllowedModels(key.AllowedModels)
+	if err != nil {
+		return APIKey{}, err
+	}
+	rateLimitsJSON, err := encodeRateLimits(key.RateLimits)
 	if err != nil {
 		return APIKey{}, err
 	}
@@ -302,9 +326,9 @@ func (s *Store) UpdateAPIKey(ctx context.Context, id string, patch APIKeyPatch) 
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE api_keys
 		SET name = ?, description = ?, status = ?, expires_at = ?, forced_expired = ?,
-		    request_quota = ?, token_quota = ?, allowed_models = ?, updated_at = ?
+		    request_quota = ?, token_quota = ?, allowed_models = ?, rate_limits = ?, updated_at = ?
 		WHERE id = ?
-	`, key.Name, key.Description, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, allowedModelsJSON, formatTime(key.UpdatedAt), key.ID)
+	`, key.Name, key.Description, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, allowedModelsJSON, rateLimitsJSON, formatTime(key.UpdatedAt), key.ID)
 	if err != nil {
 		return APIKey{}, err
 	}
@@ -470,6 +494,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			request_quota INTEGER NOT NULL DEFAULT 0,
 			token_quota INTEGER NOT NULL DEFAULT 0,
 			allowed_models TEXT NOT NULL DEFAULT '[]',
+			rate_limits TEXT NOT NULL DEFAULT '[]',
 			used_requests INTEGER NOT NULL DEFAULT 0,
 			used_tokens INTEGER NOT NULL DEFAULT 0,
 			last_used_at TEXT,
@@ -518,6 +543,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			request_quota INTEGER NOT NULL DEFAULT 500,
 			token_quota INTEGER NOT NULL DEFAULT 2000000,
 			allowed_models TEXT NOT NULL DEFAULT '[]',
+			rate_limits TEXT NOT NULL DEFAULT '[]',
 			jwt TEXT NOT NULL DEFAULT '',
 			expires_at TEXT,
 			last_issued_at TEXT,
@@ -539,6 +565,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE api_keys ADD COLUMN last_used_at TEXT`,
 		`ALTER TABLE api_keys ADD COLUMN deleted_at TEXT`,
 		`ALTER TABLE api_keys ADD COLUMN allowed_models TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE api_keys ADD COLUMN rate_limits TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE request_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE request_logs ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE request_logs ADD COLUMN cache_hit_tokens INTEGER NOT NULL DEFAULT 0`,
@@ -546,6 +573,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE jwt_grants ADD COLUMN request_quota INTEGER NOT NULL DEFAULT 500`,
 		`ALTER TABLE jwt_grants ADD COLUMN token_quota INTEGER NOT NULL DEFAULT 2000000`,
 		`ALTER TABLE jwt_grants ADD COLUMN allowed_models TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE jwt_grants ADD COLUMN rate_limits TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE jwt_grants ADD COLUMN jwt TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isDuplicateColumnError(err) {
@@ -739,7 +767,7 @@ func scanAPIKey(scanner apiKeyScanner) (APIKey, error) {
 	var key APIKey
 	var expiresAt, lastUsedAt, deletedAt sql.NullString
 	var forcedExpired int
-	var allowedModels string
+	var allowedModels, rateLimits string
 	var createdAt, updatedAt string
 	err := scanner.Scan(
 		&key.ID,
@@ -754,6 +782,7 @@ func scanAPIKey(scanner apiKeyScanner) (APIKey, error) {
 		&key.RequestQuota,
 		&key.TokenQuota,
 		&allowedModels,
+		&rateLimits,
 		&key.UsedRequests,
 		&key.UsedTokens,
 		&lastUsedAt,
@@ -772,6 +801,11 @@ func scanAPIKey(scanner apiKeyScanner) (APIKey, error) {
 		return APIKey{}, err
 	}
 	key.AllowedModels = decodedAllowedModels
+	decodedRateLimits, err := decodeRateLimits(rateLimits)
+	if err != nil {
+		return APIKey{}, err
+	}
+	key.RateLimits = decodedRateLimits
 	if expiresAt.Valid {
 		parsed, err := parseTime(expiresAt.String)
 		if err != nil {
