@@ -87,7 +87,21 @@ pools:
 - `protocol` 只能是 `openai` 或 `anthropic`。
 - `endpoints.openai_chat_completions` 和 `endpoints.anthropic_messages` 可用于覆盖上游路径。
 
-### 3. 配置 JWT Grant 签发密钥
+### 3. 导入模型价格
+
+管理站 `/pricing` 读取 SQLite 中的 `model_prices`，不会从 provider YAML 自动生成。需要为每个对外暴露的 `models[].public` 配置价格；否则成本估算会为 `0`，金额固定窗口限流也无法对该模型生效。
+
+仓库提供了常用模型的初始价格脚本：
+
+```bash
+sqlite3 data/transit-hub.db < scripts/seed_prices.sql
+```
+
+如果 `.env` 中修改了 `DB_PATH`，请把命令里的 `data/transit-hub.db` 换成实际数据库路径。价格单位是当前 `CURRENCY` 下的每百万 token 金额，脚本以 micro-CNY 存储；导入后刷新管理站 `/pricing` 即可看到多模型价格清单。
+
+脚本包含 DeepSeek、MiniMax 和 Mimo 的常见公开模型名。当前价格模型支持 input、cache hit/read 和 output 三项；MiniMax 的 cache write 费用没有独立字段，会按普通 input 估算。生产导入前请按实际上游账单复核，尤其是自定义公开模型名、长上下文档位、优先级服务或非 CNY 结算场景。
+
+### 4. 配置 JWT Grant 签发密钥
 
 如果需要开放自动发放桌面端 API Key 的接口，准备 issuer 配置和 RSA 密钥：
 
@@ -112,7 +126,7 @@ default_api_key_token_quota: 2000000
 
 `private_key_path` 和 `public_key_path` 支持相对 issuer config 文件所在目录的路径。未配置 issuer 时服务仍会启动，但 `/api/apply-apikey` 和 `/admin/jwt-grants` 创建接口会返回 `503`。
 
-### 4. 启动服务
+### 5. 启动服务
 
 本地启动：
 
