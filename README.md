@@ -147,7 +147,7 @@ docker network create transit-hub-net
 docker compose up -d --build
 ```
 
-容器启动前同样需要先准备 `.env`，并在 `configs/providers/` 下放置真实的 provider 配置。容器会固定监听 `:8080`，加入 external Docker network `transit-hub-net`，挂载 `./data` 保存 SQLite 数据库，并以只读方式挂载 `./configs` 读取 provider 和 issuer 配置。
+容器启动前同样需要先准备 `.env`，并在 `configs/providers/` 下放置真实的 provider 配置。后端镜像名固定为 `transit-hub-server`，容器名固定为 `transit-hub-server`；容器会固定监听 `:8080`，加入 external Docker network `transit-hub-net`，挂载 `./data` 保存 SQLite 数据库，并以只读方式挂载 `./configs` 读取 provider 和 issuer 配置。
 
 生产部署时后端不映射宿主机端口，对外入口由 `transit-hub-website` 提供。website 容器会在同一个 `transit-hub-net` 网络内通过服务名 `transit-hub:8080` 访问后端。
 

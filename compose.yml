@@ -1,5 +1,7 @@
 services:
   transit-hub:
+    image: transit-hub-server
+    container_name: transit-hub-server
     build:
       context: .
       dockerfile: Dockerfile
