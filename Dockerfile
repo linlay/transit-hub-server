@@ -8,13 +8,14 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/transit-hub ./cmd/transit-hub
+RUN mkdir -p /out/root/app/data /out/root/app/configs /out/root/etc/ssl/certs \
+	&& cp /etc/ssl/certs/ca-certificates.crt /out/root/etc/ssl/certs/ca-certificates.crt
 
-FROM debian:bookworm-slim
+FROM scratch
 
 WORKDIR /app
-RUN mkdir -p /app/data /app/configs /etc/ssl/certs
 
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=builder /out/root/ /
 COPY --from=builder /out/transit-hub /app/transit-hub
 
 EXPOSE 8080
