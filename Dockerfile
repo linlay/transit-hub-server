@@ -11,13 +11,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/transit
 
 FROM debian:bookworm-slim
 
-RUN apt-get update \
-	&& apt-get install -y --no-install-recommends ca-certificates \
-	&& rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
-RUN mkdir -p /app/data /app/configs
+RUN mkdir -p /app/data /app/configs /etc/ssl/certs
 
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=builder /out/transit-hub /app/transit-hub
 
 EXPOSE 8080
