@@ -9,6 +9,9 @@ models:
   - public: minimax-text
     upstream: minimax-text-01
     pool: primary
+    owned_by: minimax
+    display_name: MiniMax Text
+    created_at: "2026-01-01T00:00:00Z"
 pools:
   - name: primary
     accounts:

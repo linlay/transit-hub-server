@@ -58,6 +58,9 @@ type Route struct {
 	UpstreamModel string
 	ProviderName  string
 	PoolName      string
+	OwnedBy       string
+	DisplayName   string
+	CreatedAt     time.Time
 	Provider      *Provider
 	Pool          *Pool
 }
@@ -190,6 +193,26 @@ func (r *Registry) PublicModels() []string {
 	}
 	sort.Strings(models)
 	return models
+}
+
+func (r *Registry) PublicRoutes(protocol string) []Route {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	routes := make([]Route, 0, len(r.routes))
+	for _, route := range r.routes {
+		if protocol != "" && route.Protocol != protocol {
+			continue
+		}
+		routes = append(routes, route)
+	}
+	sort.Slice(routes, func(i, j int) bool {
+		if routes[i].PublicModel != routes[j].PublicModel {
+			return routes[i].PublicModel < routes[j].PublicModel
+		}
+		return routes[i].Protocol < routes[j].Protocol
+	})
+	return routes
 }
 
 func (r *Registry) ResolveConnectivityTarget(target ConnectivityTarget) (Route, *Account, error) {
@@ -439,6 +462,10 @@ func build(configs []config.ProviderConfig, options CircuitOptions) (map[string]
 				poolName = provider.DefaultPool
 			}
 			pool := provider.Pools[poolName]
+			ownedBy, displayName, createdAt, err := modelMetadata(provider.Name, model)
+			if err != nil {
+				return nil, nil, err
+			}
 			key := routeKey(provider.Protocol, model.Public)
 			if _, exists := routes[key]; exists {
 				return nil, nil, fmt.Errorf("duplicate route for protocol %q model %q", provider.Protocol, model.Public)
@@ -449,6 +476,9 @@ func build(configs []config.ProviderConfig, options CircuitOptions) (map[string]
 				UpstreamModel: model.Upstream,
 				ProviderName:  provider.Name,
 				PoolName:      poolName,
+				OwnedBy:       ownedBy,
+				DisplayName:   displayName,
+				CreatedAt:     createdAt,
 				Provider:      provider,
 				Pool:          pool,
 			}
@@ -456,6 +486,26 @@ func build(configs []config.ProviderConfig, options CircuitOptions) (map[string]
 	}
 
 	return providers, routes, nil
+}
+
+func modelMetadata(providerName string, model config.ModelConfig) (string, string, time.Time, error) {
+	ownedBy := strings.TrimSpace(model.OwnedBy)
+	if ownedBy == "" {
+		ownedBy = providerName
+	}
+	displayName := strings.TrimSpace(model.DisplayName)
+	if displayName == "" {
+		displayName = strings.TrimSpace(model.Public)
+	}
+	createdAt := time.Unix(0, 0).UTC()
+	if raw := strings.TrimSpace(model.CreatedAt); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return "", "", time.Time{}, fmt.Errorf("model %q created_at is invalid: %w", model.Public, err)
+		}
+		createdAt = parsed.UTC()
+	}
+	return ownedBy, displayName, createdAt, nil
 }
 
 func routeKey(protocol, publicModel string) string {

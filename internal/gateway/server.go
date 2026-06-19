@@ -120,6 +120,17 @@ func (g *Gateway) Handler() http.Handler {
 	})
 
 	r.Post("/api/apply-apikey", g.applyAPIKey)
+	r.Get("/api/me", g.currentAPIKey)
+	r.Get("/api/me/limits", g.currentAPIKeyLimits)
+	r.Get("/api/me/usage", g.currentAPIKeyUsage)
+	r.Get("/api/me/balance", g.currentAPIKeyBalance)
+	r.Get("/api/me/logs", g.currentAPIKeyLogs)
+	r.Get("/api/me/sessions", g.currentAPIKeySessions)
+	r.Get("/api/me/prices", g.currentAPIKeyPrices)
+	r.Get("/v1/models", g.listOpenAIModels)
+	r.Get("/v1/models/{model_id}", g.retrieveOpenAIModel)
+	r.Get("/anthropic/v1/models", g.listAnthropicModels)
+	r.Get("/anthropic/v1/models/{model_id}", g.retrieveAnthropicModel)
 	r.Post("/v1/chat/completions", g.proxy("openai", "openai_chat_completions"))
 	r.Post("/v1/messages", g.proxy("anthropic", "anthropic_messages"))
 	return r

@@ -215,6 +215,238 @@ func TestAPIKeyModelWhitelistEmptyDeniesAllModels(t *testing.T) {
 	}
 }
 
+func TestModelEndpointsFilterAllowedModelsByProtocol(t *testing.T) {
+	openAIConfig := openAIProvider("https://openai-upstream.invalid")
+	openAIConfig.Models[0].OwnedBy = "minimax"
+	openAIConfig.Models[0].CreatedAt = "2026-01-02T03:04:05Z"
+	openAIConfig.Models = append(openAIConfig.Models, config.ModelConfig{
+		Public:   "other-openai",
+		Upstream: "other-upstream",
+		Pool:     "primary",
+	})
+	anthropicConfig := anthropicProvider("https://anthropic-upstream.invalid")
+	anthropicConfig.Models[0].DisplayName = "Claude Public"
+	anthropicConfig.Models[0].CreatedAt = "2026-02-03T04:05:06Z"
+	app, _, plainKey := newTestGatewayWithKey(t, []config.ProviderConfig{openAIConfig, anthropicConfig}, store.CreateAPIKeyParams{
+		Name:          "model-list",
+		AllowedModels: []string{"public-model", "claude-public"},
+	})
+
+	openAIListReq := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	openAIListReq.Header.Set("Authorization", "Bearer "+plainKey)
+	openAIListRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(openAIListRec, openAIListReq)
+	if openAIListRec.Code != http.StatusOK {
+		t.Fatalf("openai list status = %d, body = %s", openAIListRec.Code, openAIListRec.Body.String())
+	}
+	var openAIList openAIModelListResponse
+	if err := json.Unmarshal(openAIListRec.Body.Bytes(), &openAIList); err != nil {
+		t.Fatal(err)
+	}
+	if openAIList.Object != "list" || len(openAIList.Data) != 1 || openAIList.Data[0].ID != "public-model" || openAIList.Data[0].OwnedBy != "minimax" {
+		t.Fatalf("unexpected openai model list: %#v", openAIList)
+	}
+	createdAt, err := time.Parse(time.RFC3339, "2026-01-02T03:04:05Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if openAIList.Data[0].Created != createdAt.Unix() {
+		t.Fatalf("openai created = %d, want %d", openAIList.Data[0].Created, createdAt.Unix())
+	}
+
+	openAIRetrieveReq := httptest.NewRequest(http.MethodGet, "/v1/models/public-model", nil)
+	openAIRetrieveReq.Header.Set("x-api-key", plainKey)
+	openAIRetrieveRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(openAIRetrieveRec, openAIRetrieveReq)
+	if openAIRetrieveRec.Code != http.StatusOK {
+		t.Fatalf("openai retrieve status = %d, body = %s", openAIRetrieveRec.Code, openAIRetrieveRec.Body.String())
+	}
+
+	openAIDeniedReq := httptest.NewRequest(http.MethodGet, "/v1/models/claude-public", nil)
+	openAIDeniedReq.Header.Set("Authorization", "Bearer "+plainKey)
+	openAIDeniedRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(openAIDeniedRec, openAIDeniedReq)
+	if openAIDeniedRec.Code != http.StatusNotFound {
+		t.Fatalf("openai denied status = %d, body = %s", openAIDeniedRec.Code, openAIDeniedRec.Body.String())
+	}
+
+	anthropicListReq := httptest.NewRequest(http.MethodGet, "/anthropic/v1/models", nil)
+	anthropicListReq.Header.Set("x-api-key", plainKey)
+	anthropicListRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(anthropicListRec, anthropicListReq)
+	if anthropicListRec.Code != http.StatusOK {
+		t.Fatalf("anthropic list status = %d, body = %s", anthropicListRec.Code, anthropicListRec.Body.String())
+	}
+	var anthropicList anthropicModelListResponse
+	if err := json.Unmarshal(anthropicListRec.Body.Bytes(), &anthropicList); err != nil {
+		t.Fatal(err)
+	}
+	if len(anthropicList.Data) != 1 || anthropicList.Data[0].ID != "claude-public" || anthropicList.Data[0].DisplayName != "Claude Public" || anthropicList.HasMore {
+		t.Fatalf("unexpected anthropic model list: %#v", anthropicList)
+	}
+
+	anthropicRetrieveReq := httptest.NewRequest(http.MethodGet, "/anthropic/v1/models/claude-public", nil)
+	anthropicRetrieveReq.Header.Set("Authorization", "Bearer "+plainKey)
+	anthropicRetrieveRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(anthropicRetrieveRec, anthropicRetrieveReq)
+	if anthropicRetrieveRec.Code != http.StatusOK {
+		t.Fatalf("anthropic retrieve status = %d, body = %s", anthropicRetrieveRec.Code, anthropicRetrieveRec.Body.String())
+	}
+
+	anthropicDeniedReq := httptest.NewRequest(http.MethodGet, "/anthropic/v1/models/public-model", nil)
+	anthropicDeniedReq.Header.Set("x-api-key", plainKey)
+	anthropicDeniedRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(anthropicDeniedRec, anthropicDeniedReq)
+	if anthropicDeniedRec.Code != http.StatusNotFound {
+		t.Fatalf("anthropic denied status = %d, body = %s", anthropicDeniedRec.Code, anthropicDeniedRec.Body.String())
+	}
+}
+
+func TestAnthropicModelPagination(t *testing.T) {
+	providerConfig := anthropicProvider("https://anthropic-upstream.invalid")
+	providerConfig.Models = []config.ModelConfig{
+		{Public: "claude-a", Upstream: "upstream-a", Pool: "primary"},
+		{Public: "claude-b", Upstream: "upstream-b", Pool: "primary"},
+		{Public: "claude-c", Upstream: "upstream-c", Pool: "primary"},
+	}
+	app, _, plainKey := newTestGateway(t, []config.ProviderConfig{providerConfig})
+
+	first := anthropicModelsRequest(t, app, plainKey, "/anthropic/v1/models?limit=1")
+	if len(first.Data) != 1 || first.Data[0].ID != "claude-a" || first.FirstID != "claude-a" || first.LastID != "claude-a" || !first.HasMore {
+		t.Fatalf("unexpected first page: %#v", first)
+	}
+	second := anthropicModelsRequest(t, app, plainKey, "/anthropic/v1/models?after_id=claude-a&limit=1")
+	if len(second.Data) != 1 || second.Data[0].ID != "claude-b" || !second.HasMore {
+		t.Fatalf("unexpected second page: %#v", second)
+	}
+	before := anthropicModelsRequest(t, app, plainKey, "/anthropic/v1/models?before_id=claude-c&limit=2")
+	if len(before.Data) != 2 || before.Data[0].ID != "claude-a" || before.Data[1].ID != "claude-b" || before.HasMore {
+		t.Fatalf("unexpected before page: %#v", before)
+	}
+}
+
+func TestSelfManagementEndpointsAllowQuotaExhaustedWithoutUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	app, db, plainKey := newTestGatewayWithKey(t, []config.ProviderConfig{openAIProvider(upstream.URL)}, store.CreateAPIKeyParams{
+		Name:         "self-check",
+		RequestQuota: 1,
+	})
+	firstRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(firstRec, proxyRequest(plainKey))
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d, body = %s", firstRec.Code, firstRec.Body.String())
+	}
+
+	for _, path := range []string{
+		"/api/me",
+		"/api/me/limits",
+		"/api/me/usage?bucket=day",
+		"/api/me/balance",
+		"/api/me/logs",
+		"/api/me/sessions",
+		"/api/me/prices",
+		"/v1/models",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+plainKey)
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, body = %s", path, rec.Code, rec.Body.String())
+		}
+	}
+
+	key, err := db.FindAPIKeyByPlainText(t.Context(), plainKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.UsedRequests != 1 || key.UsedTokens != 2 {
+		t.Fatalf("self endpoints consumed usage: %#v", key)
+	}
+	logs, err := db.ListRequestLogs(t.Context(), store.RequestLogQuery{APIKeyID: key.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logs.Total != 1 {
+		t.Fatalf("self endpoints wrote request logs: %#v", logs)
+	}
+
+	disabled := "disabled"
+	if _, err := db.UpdateAPIKey(t.Context(), key.ID, store.APIKeyPatch{Status: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/me/limits", nil)
+	req.Header.Set("Authorization", "Bearer "+plainKey)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("disabled self status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSelfBalanceAndPricesUseTransitHubLimits(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":3,"completion_tokens":4}}`))
+	}))
+	defer upstream.Close()
+
+	app, db, plainKey := newTestGatewayWithKey(t, []config.ProviderConfig{openAIProvider(upstream.URL)}, store.CreateAPIKeyParams{
+		Name:       "cost-self-check",
+		RateLimits: []store.RateLimit{{Window: store.RateLimitWindow1H, CostQuotaMicro: 100}},
+	})
+	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{
+		Protocol:                   "openai",
+		PublicModel:                "public-model",
+		InputCostMicroPer1MTokens:  2_000_000,
+		OutputCostMicroPer1MTokens: 4_000_000,
+		Currency:                   "CNY",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	proxyRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(proxyRec, proxyRequest(plainKey))
+	if proxyRec.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d, body = %s", proxyRec.Code, proxyRec.Body.String())
+	}
+
+	balanceReq := httptest.NewRequest(http.MethodGet, "/api/me/balance", nil)
+	balanceReq.Header.Set("Authorization", "Bearer "+plainKey)
+	balanceRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(balanceRec, balanceReq)
+	if balanceRec.Code != http.StatusOK {
+		t.Fatalf("balance status = %d, body = %s", balanceRec.Code, balanceRec.Body.String())
+	}
+	var balance selfBalanceResponse
+	if err := json.Unmarshal(balanceRec.Body.Bytes(), &balance); err != nil {
+		t.Fatal(err)
+	}
+	if balance.Currency != "CNY" || balance.Unlimited || balance.CostMicro != 22 || len(balance.Items) != 1 || balance.Items[0].CostRemainingMicro != 78 {
+		t.Fatalf("unexpected balance: %#v", balance)
+	}
+
+	pricesReq := httptest.NewRequest(http.MethodGet, "/api/me/prices", nil)
+	pricesReq.Header.Set("Authorization", "Bearer "+plainKey)
+	pricesRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(pricesRec, pricesReq)
+	if pricesRec.Code != http.StatusOK {
+		t.Fatalf("prices status = %d, body = %s", pricesRec.Code, pricesRec.Body.String())
+	}
+	var prices struct {
+		Items []store.ModelPrice `json:"items"`
+	}
+	if err := json.Unmarshal(pricesRec.Body.Bytes(), &prices); err != nil {
+		t.Fatal(err)
+	}
+	if len(prices.Items) != 1 || prices.Items[0].PublicModel != "public-model" || prices.Items[0].Currency != "CNY" {
+		t.Fatalf("unexpected prices: %#v", prices)
+	}
+}
+
 func TestQuotaAndForcedExpirationRejectRequests(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
@@ -1763,6 +1995,22 @@ func proxyRequestWithModel(plainKey, model string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+plainKey)
 	return req
+}
+
+func anthropicModelsRequest(t *testing.T, app *Gateway, plainKey, path string) anthropicModelListResponse {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("x-api-key", plainKey)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s status = %d, body = %s", path, rec.Code, rec.Body.String())
+	}
+	var response anthropicModelListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	return response
 }
 
 func openAIProvider(baseURL string) config.ProviderConfig {

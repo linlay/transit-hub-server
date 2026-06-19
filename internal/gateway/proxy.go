@@ -202,6 +202,30 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 }
 
 func (g *Gateway) authenticatePublicKey(w http.ResponseWriter, r *http.Request) (store.APIKey, bool) {
+	key, ok := g.lookupPublicKey(w, r)
+	if !ok {
+		return store.APIKey{}, false
+	}
+	if err := store.ValidateUsableKey(key, time.Now().UTC()); err != nil {
+		writePublicKeyValidationError(w, err)
+		return store.APIKey{}, false
+	}
+	return key, true
+}
+
+func (g *Gateway) authenticatePublicMetadataKey(w http.ResponseWriter, r *http.Request) (store.APIKey, bool) {
+	key, ok := g.lookupPublicKey(w, r)
+	if !ok {
+		return store.APIKey{}, false
+	}
+	if err := validatePublicKeyActive(key, time.Now().UTC()); err != nil {
+		writePublicKeyValidationError(w, err)
+		return store.APIKey{}, false
+	}
+	return key, true
+}
+
+func (g *Gateway) lookupPublicKey(w http.ResponseWriter, r *http.Request) (store.APIKey, bool) {
 	token := bearerToken(r.Header.Get("Authorization"))
 	if token == "" {
 		token = r.Header.Get("x-api-key")
@@ -219,15 +243,25 @@ func (g *Gateway) authenticatePublicKey(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return store.APIKey{}, false
 	}
-	if err := store.ValidateUsableKey(key, time.Now().UTC()); err != nil {
-		status := http.StatusUnauthorized
-		if errors.Is(err, store.ErrQuotaExhausted) {
-			status = http.StatusTooManyRequests
-		}
-		writeError(w, status, err.Error())
-		return store.APIKey{}, false
-	}
 	return key, true
+}
+
+func validatePublicKeyActive(key store.APIKey, now time.Time) error {
+	if key.Status != "active" || key.ForcedExpired {
+		return store.ErrKeyInactive
+	}
+	if key.ExpiresAt != nil && !key.ExpiresAt.After(now) {
+		return store.ErrKeyExpired
+	}
+	return nil
+}
+
+func writePublicKeyValidationError(w http.ResponseWriter, err error) {
+	status := http.StatusUnauthorized
+	if errors.Is(err, store.ErrQuotaExhausted) {
+		status = http.StatusTooManyRequests
+	}
+	writeError(w, status, err.Error())
 }
 
 func (g *Gateway) enforceAPIKeyRateLimits(w http.ResponseWriter, r *http.Request, key store.APIKey) bool {

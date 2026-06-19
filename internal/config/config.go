@@ -47,9 +47,12 @@ type ProviderConfig struct {
 }
 
 type ModelConfig struct {
-	Public   string `yaml:"public" json:"public"`
-	Upstream string `yaml:"upstream" json:"upstream"`
-	Pool     string `yaml:"pool" json:"pool,omitempty"`
+	Public      string `yaml:"public" json:"public"`
+	Upstream    string `yaml:"upstream" json:"upstream"`
+	Pool        string `yaml:"pool" json:"pool,omitempty"`
+	OwnedBy     string `yaml:"owned_by" json:"owned_by,omitempty"`
+	DisplayName string `yaml:"display_name" json:"display_name,omitempty"`
+	CreatedAt   string `yaml:"created_at" json:"created_at,omitempty"`
 }
 
 type PoolConfig struct {

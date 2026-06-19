@@ -71,6 +71,9 @@ models:
   - public: example-chat
     upstream: example-upstream-chat
     pool: primary
+    owned_by: deepseek
+    display_name: Example Chat
+    created_at: "2026-01-01T00:00:00Z"
 pools:
   - name: primary
     accounts:
@@ -86,6 +89,7 @@ pools:
 - 真实配置里会包含上游密钥，已被 `.gitignore` 忽略。
 - `protocol` 只能是 `openai` 或 `anthropic`。
 - `endpoints.openai_chat_completions` 和 `endpoints.anthropic_messages` 可用于覆盖上游路径。
+- `models[].owned_by`、`models[].display_name`、`models[].created_at` 可选，用于公开模型查询接口；未配置时分别使用 provider 名、公开模型名和 `1970-01-01T00:00:00Z`。
 
 ### 3. 导入模型价格
 
@@ -316,6 +320,49 @@ curl -sS http://localhost:8080/v1/messages \
       {"role": "user", "content": "hello"}
     ]
   }'
+```
+
+模型查询接口同样使用客户端 API Key，不消耗请求或 token 额度，并按当前 key 的 `allowed_models` 过滤：
+
+```bash
+# OpenAI 兼容模型列表与详情
+curl -sS http://localhost:8080/v1/models \
+  -H "Authorization: Bearer $CLIENT_API_KEY"
+
+curl -sS http://localhost:8080/v1/models/example-chat \
+  -H "Authorization: Bearer $CLIENT_API_KEY"
+
+# Anthropic 兼容模型列表与详情
+curl -sS 'http://localhost:8080/anthropic/v1/models?limit=20' \
+  -H "x-api-key: $CLIENT_API_KEY"
+
+curl -sS http://localhost:8080/anthropic/v1/models/your-anthropic-public-model \
+  -H "x-api-key: $CLIENT_API_KEY"
+```
+
+当前客户端 API Key 也可以自查自身状态、限流、用量、余额视图、日志、会话和价格。这里的余额只来自 Transit Hub 的 `cost_quota_micro` 与本地 `model_prices`，不是上游 provider 钱包余额：
+
+```bash
+curl -sS http://localhost:8080/api/me \
+  -H "Authorization: Bearer $CLIENT_API_KEY"
+
+curl -sS http://localhost:8080/api/me/limits \
+  -H "Authorization: Bearer $CLIENT_API_KEY"
+
+curl -sS 'http://localhost:8080/api/me/usage?bucket=day' \
+  -H "Authorization: Bearer $CLIENT_API_KEY"
+
+curl -sS http://localhost:8080/api/me/balance \
+  -H "Authorization: Bearer $CLIENT_API_KEY"
+
+curl -sS http://localhost:8080/api/me/logs \
+  -H "Authorization: Bearer $CLIENT_API_KEY"
+
+curl -sS http://localhost:8080/api/me/sessions \
+  -H "Authorization: Bearer $CLIENT_API_KEY"
+
+curl -sS http://localhost:8080/api/me/prices \
+  -H "Authorization: Bearer $CLIENT_API_KEY"
 ```
 
 ## Provider 运维

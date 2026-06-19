@@ -420,6 +420,28 @@ func (s *Store) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficBucke
 	return buckets, rows.Err()
 }
 
+func (s *Store) RequestLogSummary(ctx context.Context, query RequestLogQuery) (TrafficBucket, error) {
+	where, args := requestLogWhere(query.APIKeyID, query.From, query.To)
+	var summary TrafficBucket
+	err := s.db.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT COUNT(*),
+		       COALESCE(SUM(request_tokens), 0),
+		       COALESCE(SUM(response_tokens), 0),
+		       COALESCE(SUM(cache_hit_tokens), 0),
+		       COALESCE(SUM(cache_miss_tokens), 0),
+		       COALESCE(SUM(cost_micro), 0),
+		       COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0),
+		       COALESCE(AVG(latency_ms), 0)
+		FROM request_logs
+		%s
+	`, where), args...).Scan(&summary.Requests, &summary.RequestTokens, &summary.ResponseTokens, &summary.CacheHitTokens, &summary.CacheMissTokens, &summary.CostMicro, &summary.ErrorRequests, &summary.AverageLatency)
+	if err != nil {
+		return TrafficBucket{}, err
+	}
+	fillTrafficDerived(&summary)
+	return summary, nil
+}
+
 func (s *Store) APIKeyUsage(ctx context.Context, apiKeyID string, activeWindow time.Duration, now time.Time, loc *time.Location) (map[string]any, error) {
 	key, err := s.GetAPIKey(ctx, apiKeyID)
 	if err != nil {
