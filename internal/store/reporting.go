@@ -381,8 +381,11 @@ func (s *Store) Overview(ctx context.Context, activeWindow time.Duration) (Overv
 
 func (s *Store) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficBucket, error) {
 	bucketExpr := `substr(created_at, 1, 10)`
-	if strings.EqualFold(query.Bucket, "hour") {
+	switch strings.ToLower(strings.TrimSpace(query.Bucket)) {
+	case "hour":
 		bucketExpr = `substr(created_at, 1, 13)`
+	case "month":
+		bucketExpr = `substr(created_at, 1, 7)`
 	}
 	where, args := requestLogWhere(query.APIKeyID, query.From, query.To)
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
