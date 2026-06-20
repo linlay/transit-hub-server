@@ -1,17 +1,29 @@
 name: minimax
 protocol: openai
-base_url: https://api.minimax.chat
+base_url: https://api.minimaxi.com
 default_pool: primary
 headers: {}
 # endpoints:
 #   openai_chat_completions: /v1/chat/completions
 models:
-  - public: minimax-text
-    upstream: minimax-text-01
+  - public: minimax-m3-openai
+    upstream: MiniMax-M3
     pool: primary
-    owned_by: minimax
-    display_name: MiniMax Text
-    created_at: "2026-01-01T00:00:00Z"
+  - public: minimax-m3-long-openai
+    upstream: MiniMax-M3
+    pool: primary
+  - public: minimax-m3-priority-openai
+    upstream: MiniMax-M3
+    pool: primary
+  - public: minimax-m3-long-priority-openai
+    upstream: MiniMax-M3
+    pool: primary
+  - public: minimax-m2_7-openai
+    upstream: MiniMax-M2.7
+    pool: primary
+  - public: minimax-m2_7-highspeed-openai
+    upstream: MiniMax-M2.7-highspeed
+    pool: primary
 pools:
   - name: primary
     accounts:
