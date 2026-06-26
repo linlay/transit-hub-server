@@ -919,16 +919,17 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 	}
 	var filtered struct {
 		Items []struct {
-			ID        string `json:"id"`
-			Source    string `json:"source"`
-			IssuerJTI string `json:"issuer_jti"`
+			ID         string `json:"id"`
+			Source     string `json:"source"`
+			IssuerJTI  string `json:"issuer_jti"`
+			IssuerName string `json:"issuer_name"`
 		} `json:"items"`
 		Total int64 `json:"total"`
 	}
 	if err := json.Unmarshal(filterRec.Body.Bytes(), &filtered); err != nil {
 		t.Fatal(err)
 	}
-	if filtered.Total != 1 || len(filtered.Items) != 1 || filtered.Items[0].Source != "jwt" || filtered.Items[0].IssuerJTI != jti {
+	if filtered.Total != 1 || len(filtered.Items) != 1 || filtered.Items[0].Source != "jwt" || filtered.Items[0].IssuerJTI != jti || filtered.Items[0].IssuerName != "desktop grant" {
 		t.Fatalf("unexpected filtered api keys: %#v", filtered)
 	}
 	grant, err := db.GetJWTGrant(t.Context(), jti)
@@ -1468,6 +1469,116 @@ func TestBatchAPIKeysDeleteByIssuerJTI(t *testing.T) {
 	}
 	if key.Status != "disabled" || !key.ForcedExpired || key.DeletedAt == nil {
 		t.Fatalf("unexpected deleted key state: %#v", key)
+	}
+}
+
+func TestBatchAPIKeysDeleteByIssuerName(t *testing.T) {
+	app, db, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")})
+	jti := store.GenerateJTI()
+	if _, err := db.CreateJWTGrant(t.Context(), store.CreateJWTGrantParams{
+		JTI:        jti,
+		Name:       "primary grant",
+		IssueQuota: 10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := db.CreateAPIKey(t.Context(), store.CreateAPIKeyParams{
+		Name:          "issued by primary",
+		Source:        "jwt",
+		IssuerJTI:     jti,
+		AllowedModels: []string{"public-model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api-keys/batch", bytes.NewBufferString(`{
+		"action":"delete",
+		"issuer_jti":"primary grant"
+	}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("batch delete by name status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var result store.APIKeyBatchResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Matched != 1 || result.Updated != 1 {
+		t.Fatalf("unexpected batch result: %#v", result)
+	}
+	key, err := db.GetAPIKey(t.Context(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Status != "disabled" || !key.ForcedExpired || key.DeletedAt == nil {
+		t.Fatalf("unexpected deleted key state: %#v", key)
+	}
+}
+
+func TestListAPIKeysFilterByIssuerNameAndJTI(t *testing.T) {
+	app, db, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")})
+	jtiAlpha := store.GenerateJTI()
+	jtiBeta := store.GenerateJTI()
+	if _, err := db.CreateJWTGrant(t.Context(), store.CreateJWTGrantParams{JTI: jtiAlpha, Name: "alpha rollout", IssueQuota: 10, AllowedModels: []string{"public-model"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateJWTGrant(t.Context(), store.CreateJWTGrantParams{JTI: jtiBeta, Name: "beta rollout", IssueQuota: 10, AllowedModels: []string{"public-model"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateAPIKey(t.Context(), store.CreateAPIKeyParams{Name: "alpha key", Source: "jwt", IssuerJTI: jtiAlpha, AllowedModels: []string{"public-model"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateAPIKey(t.Context(), store.CreateAPIKeyParams{Name: "beta key", Source: "jwt", IssuerJTI: jtiBeta, AllowedModels: []string{"public-model"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateAPIKey(t.Context(), store.CreateAPIKeyParams{Name: "admin key", AllowedModels: []string{"public-model"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	listByName := httptest.NewRequest(http.MethodGet, "/admin/api-keys?issuer_jti=alpha", nil)
+	listByName.Header.Set("Authorization", "Bearer admin")
+	listByNameRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(listByNameRec, listByName)
+	if listByNameRec.Code != http.StatusOK {
+		t.Fatalf("list by name status = %d, body = %s", listByNameRec.Code, listByNameRec.Body.String())
+	}
+	var named struct {
+		Items []struct {
+			Name       string `json:"name"`
+			IssuerJTI  string `json:"issuer_jti"`
+			IssuerName string `json:"issuer_name"`
+		} `json:"items"`
+		Total int64 `json:"total"`
+	}
+	if err := json.Unmarshal(listByNameRec.Body.Bytes(), &named); err != nil {
+		t.Fatal(err)
+	}
+	if named.Total != 1 || len(named.Items) != 1 || named.Items[0].Name != "alpha key" || named.Items[0].IssuerName != "alpha rollout" {
+		t.Fatalf("unexpected name-filtered response: %#v", named)
+	}
+
+	listByJTI := httptest.NewRequest(http.MethodGet, "/admin/api-keys?issuer_jti="+jtiBeta, nil)
+	listByJTI.Header.Set("Authorization", "Bearer admin")
+	listByJTIrec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(listByJTIrec, listByJTI)
+	if listByJTIrec.Code != http.StatusOK {
+		t.Fatalf("list by jti status = %d", listByJTIrec.Code)
+	}
+	var byJTI struct {
+		Items []struct {
+			Name      string `json:"name"`
+			IssuerJTI string `json:"issuer_jti"`
+		} `json:"items"`
+		Total int64 `json:"total"`
+	}
+	if err := json.Unmarshal(listByJTIrec.Body.Bytes(), &byJTI); err != nil {
+		t.Fatal(err)
+	}
+	if byJTI.Total != 1 || len(byJTI.Items) != 1 || byJTI.Items[0].Name != "beta key" || byJTI.Items[0].IssuerJTI != jtiBeta {
+		t.Fatalf("unexpected jti-filtered response: %#v", byJTI)
 	}
 }
 

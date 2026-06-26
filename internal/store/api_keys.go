@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -65,8 +67,18 @@ func (s *Store) SearchAPIKeys(ctx context.Context, params APIKeyListParams) (API
 		args = append(args, source)
 	}
 	if issuerJTI := strings.TrimSpace(params.IssuerJTI); issuerJTI != "" {
-		where = append(where, "issuer_jti = ?")
-		args = append(args, issuerJTI)
+		jtiList, err := s.resolveIssuerJTIs(ctx, issuerJTI)
+		if err != nil {
+			return APIKeyListResult{}, err
+		}
+		if len(jtiList) == 0 {
+			return APIKeyListResult{Items: []APIKey{}, Limit: limit, Offset: offset}, nil
+		}
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(jtiList)), ",")
+		where = append(where, "issuer_jti IN ("+placeholders+")")
+		for _, jti := range jtiList {
+			args = append(args, jti)
+		}
 	}
 	whereSQL := ""
 	if len(where) > 0 {
@@ -139,7 +151,7 @@ func (s *Store) BatchAPIKeys(ctx context.Context, params APIKeyBatchParams) (API
 	if action != "delete" && action != "inactive" {
 		return APIKeyBatchResult{}, fmt.Errorf("action must be delete or inactive")
 	}
-	where, args, err := apiKeyBatchWhere(params)
+	where, args, err := s.apiKeyBatchWhere(ctx, params)
 	if err != nil {
 		return APIKeyBatchResult{}, err
 	}
@@ -192,7 +204,7 @@ func (s *Store) BatchAPIKeys(ctx context.Context, params APIKeyBatchParams) (API
 	return APIKeyBatchResult{Action: action, Matched: matched, Updated: updated}, nil
 }
 
-func apiKeyBatchWhere(params APIKeyBatchParams) (string, []any, error) {
+func (s *Store) apiKeyBatchWhere(ctx context.Context, params APIKeyBatchParams) (string, []any, error) {
 	ids := []string{}
 	seen := map[string]struct{}{}
 	for _, id := range params.IDs {
@@ -221,8 +233,109 @@ func apiKeyBatchWhere(params APIKeyBatchParams) (string, []any, error) {
 		}
 	}
 	if issuerJTI != "" {
-		clauses = append(clauses, "issuer_jti = ?")
-		args = append(args, issuerJTI)
+		jtiList, err := s.resolveIssuerJTIs(ctx, issuerJTI)
+		if err != nil {
+			return "", nil, err
+		}
+		if len(jtiList) == 0 {
+			return "", nil, fmt.Errorf("no jwt grants match issuer_jti %q", issuerJTI)
+		}
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(jtiList)), ",")
+		clauses = append(clauses, "issuer_jti IN ("+placeholders+")")
+		for _, jti := range jtiList {
+			args = append(args, jti)
+		}
 	}
 	return "(" + strings.Join(clauses, " OR ") + ")", args, nil
+}
+
+func (s *Store) resolveIssuerJTIs(ctx context.Context, value string) ([]string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	seen := map[string]struct{}{value: {}}
+	jtiList := []string{value}
+	like := "%" + value + "%"
+	rows, err := s.db.QueryContext(ctx, `SELECT jti FROM jwt_grants WHERE name LIKE ?`, like)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var jti string
+		if err := rows.Scan(&jti); err != nil {
+			return nil, err
+		}
+		jti = strings.TrimSpace(jti)
+		if jti == "" {
+			continue
+		}
+		if _, ok := seen[jti]; ok {
+			continue
+		}
+		seen[jti] = struct{}{}
+		jtiList = append(jtiList, jti)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return jtiList, nil
+}
+
+func (s *Store) IssuerNamesByJTI(ctx context.Context, jtis []string) (map[string]string, error) {
+	if len(jtis) == 0 {
+		return map[string]string{}, nil
+	}
+	seen := map[string]struct{}{}
+	unique := []string{}
+	for _, jti := range jtis {
+		jti = strings.TrimSpace(jti)
+		if jti == "" {
+			continue
+		}
+		if _, ok := seen[jti]; ok {
+			continue
+		}
+		seen[jti] = struct{}{}
+		unique = append(unique, jti)
+	}
+	if len(unique) == 0 {
+		return map[string]string{}, nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(unique)), ",")
+	args := make([]any, 0, len(unique))
+	for _, jti := range unique {
+		args = append(args, jti)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT jti, name FROM jwt_grants WHERE jti IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var jti, name string
+		if err := rows.Scan(&jti, &name); err != nil {
+			return nil, err
+		}
+		out[strings.TrimSpace(jti)] = name
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) IssuerNameByJTI(ctx context.Context, jti string) (string, bool, error) {
+	jti = strings.TrimSpace(jti)
+	if jti == "" {
+		return "", false, nil
+	}
+	var name string
+	err := s.db.QueryRowContext(ctx, `SELECT name FROM jwt_grants WHERE jti = ?`, jti).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return name, true, nil
 }

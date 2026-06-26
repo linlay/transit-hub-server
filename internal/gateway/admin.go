@@ -22,6 +22,7 @@ type apiKeyResponse struct {
 	KeyPrefix     string            `json:"key_prefix"`
 	Source        string            `json:"source"`
 	IssuerJTI     string            `json:"issuer_jti,omitempty"`
+	IssuerName    string            `json:"issuer_name,omitempty"`
 	Status        string            `json:"status"`
 	ExpiresAt     *time.Time        `json:"expires_at,omitempty"`
 	ForcedExpired bool              `json:"forced_expired"`
@@ -160,8 +161,12 @@ func (g *Gateway) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	resp := toAPIKeyResponse(created.APIKey)
+	if name, ok, lookupErr := g.lookupIssuerName(r, created.APIKey.IssuerJTI); lookupErr == nil && ok {
+		resp.IssuerName = name
+	}
 	writeJSON(w, http.StatusCreated, createAPIKeyResponse{
-		apiKeyResponse: toAPIKeyResponse(created.APIKey),
+		apiKeyResponse: resp,
 		Key:            created.PlainText,
 	})
 }
@@ -181,9 +186,24 @@ func (g *Gateway) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	issuerJTIs := make([]string, 0, len(result.Items))
+	for _, key := range result.Items {
+		if key.IssuerJTI != "" {
+			issuerJTIs = append(issuerJTIs, key.IssuerJTI)
+		}
+	}
+	issuerNames, err := g.store.IssuerNamesByJTI(r.Context(), issuerJTIs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	items := make([]apiKeyResponse, 0, len(result.Items))
 	for _, key := range result.Items {
-		items = append(items, toAPIKeyResponse(key))
+		resp := toAPIKeyResponse(key)
+		if name, ok := issuerNames[key.IssuerJTI]; ok {
+			resp.IssuerName = name
+		}
+		items = append(items, resp)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":  items,
@@ -203,7 +223,11 @@ func (g *Gateway) getAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, toAPIKeyResponse(key))
+	resp := toAPIKeyResponse(key)
+	if name, ok, lookupErr := g.lookupIssuerName(r, key.IssuerJTI); lookupErr == nil && ok {
+		resp.IssuerName = name
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (g *Gateway) patchAPIKey(w http.ResponseWriter, r *http.Request) {
@@ -243,7 +267,11 @@ func (g *Gateway) patchAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, toAPIKeyResponse(key))
+	resp := toAPIKeyResponse(key)
+	if name, ok, lookupErr := g.lookupIssuerName(r, key.IssuerJTI); lookupErr == nil && ok {
+		resp.IssuerName = name
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (g *Gateway) deleteAPIKey(w http.ResponseWriter, r *http.Request) {
@@ -256,7 +284,11 @@ func (g *Gateway) deleteAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, toAPIKeyResponse(key))
+	resp := toAPIKeyResponse(key)
+	if name, ok, lookupErr := g.lookupIssuerName(r, key.IssuerJTI); lookupErr == nil && ok {
+		resp.IssuerName = name
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (g *Gateway) batchAPIKeys(w http.ResponseWriter, r *http.Request) {
@@ -350,6 +382,21 @@ func toAPIKeyResponse(key store.APIKey) apiKeyResponse {
 		CreatedAt:     key.CreatedAt,
 		UpdatedAt:     key.UpdatedAt,
 	}
+}
+
+func (g *Gateway) lookupIssuerName(r *http.Request, jti string) (string, bool, error) {
+	jti = strings.TrimSpace(jti)
+	if jti == "" || g.store == nil {
+		return "", false, nil
+	}
+	name, ok, err := g.store.IssuerNameByJTI(r.Context(), jti)
+	if err != nil {
+		return "", false, err
+	}
+	if !ok {
+		return "", false, nil
+	}
+	return name, true, nil
 }
 
 func (g *Gateway) validateAllowedModels(models []string) ([]string, error) {
