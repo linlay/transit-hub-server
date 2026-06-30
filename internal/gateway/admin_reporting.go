@@ -22,7 +22,12 @@ type modelPriceRequest struct {
 }
 
 func (g *Gateway) overview(w http.ResponseWriter, r *http.Request) {
-	overview, err := g.store.Overview(r.Context(), g.env.SessionActiveWindow)
+	from, to, err := parseTimeRange(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	overview, err := g.store.Overview(r.Context(), g.env.SessionActiveWindow, from, to)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

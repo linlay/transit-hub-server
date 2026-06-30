@@ -47,6 +47,54 @@ func TestTrafficSupportsMonthBuckets(t *testing.T) {
 	}
 }
 
+func TestOverviewSupportsTimeRange(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "overview.db"))
+	defer closeTestStore(t, store)
+
+	key, err := store.CreateAPIKey(t.Context(), CreateAPIKeyParams{Name: "overview"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	insertRequestLogForReportingTest(t, store, key.ID, time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC), 200, 10, 20, 3, 7, 111, "")
+	insertRequestLogForReportingTest(t, store, key.ID, time.Date(2026, 1, 31, 23, 0, 0, 0, time.UTC), 502, 5, 8, 2, 1, 222, "upstream")
+	insertRequestLogForReportingTest(t, store, key.ID, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), 200, 4, 6, 0, 0, 333, "")
+
+	all, err := store.Overview(t.Context(), 5*time.Minute, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all.TotalRequests != 3 || all.RequestTokens != 19 || all.ResponseTokens != 34 || all.TotalTokens != 53 || all.TotalCost != 666 || all.ErrorRequests != 1 {
+		t.Fatalf("unexpected all-time overview totals: %#v", all)
+	}
+
+	from := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 1, 31, 23, 59, 59, 0, time.UTC)
+	ranged, err := store.Overview(t.Context(), 5*time.Minute, &from, &to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ranged.TotalRequests != 1 || ranged.RequestTokens != 5 || ranged.ResponseTokens != 8 || ranged.TotalTokens != 13 || ranged.TotalCost != 222 || ranged.ErrorRequests != 1 {
+		t.Fatalf("unexpected ranged overview totals: %#v", ranged)
+	}
+	if ranged.AverageLatency != 10 {
+		t.Fatalf("unexpected ranged average latency: %f", ranged.AverageLatency)
+	}
+	if len(ranged.RecentTraffic) != 1 || ranged.RecentTraffic[0].Bucket != "2026-01-31" || ranged.RecentTraffic[0].Requests != 1 {
+		t.Fatalf("unexpected ranged recent traffic: %#v", ranged.RecentTraffic)
+	}
+
+	fullFrom := time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC)
+	fullTo := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	fullRange, err := store.Overview(t.Context(), 5*time.Minute, &fullFrom, &fullTo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fullRange.TotalRequests != all.TotalRequests || fullRange.TotalTokens != all.TotalTokens || fullRange.TotalCost != all.TotalCost || fullRange.ErrorRequests != all.ErrorRequests {
+		t.Fatalf("full-range overview does not match all-time: all=%#v fullRange=%#v", all, fullRange)
+	}
+}
+
 func insertRequestLogForReportingTest(t *testing.T, store *Store, apiKeyID string, createdAt time.Time, statusCode int, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens, costMicro int64, errorType string) {
 	t.Helper()
 	_, err := store.db.ExecContext(t.Context(), `

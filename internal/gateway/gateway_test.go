@@ -677,6 +677,26 @@ func TestAdminCreateKeyReturnsPlainTextOnce(t *testing.T) {
 	}
 }
 
+func TestAdminOverviewRejectsInvalidTimeRange(t *testing.T) {
+	app, _, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/overview?from=not-a-time", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("overview invalid range status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	allTimeReq := httptest.NewRequest(http.MethodGet, "/admin/overview", nil)
+	allTimeReq.Header.Set("Authorization", "Bearer admin")
+	allTimeRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(allTimeRec, allTimeReq)
+	if allTimeRec.Code != http.StatusOK {
+		t.Fatalf("overview all-time status = %d, body = %s", allTimeRec.Code, allTimeRec.Body.String())
+	}
+}
+
 func TestAdminModelPriceRequiresConfiguredCurrency(t *testing.T) {
 	app, _, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")})
 

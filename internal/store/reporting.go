@@ -340,21 +340,19 @@ func (s *Store) EstimateCost(ctx context.Context, protocol, publicModel string, 
 	return (requestTokens*price.InputCostMicroPer1MTokens + responseTokens*price.OutputCostMicroPer1MTokens) / 1_000_000, nil
 }
 
-func (s *Store) Overview(ctx context.Context, activeWindow time.Duration) (Overview, error) {
+func (s *Store) Overview(ctx context.Context, activeWindow time.Duration, from, to *time.Time) (Overview, error) {
 	var overview Overview
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT
-			COUNT(*),
-			COALESCE(SUM(request_tokens), 0),
-			COALESCE(SUM(response_tokens), 0),
-			COALESCE(SUM(cost_micro), 0),
-			COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0),
-			COALESCE(AVG(latency_ms), 0)
-		FROM request_logs
-	`).Scan(&overview.TotalRequests, &overview.RequestTokens, &overview.ResponseTokens, &overview.TotalCost, &overview.ErrorRequests, &overview.AverageLatency); err != nil {
+	summary, err := s.RequestLogSummary(ctx, RequestLogQuery{From: from, To: to})
+	if err != nil {
 		return Overview{}, err
 	}
-	overview.TotalTokens = overview.RequestTokens + overview.ResponseTokens
+	overview.TotalRequests = summary.Requests
+	overview.RequestTokens = summary.RequestTokens
+	overview.ResponseTokens = summary.ResponseTokens
+	overview.TotalTokens = summary.TotalTokens
+	overview.TotalCost = summary.CostMicro
+	overview.ErrorRequests = summary.ErrorRequests
+	overview.AverageLatency = summary.AverageLatency
 	counts, err := s.apiKeyCounts(ctx)
 	if err != nil {
 		return Overview{}, err
@@ -365,8 +363,13 @@ func (s *Store) Overview(ctx context.Context, activeWindow time.Duration) (Overv
 		return Overview{}, err
 	}
 	overview.ActiveDevices = activeDevices
-	from := time.Now().UTC().Add(-14 * 24 * time.Hour)
-	recent, err := s.Traffic(ctx, TrafficQuery{From: &from, Bucket: "day"})
+	var recent []TrafficBucket
+	if from != nil || to != nil {
+		recent, err = s.Traffic(ctx, TrafficQuery{From: from, To: to, Bucket: "day"})
+	} else {
+		recentFrom := time.Now().UTC().Add(-14 * 24 * time.Hour)
+		recent, err = s.Traffic(ctx, TrafficQuery{From: &recentFrom, Bucket: "day"})
+	}
 	if err != nil {
 		return Overview{}, err
 	}
