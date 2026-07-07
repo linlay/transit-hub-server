@@ -1,0 +1,26 @@
+name: babelark
+protocol: openai
+base_url: https://api.babelark.com
+default_pool: primary
+headers: {}
+endpoints:
+  openai_chat_completions: /v1/chat/completions
+  openai_embeddings: /v1/embeddings
+  openai_image_generations: /v1/images/generations
+models:
+  - public: babelark-embedding-v4
+    upstream: text-embedding-v4
+    type: embedding
+    pool: primary
+  - public: babelark-gemini-3_1-flash-image-preview
+    upstream: gemini-3.1-flash-image-preview
+    type: image-generation
+    pool: primary
+    image:
+      endpointPath: /v1/images/generations
+pools:
+  - name: primary
+    accounts:
+      - name: babelark-main
+        api_key: sk-your-upstream-key
+        weight: 1

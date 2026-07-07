@@ -1,10 +1,11 @@
 # Transit Hub
 
-Transit Hub 是一个 Go 1.26 LLM Chat API 中转网关。它对外提供 OpenAI 兼容和 Anthropic 兼容的 Chat 接口，对内按配置把公开模型名路由到上游 provider、上游模型、账号池和账号。
+Transit Hub 是一个 Go 1.26 LLM API 中转网关。它对外提供 OpenAI 兼容和 Anthropic 兼容接口，对内按配置把公开模型名路由到上游 provider、上游模型、账号池和账号。
 
 ## 功能
 
-- OpenAI 兼容接口：`POST /v1/chat/completions`
+- OpenAI 兼容接口：`POST /v1/chat/completions`、`POST /v1/embeddings`、`POST /v1/images/generations`
+- OpenAI 图片扩展入口：`POST /v1/images/edits`、`POST /v1/images/variations`
 - Anthropic 兼容接口：`POST /v1/messages`
 - 客户端 API Key 创建、禁用、过期、配额和用量累计
 - 内部管理员账号登录、网页登录态和管理后台 API
@@ -88,7 +89,9 @@ pools:
 - 文件名包含 `.example.` 的配置不会被加载。
 - 真实配置里会包含上游密钥，已被 `.gitignore` 忽略。
 - `protocol` 只能是 `openai` 或 `anthropic`。
-- `endpoints.openai_chat_completions` 和 `endpoints.anthropic_messages` 可用于覆盖上游路径。
+- `endpoints.openai_chat_completions`、`endpoints.openai_embeddings`、`endpoints.openai_image_generations`、`endpoints.openai_image_edits`、`endpoints.openai_image_variations` 和 `endpoints.anthropic_messages` 可用于覆盖上游路径。
+- `models[].type` 可选，支持 `chat`、`embedding`、`image-generation`，为空时默认为 `chat`。
+- `models[].image.endpointPath` 可为图片生成模型覆盖上游路径；未配置时使用 provider 级 endpoint，再未配置时使用请求路径。
 - `models[].owned_by`、`models[].display_name`、`models[].created_at` 可选，用于公开模型查询接口；未配置时分别使用 provider 名、公开模型名和 `1970-01-01T00:00:00Z`。
 
 ### 3. 导入模型价格
@@ -304,6 +307,32 @@ curl -sS http://localhost:8080/v1/chat/completions \
     "messages": [
       {"role": "user", "content": "hello"}
     ]
+  }'
+```
+
+OpenAI 兼容 Embeddings 请求：
+
+```bash
+curl -sS http://localhost:8080/v1/embeddings \
+  -H "Authorization: Bearer $CLIENT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "babelark-embedding-v4",
+    "input": "hello"
+  }'
+```
+
+OpenAI 兼容图片生成请求：
+
+```bash
+curl -sS http://localhost:8080/v1/images/generations \
+  -H "Authorization: Bearer $CLIENT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "babelark-gemini-3_1-flash-image-preview",
+    "prompt": "a clean transit hub at sunrise",
+    "size": "1024x1024",
+    "response_format": "b64_json"
   }'
 ```
 

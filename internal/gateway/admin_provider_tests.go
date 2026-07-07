@@ -110,7 +110,7 @@ func (g *Gateway) testProviderConnectivity(w http.ResponseWriter, r *http.Reques
 }
 
 func (g *Gateway) buildConnectivityRequest(r *http.Request, route provider.Route, account *provider.Account, endpointKey, fallbackPath string, body []byte) (*http.Request, error) {
-	upstreamURL := joinUpstreamURL(route.Provider.BaseURL, route.Provider.EndpointPath(endpointKey, fallbackPath), "")
+	upstreamURL := joinUpstreamURL(route.Provider.BaseURL, route.EndpointPath(endpointKey, fallbackPath), "")
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err

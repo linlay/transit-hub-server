@@ -47,12 +47,19 @@ type ProviderConfig struct {
 }
 
 type ModelConfig struct {
-	Public      string `yaml:"public" json:"public"`
-	Upstream    string `yaml:"upstream" json:"upstream"`
-	Pool        string `yaml:"pool" json:"pool,omitempty"`
-	OwnedBy     string `yaml:"owned_by" json:"owned_by,omitempty"`
-	DisplayName string `yaml:"display_name" json:"display_name,omitempty"`
-	CreatedAt   string `yaml:"created_at" json:"created_at,omitempty"`
+	Public      string           `yaml:"public" json:"public"`
+	Upstream    string           `yaml:"upstream" json:"upstream"`
+	Pool        string           `yaml:"pool" json:"pool,omitempty"`
+	Type        string           `yaml:"type" json:"type,omitempty"`
+	Image       ImageModelConfig `yaml:"image" json:"image,omitempty"`
+	OwnedBy     string           `yaml:"owned_by" json:"owned_by,omitempty"`
+	DisplayName string           `yaml:"display_name" json:"display_name,omitempty"`
+	CreatedAt   string           `yaml:"created_at" json:"created_at,omitempty"`
+}
+
+type ImageModelConfig struct {
+	EndpointPath      string `yaml:"endpointPath" json:"endpoint_path,omitempty"`
+	EndpointPathSnake string `yaml:"endpoint_path" json:"-"`
 }
 
 type PoolConfig struct {
@@ -87,6 +94,32 @@ type issuerConfigFile struct {
 	DefaultJWTTTL             string `yaml:"default_jwt_ttl"`
 	DefaultAPIKeyRequestQuota int64  `yaml:"default_api_key_request_quota"`
 	DefaultAPIKeyTokenQuota   int64  `yaml:"default_api_key_token_quota"`
+}
+
+const (
+	ModelTypeChat            = "chat"
+	ModelTypeEmbedding       = "embedding"
+	ModelTypeImageGeneration = "image-generation"
+)
+
+func NormalizeModelType(value string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return ModelTypeChat, nil
+	}
+	switch normalized {
+	case ModelTypeChat, ModelTypeEmbedding, ModelTypeImageGeneration:
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("must be %s, %s, or %s", ModelTypeChat, ModelTypeEmbedding, ModelTypeImageGeneration)
+	}
+}
+
+func (cfg ImageModelConfig) EndpointPathValue() string {
+	if path := strings.TrimSpace(cfg.EndpointPath); path != "" {
+		return path
+	}
+	return strings.TrimSpace(cfg.EndpointPathSnake)
 }
 
 func LoadEnv() (Env, error) {
@@ -285,6 +318,13 @@ func ValidateProviderConfig(cfg ProviderConfig) error {
 		}
 		if strings.TrimSpace(model.Upstream) == "" {
 			return fmt.Errorf("model %q upstream is required", model.Public)
+		}
+		modelType, err := NormalizeModelType(model.Type)
+		if err != nil {
+			return fmt.Errorf("model %q type %w", model.Public, err)
+		}
+		if modelType != ModelTypeImageGeneration && model.Image.EndpointPathValue() != "" {
+			return fmt.Errorf("model %q image endpointPath requires type %q", model.Public, ModelTypeImageGeneration)
 		}
 		if _, exists := seenModels[model.Public]; exists {
 			return fmt.Errorf("duplicate model mapping %q", model.Public)

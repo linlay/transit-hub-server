@@ -76,6 +76,122 @@ func TestOpenAIProxyRewritesModelAuthAndRecordsUsage(t *testing.T) {
 	}
 }
 
+func TestOpenAIEmbeddingsProxyRewritesModelAndRecordsUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/embeddings" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer upstream-key" {
+			t.Fatalf("unexpected upstream auth: %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["model"] != "upstream-embedding" {
+			t.Fatalf("model was not rewritten: %#v", body["model"])
+		}
+		if body["input"] != "hello world" {
+			t.Fatalf("input was not preserved: %#v", body["input"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","embedding":[0.1,0.2],"index":0}],"usage":{"prompt_tokens":5,"total_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	providerConfig := openAIProvider(upstream.URL)
+	providerConfig.Models = []config.ModelConfig{{
+		Public:   "public-embedding",
+		Upstream: "upstream-embedding",
+		Pool:     "primary",
+		Type:     config.ModelTypeEmbedding,
+	}}
+	app, db, plainKey := newTestGateway(t, []config.ProviderConfig{providerConfig})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewBufferString(`{
+		"model":"public-embedding",
+		"input":"hello world"
+	}`))
+	req.Header.Set("Authorization", "Bearer "+plainKey)
+	rec := httptest.NewRecorder()
+
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"embedding":[0.1,0.2]`) {
+		t.Fatalf("embedding response was not proxied: %s", rec.Body.String())
+	}
+	key, err := db.FindAPIKeyByPlainText(req.Context(), plainKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.UsedRequests != 1 || key.UsedTokens != 5 {
+		t.Fatalf("unexpected key usage: requests=%d tokens=%d", key.UsedRequests, key.UsedTokens)
+	}
+}
+
+func TestOpenAIImageGenerationProxyUsesModelEndpointAndRewritesModel(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/custom/images/generations" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer upstream-key" {
+			t.Fatalf("unexpected upstream auth: %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["model"] != "upstream-image" {
+			t.Fatalf("model was not rewritten: %#v", body["model"])
+		}
+		if body["prompt"] != "draw a quiet station" || body["size"] != "1024x1024" {
+			t.Fatalf("image fields were not preserved: %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1,"data":[{"b64_json":"aW1hZ2U="}],"usage":{"total_tokens":8}}`))
+	}))
+	defer upstream.Close()
+
+	providerConfig := openAIProvider(upstream.URL)
+	providerConfig.Endpoints = map[string]string{
+		"openai_image_generations": "/provider/images/generations",
+	}
+	providerConfig.Models = []config.ModelConfig{{
+		Public:   "public-image",
+		Upstream: "upstream-image",
+		Pool:     "primary",
+		Type:     config.ModelTypeImageGeneration,
+		Image:    config.ImageModelConfig{EndpointPath: "/custom/images/generations"},
+	}}
+	app, db, plainKey := newTestGateway(t, []config.ProviderConfig{providerConfig})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewBufferString(`{
+		"model":"public-image",
+		"prompt":"draw a quiet station",
+		"size":"1024x1024",
+		"response_format":"b64_json"
+	}`))
+	req.Header.Set("Authorization", "Bearer "+plainKey)
+	rec := httptest.NewRecorder()
+
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"b64_json":"aW1hZ2U="`) {
+		t.Fatalf("image response was not proxied: %s", rec.Body.String())
+	}
+	key, err := db.FindAPIKeyByPlainText(req.Context(), plainKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.UsedRequests != 1 || key.UsedTokens != 8 {
+		t.Fatalf("unexpected key usage: requests=%d tokens=%d", key.UsedRequests, key.UsedTokens)
+	}
+}
+
 func TestAnthropicProxyUsesNativePathAndXAPIKey(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {

@@ -53,16 +53,18 @@ type Account struct {
 }
 
 type Route struct {
-	Protocol      string
-	PublicModel   string
-	UpstreamModel string
-	ProviderName  string
-	PoolName      string
-	OwnedBy       string
-	DisplayName   string
-	CreatedAt     time.Time
-	Provider      *Provider
-	Pool          *Pool
+	Protocol          string
+	PublicModel       string
+	UpstreamModel     string
+	Type              string
+	ImageEndpointPath string
+	ProviderName      string
+	PoolName          string
+	OwnedBy           string
+	DisplayName       string
+	CreatedAt         time.Time
+	Provider          *Provider
+	Pool              *Pool
 }
 
 type Snapshot struct {
@@ -83,6 +85,7 @@ type ProviderSnapshot struct {
 type RouteSnapshot struct {
 	Public        string `json:"public"`
 	Upstream      string `json:"upstream"`
+	Type          string `json:"type,omitempty"`
 	Pool          string `json:"pool"`
 	OverridePool  string `json:"override_pool,omitempty"`
 	OverrideValid bool   `json:"override_valid,omitempty"`
@@ -310,6 +313,7 @@ func (r *Registry) Snapshot(overrides map[string]string) Snapshot {
 			model := RouteSnapshot{
 				Public:   route.PublicModel,
 				Upstream: route.UpstreamModel,
+				Type:     route.Type,
 				Pool:     route.PoolName,
 			}
 			if override := overrides[route.PublicModel]; override != "" {
@@ -400,6 +404,13 @@ func (provider *Provider) EndpointPath(key, fallback string) string {
 	return fallback
 }
 
+func (route Route) EndpointPath(key, fallback string) string {
+	if key == "openai_image_generations" && strings.TrimSpace(route.ImageEndpointPath) != "" {
+		return route.ImageEndpointPath
+	}
+	return route.Provider.EndpointPath(key, fallback)
+}
+
 func build(configs []config.ProviderConfig, options CircuitOptions) (map[string]*Provider, map[string]Route, error) {
 	providers := make(map[string]*Provider, len(configs))
 	routes := make(map[string]Route)
@@ -462,6 +473,10 @@ func build(configs []config.ProviderConfig, options CircuitOptions) (map[string]
 				poolName = provider.DefaultPool
 			}
 			pool := provider.Pools[poolName]
+			modelType, err := config.NormalizeModelType(model.Type)
+			if err != nil {
+				return nil, nil, fmt.Errorf("model %q type: %w", model.Public, err)
+			}
 			ownedBy, displayName, createdAt, err := modelMetadata(provider.Name, model)
 			if err != nil {
 				return nil, nil, err
@@ -471,16 +486,18 @@ func build(configs []config.ProviderConfig, options CircuitOptions) (map[string]
 				return nil, nil, fmt.Errorf("duplicate route for protocol %q model %q", provider.Protocol, model.Public)
 			}
 			routes[key] = Route{
-				Protocol:      provider.Protocol,
-				PublicModel:   model.Public,
-				UpstreamModel: model.Upstream,
-				ProviderName:  provider.Name,
-				PoolName:      poolName,
-				OwnedBy:       ownedBy,
-				DisplayName:   displayName,
-				CreatedAt:     createdAt,
-				Provider:      provider,
-				Pool:          pool,
+				Protocol:          provider.Protocol,
+				PublicModel:       model.Public,
+				UpstreamModel:     model.Upstream,
+				Type:              modelType,
+				ImageEndpointPath: model.Image.EndpointPathValue(),
+				ProviderName:      provider.Name,
+				PoolName:          poolName,
+				OwnedBy:           ownedBy,
+				DisplayName:       displayName,
+				CreatedAt:         createdAt,
+				Provider:          provider,
+				Pool:              pool,
 			}
 		}
 	}

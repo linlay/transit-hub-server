@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-Transit Hub 是一个 Go 编写的 LLM Chat API 中转网关。它对外提供 OpenAI 兼容的 `POST /v1/chat/completions` 和 Anthropic 兼容的 `POST /v1/messages`，对内根据配置文件把公开模型名路由到上游 provider、模型、账号池和账号。
+Transit Hub 是一个 Go 编写的 LLM API 中转网关。它对外提供 OpenAI 兼容的 `POST /v1/chat/completions`、`POST /v1/embeddings`、`POST /v1/images/generations` 和 Anthropic 兼容的 `POST /v1/messages`，对内根据配置文件把公开模型名路由到上游 provider、模型、账号池和账号。
 
 项目核心目标：
 
@@ -76,8 +76,9 @@ configs/
 - `base_url`：上游基础 URL，必须包含 scheme 和 host。
 - `default_pool`：默认账号池；为空时使用第一个 pool。
 - `headers`：provider 级固定请求头。
-- `endpoints`：可选路径覆盖，例如 `openai_chat_completions: /v1/chat/completions`。
-- `models`：公开模型到上游模型的映射。
+- `endpoints`：可选路径覆盖，例如 `openai_chat_completions: /v1/chat/completions`、`openai_embeddings: /v1/embeddings`、`openai_image_generations: /v1/images/generations`。
+- `models`：公开模型到上游模型的映射；`models[].type` 支持 `chat`、`embedding`、`image-generation`，为空时默认为 `chat`。
+- `models[].image.endpointPath`：图片生成模型的模型侧路径覆盖，优先级高于 provider 级 `endpoints.openai_image_generations`。
 - `pools`：账号池列表，每个 pool 至少一个 account。
 - `accounts[].api_key`：上游账号密钥，只放在真实配置里。
 - `accounts[].weight`：权重；`0` 会在运行时按 `1` 处理，负数非法。

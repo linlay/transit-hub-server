@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/linlay/transit-hub/internal/config"
 	"github.com/linlay/transit-hub/internal/provider"
 	"github.com/linlay/transit-hub/internal/store"
 	"github.com/linlay/transit-hub/internal/usage"
@@ -99,6 +100,22 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 				ErrorType:     "model_not_allowed",
 			})
 			writeError(w, http.StatusForbidden, "model not allowed for api key")
+			return
+		}
+		if !endpointSupportsRoute(endpointKey, route) {
+			g.logCompletedRequest(r, key.ID, store.RequestLog{
+				Protocol:      protocol,
+				PublicModel:   route.PublicModel,
+				UpstreamModel: route.UpstreamModel,
+				Provider:      route.ProviderName,
+				Pool:          route.PoolName,
+				StatusCode:    http.StatusBadRequest,
+				Latency:       time.Since(started),
+				RequestTokens: usage.EstimateTokens(body),
+				Estimated:     true,
+				ErrorType:     "model_type_not_supported",
+			})
+			writeError(w, http.StatusBadRequest, "model type not supported for endpoint")
 			return
 		}
 		if override, exists, err := g.store.GetRouteOverride(r.Context(), envelope.Model); err != nil {
@@ -308,7 +325,7 @@ func (g *Gateway) requireCostRateLimitPrice(w http.ResponseWriter, r *http.Reque
 }
 
 func (g *Gateway) buildUpstreamRequest(r *http.Request, route provider.Route, account *provider.Account, endpointKey string, body []byte) (*http.Request, error) {
-	upstreamURL := joinUpstreamURL(route.Provider.BaseURL, route.Provider.EndpointPath(endpointKey, r.URL.Path), r.URL.RawQuery)
+	upstreamURL := joinUpstreamURL(route.Provider.BaseURL, route.EndpointPath(endpointKey, r.URL.Path), r.URL.RawQuery)
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -349,6 +366,23 @@ func parseRequestEnvelope(body []byte) (requestEnvelope, error) {
 		_ = json.Unmarshal(raw, &stream)
 	}
 	return requestEnvelope{Model: model, Stream: stream}, nil
+}
+
+func endpointSupportsRoute(endpointKey string, route provider.Route) bool {
+	modelType := route.Type
+	if modelType == "" {
+		modelType = config.ModelTypeChat
+	}
+	switch endpointKey {
+	case "openai_chat_completions", "anthropic_messages":
+		return modelType == config.ModelTypeChat
+	case "openai_embeddings":
+		return modelType == config.ModelTypeEmbedding
+	case "openai_image_generations", "openai_image_edits", "openai_image_variations":
+		return modelType == config.ModelTypeImageGeneration
+	default:
+		return true
+	}
 }
 
 func rewriteModel(body []byte, upstreamModel string) ([]byte, error) {
