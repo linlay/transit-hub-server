@@ -70,6 +70,7 @@ type PoolConfig struct {
 type AccountConfig struct {
 	Name       string            `yaml:"name" json:"name"`
 	APIKey     string            `yaml:"api_key" json:"-"`
+	APIKeyEnv  string            `yaml:"api_key_env" json:"-"`
 	Weight     int               `yaml:"weight" json:"weight"`
 	Headers    map[string]string `yaml:"headers" json:"headers,omitempty"`
 	AuthHeader string            `yaml:"auth_header" json:"auth_header,omitempty"`
@@ -241,12 +242,37 @@ func LoadProviderConfigs(dir string) ([]ProviderConfig, error) {
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
 			return nil, fmt.Errorf("parse provider config %s: %w", path, err)
 		}
+		if err := resolveAccountAPIKeys(&cfg); err != nil {
+			return nil, fmt.Errorf("resolve provider config %s: %w", path, err)
+		}
 		if err := ValidateProviderConfig(cfg); err != nil {
 			return nil, fmt.Errorf("validate provider config %s: %w", path, err)
 		}
 		configs = append(configs, cfg)
 	}
 	return configs, nil
+}
+
+func resolveAccountAPIKeys(cfg *ProviderConfig) error {
+	for poolIndex := range cfg.Pools {
+		pool := &cfg.Pools[poolIndex]
+		for accountIndex := range pool.Accounts {
+			account := &pool.Accounts[accountIndex]
+			if strings.TrimSpace(account.APIKey) != "" {
+				continue
+			}
+			keyEnv := strings.TrimSpace(account.APIKeyEnv)
+			if keyEnv == "" {
+				continue
+			}
+			apiKey := strings.TrimSpace(os.Getenv(keyEnv))
+			if apiKey == "" {
+				return fmt.Errorf("account %q in pool %q requires non-empty environment variable %q", account.Name, pool.Name, keyEnv)
+			}
+			account.APIKey = apiKey
+		}
+	}
+	return nil
 }
 
 func ProviderConfigDir(configDir string) string {

@@ -88,6 +88,7 @@ pools:
 - 运行时加载 `configs/providers/*.yaml` 和 `configs/providers/*.yml`。
 - 文件名包含 `.example.` 的配置不会被加载。
 - 真实配置里会包含上游密钥，已被 `.gitignore` 忽略。
+- 账号也可使用 `api_key_env` 从运行环境读取密钥；当 `api_key` 为空时，服务会读取该环境变量。推荐以此方式配置 Token Plan 等不应写入文件的密钥。
 - `protocol` 只能是 `openai` 或 `anthropic`。
 - `endpoints.openai_chat_completions`、`endpoints.openai_embeddings`、`endpoints.openai_image_generations`、`endpoints.openai_image_edits`、`endpoints.openai_image_variations` 和 `endpoints.anthropic_messages` 可用于覆盖上游路径。
 - `models[].type` 可选，支持 `chat`、`embedding`、`image-generation`，为空时默认为 `chat`。
@@ -106,7 +107,7 @@ sqlite3 data/transit-hub.db < scripts/seed_prices.sql
 
 如果 `.env` 中修改了 `DB_PATH`，请把命令里的 `data/transit-hub.db` 换成实际数据库路径。价格单位是当前 `CURRENCY` 下的每百万 token 金额，脚本以 micro-CNY 存储；导入后刷新管理站 `/pricing` 即可看到多模型价格清单。
 
-脚本包含 DeepSeek、MiniMax 和 Mimo 的常见公开模型名。当前价格模型支持 input、cache hit/read 和 output 三项；MiniMax 的 cache write 费用没有独立字段，会按普通 input 估算。生产导入前请按实际上游账单复核，尤其是自定义公开模型名、长上下文档位、优先级服务或非 CNY 结算场景。
+脚本包含 DeepSeek、MiniMax 和 Mimo 的常见公开模型名。Token Plan 的四个百炼路由使用独立的 `scripts/seed_bailian_token_plan_prices.sql`，价格按百炼按量 API 的当前 CNY 单价记录，而非 Credits。当前价格模型支持 input、cache hit/read 和 output 三项；MiniMax 的 cache write 费用没有独立字段，会按普通 input 估算。生产导入前请按实际上游账单复核，尤其是自定义公开模型名、长上下文档位、优先级服务或非 CNY 结算场景。
 
 ### 4. 配置 JWT Grant 签发密钥
 

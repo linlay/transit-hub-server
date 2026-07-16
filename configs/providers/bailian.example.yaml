@@ -1,0 +1,27 @@
+name: bailian
+protocol: openai
+base_url: https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+default_pool: primary
+headers: {}
+endpoints:
+  openai_chat_completions: /chat/completions
+models:
+  - public: bailian-qwen3_7-max
+    upstream: qwen3.7-max
+    pool: primary
+  - public: bailian-qwen3_7-plus
+    upstream: qwen3.7-plus
+    pool: primary
+  - public: bailian-glm5_2
+    upstream: glm-5.2
+    pool: primary
+  - public: bailian-kimi-k2_7-code
+    upstream: kimi-k2.7-code
+    pool: primary
+pools:
+  - name: primary
+    accounts:
+      - name: bailian-token-plan
+        # The service reads this secret from its environment; do not put it in Git.
+        api_key_env: BAILIAN_API_KEY
+        weight: 1

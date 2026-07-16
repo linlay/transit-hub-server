@@ -81,6 +81,7 @@ configs/
 - `models[].image.endpointPath`：图片生成模型的模型侧路径覆盖，优先级高于 provider 级 `endpoints.openai_image_generations`。
 - `pools`：账号池列表，每个 pool 至少一个 account。
 - `accounts[].api_key`：上游账号密钥，只放在真实配置里。
+- `accounts[].api_key_env`：可选的上游账号密钥环境变量名；当 `api_key` 为空时读取该变量，适合由部署环境注入的密钥。
 - `accounts[].weight`：权重；`0` 会在运行时按 `1` 处理，负数非法。
 - `accounts[].auth_header` / `auth_scheme`：覆盖上游鉴权头。OpenAI 默认 `Authorization: Bearer ...`，Anthropic 默认 `x-api-key: ...`。
 

@@ -116,3 +116,37 @@ pools:
 		t.Fatalf("image endpoint path = %q", got)
 	}
 }
+
+func TestLoadProviderConfigsResolvesAccountAPIKeyFromEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	providersDir := filepath.Join(dir, "providers")
+	if err := os.MkdirAll(providersDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BAILIAN_API_KEY", "sk-test-from-environment")
+
+	raw := `
+name: bailian
+protocol: openai
+base_url: https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+models:
+  - public: bailian-qwen3_7-plus
+    upstream: qwen3.7-plus
+pools:
+  - name: primary
+    accounts:
+      - name: token-plan
+        api_key_env: BAILIAN_API_KEY
+`
+	if err := os.WriteFile(filepath.Join(providersDir, "bailian.yaml"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	configs, err := LoadProviderConfigs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := configs[0].Pools[0].Accounts[0].APIKey; got != "sk-test-from-environment" {
+		t.Fatalf("resolved api key = %q", got)
+	}
+}
