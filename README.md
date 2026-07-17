@@ -277,6 +277,7 @@ COOKIE_SECURE=true
 管理站包含：
 
 - Dashboard：总请求、token、成本、错误率、活跃 device 和近期流量。
+- Models：筛选运行态模型，查看路由、客户端 curl 和脱敏 Provider YAML 配置模板。
 - API Keys：创建、编辑、软删除 key，查看剩余额度、日志和连接设备。
 - Sessions：按 API key、device ID、source 查看当前连接。
 - Traffic：全局流量和请求日志。
@@ -396,6 +397,16 @@ curl -sS http://localhost:8080/api/me/prices \
 ```
 
 ## Provider 运维
+
+管理端可读取不受客户端模型白名单限制的完整运行态模型目录。响应包含公开模型、上游映射、配置/覆盖 Pool 和有效 endpoint，但不会包含上游 API Key、账号密钥或固定 Header 值：
+
+```bash
+curl -sS http://localhost:8080/admin/models \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+curl -sS 'http://localhost:8080/admin/models/detail?protocol=openai&public_model=example-chat' \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
 
 查看当前 provider、模型、pool、账号熔断状态：
 
