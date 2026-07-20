@@ -18,9 +18,6 @@ models:
   - public: minimax-m3-long-priority-openai
     upstream: MiniMax-M3
     pool: primary
-  - public: minimax-m2_7-openai
-    upstream: MiniMax-M2.7
-    pool: primary
   - public: minimax-m2_7-highspeed-openai
     upstream: MiniMax-M2.7-highspeed
     pool: primary

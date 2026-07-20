@@ -8,15 +8,36 @@ endpoints:
   openai_embeddings: /v1/embeddings
   openai_image_generations: /v1/images/generations
 models:
-  - public: babelark-gemini-3_1-flash-image-preview
+  - public: gemini-3_1-flash-image-preview
     upstream: gemini-3.1-flash-image-preview
     type: image-generation
     pool: primary
     image:
       endpointPath: /v1/images/generations
+  - public: glm5_2
+    upstream: GLM-5.2
+    type: chat
+    pool: primary
+    display_name: GLM-5.2
+  - public: qwen3_7-max
+    upstream: qwen3.7-max
+    type: chat
+    pool: primary
+    display_name: qwen3.7-max
+  - public: kimi-k2_7-code
+    upstream: Kimi-K2.7-Code
+    type: chat
+    pool: primary
+    display_name: Kimi-K2.7-Code
+  - public: text-embedding-v4
+    upstream: text-embedding-v4
+    type: embedding
+    pool: primary
+    owned_by: babelark
+    display_name: BabelArk Text Embedding v4
 pools:
   - name: primary
     accounts:
       - name: babelark-main
-        api_key: sk-your-upstream-key
+        api_key_env: BABELARK_API_KEY
         weight: 1

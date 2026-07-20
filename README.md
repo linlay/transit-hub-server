@@ -331,7 +331,7 @@ curl -sS http://localhost:8080/v1/images/generations \
   -H "Authorization: Bearer $CLIENT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "babelark-gemini-3_1-flash-image-preview",
+    "model": "gemini-3_1-flash-image-preview",
     "prompt": "a clean transit hub at sunrise",
     "size": "1024x1024",
     "response_format": "b64_json"
