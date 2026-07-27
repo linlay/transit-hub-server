@@ -34,7 +34,7 @@ models:
     type: embedding
     pool: primary
     owned_by: babelark
-    display_name: BabelArk Text Embedding v4
+    display_name: Text Embedding v4
 pools:
   - name: primary
     accounts:
