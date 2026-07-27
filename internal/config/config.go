@@ -18,6 +18,10 @@ import (
 type Env struct {
 	Addr                    string
 	DBPath                  string
+	ControlDBPath           string
+	UsageDBPath             string
+	TelemetryDBPath         string
+	TelemetryRetention      time.Duration
 	ConfigDir               string
 	IssuerConfigPath        string
 	AdminToken              string
@@ -127,9 +131,14 @@ func LoadEnv() (Env, error) {
 	_ = godotenv.Load()
 
 	configDir := getEnv("CONFIG_DIR", "configs")
+	legacyDBPath := getEnv("DB_PATH", "data/transit-hub.db")
 	env := Env{
 		Addr:                    getEnv("ADDR", ":8080"),
-		DBPath:                  getEnv("DB_PATH", "data/transit-hub.db"),
+		DBPath:                  legacyDBPath,
+		ControlDBPath:           getEnv("CONTROL_DB_PATH", legacyDBPath),
+		UsageDBPath:             getEnv("USAGE_DB_PATH", "data/transit-hub-usage.db"),
+		TelemetryDBPath:         getEnv("TELEMETRY_DB_PATH", "data/transit-hub-telemetry.db"),
+		TelemetryRetention:      getDurationEnv("TELEMETRY_RETENTION", 720*time.Hour),
 		ConfigDir:               configDir,
 		IssuerConfigPath:        getEnv("ISSUER_CONFIG_PATH", filepath.Join(configDir, "issuer", "config.yaml")),
 		AdminToken:              os.Getenv("ADMIN_TOKEN"),
@@ -160,6 +169,9 @@ func LoadEnv() (Env, error) {
 	}
 	if env.SessionActiveWindow <= 0 {
 		return Env{}, errors.New("SESSION_ACTIVE_WINDOW must be positive")
+	}
+	if env.TelemetryRetention <= 0 {
+		return Env{}, errors.New("TELEMETRY_RETENTION must be positive")
 	}
 	if _, err := time.LoadLocation(env.RateLimitTimezone); err != nil {
 		return Env{}, fmt.Errorf("RATE_LIMIT_TIMEZONE is invalid: %w", err)

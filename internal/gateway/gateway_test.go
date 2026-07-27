@@ -2,9 +2,11 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"database/sql"
 	"encoding/json"
 	"encoding/pem"
 	"math"
@@ -1498,6 +1500,71 @@ func TestAdminLoginCookieAuthorizesRequests(t *testing.T) {
 	}
 }
 
+func TestTelemetryWriteLockDoesNotBlockLoginOrProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":2,"completion_tokens":3}}`))
+	}))
+	defer upstream.Close()
+	app, db, plainKey := newTestGateway(t, []config.ProviderConfig{openAIProvider(upstream.URL)})
+	if _, err := db.CreateAdminUser(t.Context(), store.CreateAdminUserParams{
+		Username: "operator",
+		Password: "secret-pass",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	locker, err := sql.Open("sqlite", app.env.TelemetryDBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locker.Close()
+	if _, err := locker.ExecContext(t.Context(), `PRAGMA busy_timeout = 0; BEGIN IMMEDIATE`); err != nil {
+		t.Fatal(err)
+	}
+	defer locker.ExecContext(context.Background(), `ROLLBACK`)
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/admin/auth/login", bytes.NewBufferString(`{
+		"username":"operator",
+		"password":"secret-pass"
+	}`))
+	loginRec := httptest.NewRecorder()
+	started := time.Now()
+	app.Handler().ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login status = %d, body = %s", loginRec.Code, loginRec.Body.String())
+	}
+	if elapsed := time.Since(started); elapsed > 750*time.Millisecond {
+		t.Fatalf("login was delayed by telemetry write lock: %s", elapsed)
+	}
+
+	proxyRec := httptest.NewRecorder()
+	started = time.Now()
+	app.Handler().ServeHTTP(proxyRec, proxyRequest(plainKey))
+	if proxyRec.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d, body = %s", proxyRec.Code, proxyRec.Body.String())
+	}
+	if elapsed := time.Since(started); elapsed > 750*time.Millisecond {
+		t.Fatalf("proxy was delayed by telemetry write lock: %s", elapsed)
+	}
+
+	logsReq := httptest.NewRequest(http.MethodGet, "/admin/logs", nil)
+	logsReq.Header.Set("Authorization", "Bearer admin")
+	logsRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(logsRec, logsReq)
+	if logsRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("logs status = %d, body = %s", logsRec.Code, logsRec.Body.String())
+	}
+	if !bytes.Contains(logsRec.Body.Bytes(), []byte(`"component":"telemetry"`)) {
+		t.Fatalf("logs response missing telemetry component: %s", logsRec.Body.String())
+	}
+
+	healthRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(healthRec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if healthRec.Code != http.StatusOK || !bytes.Contains(healthRec.Body.Bytes(), []byte(`"status":"degraded"`)) {
+		t.Fatalf("health response = %d %s", healthRec.Code, healthRec.Body.String())
+	}
+}
+
 func TestSoftDeletedAPIKeyCannotProxyButHistoryRemains(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
@@ -2138,11 +2205,27 @@ func newTestGatewayWithKey(t *testing.T, providers []config.ProviderConfig, keyP
 
 func newTestGatewayWithKeyAndIssuer(t *testing.T, providers []config.ProviderConfig, keyParams store.CreateAPIKeyParams, issuerSvc *issuer.Service) (*Gateway, *store.Store, string) {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	dataDir := t.TempDir()
+	db, err := store.OpenControl(filepath.Join(dataDir, "control.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	usageManager, err := store.NewUsageManager(filepath.Join(dataDir, "usage.db"), time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	telemetry, err := store.NewTelemetry(filepath.Join(dataDir, "telemetry.db"), 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.AttachRuntime(usageManager, telemetry)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = telemetry.Close(ctx)
+		_ = usageManager.Close(ctx)
+		_ = db.Close()
+	})
 
 	registry, err := provider.NewRegistry(providers, provider.CircuitOptions{
 		FailureThreshold: 1,
@@ -2168,11 +2251,16 @@ func newTestGatewayWithKeyAndIssuer(t *testing.T, providers []config.ProviderCon
 			UpstreamTimeout:         3 * time.Second,
 			CircuitFailureThreshold: 1,
 			CircuitCooldown:         time.Hour,
+			ControlDBPath:           filepath.Join(dataDir, "control.db"),
+			UsageDBPath:             filepath.Join(dataDir, "usage.db"),
+			TelemetryDBPath:         filepath.Join(dataDir, "telemetry.db"),
 		},
-		Store:    db,
-		Issuer:   issuerSvc,
-		Registry: registry,
-		Client:   upstreamClient(t),
+		Store:     db,
+		Usage:     usageManager,
+		Telemetry: telemetry,
+		Issuer:    issuerSvc,
+		Registry:  registry,
+		Client:    upstreamClient(t),
 	})
 	return app, db, created.PlainText
 }

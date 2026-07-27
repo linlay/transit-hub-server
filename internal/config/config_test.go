@@ -4,7 +4,31 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestLoadEnvSupportsThreeDatabasePathsAndLegacyAlias(t *testing.T) {
+	t.Setenv("ADMIN_TOKEN", "test-admin-token")
+	t.Setenv("DB_PATH", "/tmp/legacy-control.db")
+	t.Setenv("CONTROL_DB_PATH", "")
+	t.Setenv("USAGE_DB_PATH", "/tmp/usage.db")
+	t.Setenv("TELEMETRY_DB_PATH", "/tmp/telemetry.db")
+	t.Setenv("TELEMETRY_RETENTION", "48h")
+
+	env, err := LoadEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.ControlDBPath != "/tmp/legacy-control.db" || env.DBPath != "/tmp/legacy-control.db" {
+		t.Fatalf("legacy DB_PATH alias was not applied: %#v", env)
+	}
+	if env.UsageDBPath != "/tmp/usage.db" || env.TelemetryDBPath != "/tmp/telemetry.db" {
+		t.Fatalf("independent database paths were not applied: %#v", env)
+	}
+	if env.TelemetryRetention != 48*time.Hour {
+		t.Fatalf("telemetry retention=%s want=48h", env.TelemetryRetention)
+	}
+}
 
 func TestLoadProviderConfigsSkipsExamples(t *testing.T) {
 	dir := t.TempDir()

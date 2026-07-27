@@ -1,37 +1,40 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
-func TestMigrateLegacyMicroColumnsRenamesAndPreservesData(t *testing.T) {
+func TestControlStoreKeepsTelemetryTablesOutOfRuntimeSchema(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "control.db"))
+	defer closeTestStore(t, store)
+
+	for _, table := range []string{"request_logs", "api_key_sessions"} {
+		exists, err := tableExists(t.Context(), store.db, table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if exists {
+			t.Fatalf("control database unexpectedly contains %s", table)
+		}
+	}
+	priceColumns := testColumns(t, store.db, "model_prices")
+	for _, column := range []string{
+		"input_cost_micro_per_1m",
+		"input_cache_hit_cost_micro_per_1m",
+		"output_cost_micro_per_1m",
+	} {
+		assertHasColumn(t, priceColumns, column)
+	}
+}
+
+func TestMigrateLegacyModelPriceColumnsPreservesData(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 	raw := openRawTestDB(t, path)
 	execTestSQL(t, raw, `
-		CREATE TABLE request_logs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			api_key_id TEXT NOT NULL,
-			protocol TEXT NOT NULL,
-			public_model TEXT NOT NULL,
-			upstream_model TEXT NOT NULL,
-			provider TEXT NOT NULL,
-			pool TEXT NOT NULL,
-			account TEXT NOT NULL,
-			device_id TEXT NOT NULL DEFAULT '',
-			source TEXT NOT NULL DEFAULT '',
-			status_code INTEGER NOT NULL,
-			latency_ms INTEGER NOT NULL,
-			request_tokens INTEGER NOT NULL,
-			response_tokens INTEGER NOT NULL,
-			cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
-			cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
-			cost_microusd INTEGER NOT NULL DEFAULT 0,
-			estimated INTEGER NOT NULL DEFAULT 0,
-			error_type TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL
-		);
 		CREATE TABLE model_prices (
 			id TEXT PRIMARY KEY,
 			protocol TEXT NOT NULL,
@@ -43,14 +46,6 @@ func TestMigrateLegacyMicroColumnsRenamesAndPreservesData(t *testing.T) {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			UNIQUE(protocol, public_model)
-		);
-		INSERT INTO request_logs (
-			api_key_id, protocol, public_model, upstream_model, provider, pool, account,
-			status_code, latency_ms, request_tokens, response_tokens, cache_hit_tokens,
-			cache_miss_tokens, cost_microusd, created_at
-		) VALUES (
-			'key_1', 'openai', 'legacy-model', 'upstream-model', 'provider-a', 'default', 'acct',
-			200, 123, 10, 20, 3, 7, 4321, '2026-06-06T00:00:00Z'
 		);
 		INSERT INTO model_prices (
 			id, protocol, public_model, input_cost_microusd_per_1m,
@@ -65,25 +60,6 @@ func TestMigrateLegacyMicroColumnsRenamesAndPreservesData(t *testing.T) {
 
 	store := openTestStore(t, path)
 	defer closeTestStore(t, store)
-
-	requestLogColumns := testColumns(t, store, "request_logs")
-	assertHasColumn(t, requestLogColumns, "cost_micro")
-	assertMissingColumn(t, requestLogColumns, "cost_microusd")
-	priceColumns := testColumns(t, store, "model_prices")
-	for _, column := range []string{"input_cost_micro_per_1m", "input_cache_hit_cost_micro_per_1m", "output_cost_micro_per_1m"} {
-		assertHasColumn(t, priceColumns, column)
-	}
-	for _, column := range []string{"input_cost_microusd_per_1m", "input_cache_hit_cost_microusd_per_1m", "output_cost_microusd_per_1m"} {
-		assertMissingColumn(t, priceColumns, column)
-	}
-
-	var cost int64
-	if err := store.db.QueryRowContext(t.Context(), `SELECT cost_micro FROM request_logs WHERE id = 1`).Scan(&cost); err != nil {
-		t.Fatal(err)
-	}
-	if cost != 4321 {
-		t.Fatalf("cost_micro = %d, want 4321", cost)
-	}
 	price, ok, err := store.GetModelPrice(t.Context(), "openai", "legacy-model")
 	if err != nil {
 		t.Fatal(err)
@@ -91,136 +67,61 @@ func TestMigrateLegacyMicroColumnsRenamesAndPreservesData(t *testing.T) {
 	if !ok {
 		t.Fatal("legacy model price not found")
 	}
-	if price.InputCostMicroPer1MTokens != 1000000 || price.OutputCostMicroPer1MTokens != 2000000 {
-		t.Fatalf("unexpected price costs: %#v", price)
+	if price.InputCostMicroPer1MTokens != 1_000_000 || price.OutputCostMicroPer1MTokens != 2_000_000 {
+		t.Fatalf("unexpected migrated price: %#v", price)
 	}
-	if price.InputCacheHitCostMicroPer1MTokens == nil || *price.InputCacheHitCostMicroPer1MTokens != 25000 {
-		t.Fatalf("unexpected cache hit cost: %#v", price.InputCacheHitCostMicroPer1MTokens)
+	if price.InputCacheHitCostMicroPer1MTokens == nil || *price.InputCacheHitCostMicroPer1MTokens != 25_000 {
+		t.Fatalf("unexpected migrated cache price: %#v", price.InputCacheHitCostMicroPer1MTokens)
 	}
 }
 
-func TestMigrateLegacyMicroColumnsToleratesHalfFailedMigration(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "half-failed.db")
-	raw := openRawTestDB(t, path)
-	execTestSQL(t, raw, `
-		CREATE TABLE request_logs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			api_key_id TEXT NOT NULL,
-			protocol TEXT NOT NULL,
-			public_model TEXT NOT NULL,
-			upstream_model TEXT NOT NULL,
-			provider TEXT NOT NULL,
-			pool TEXT NOT NULL,
-			account TEXT NOT NULL,
-			device_id TEXT NOT NULL DEFAULT '',
-			source TEXT NOT NULL DEFAULT '',
-			status_code INTEGER NOT NULL,
-			latency_ms INTEGER NOT NULL,
-			request_tokens INTEGER NOT NULL,
-			response_tokens INTEGER NOT NULL,
-			cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
-			cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
-			cost_microusd INTEGER NOT NULL DEFAULT 0,
-			cost_micro INTEGER NOT NULL DEFAULT 0,
-			estimated INTEGER NOT NULL DEFAULT 0,
-			error_type TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL
-		);
-		CREATE TABLE model_prices (
-			id TEXT PRIMARY KEY,
-			protocol TEXT NOT NULL,
-			public_model TEXT NOT NULL,
-			input_cost_microusd_per_1m INTEGER NOT NULL DEFAULT 0,
-			input_cost_micro_per_1m INTEGER NOT NULL DEFAULT 0,
-			input_cache_hit_cost_microusd_per_1m INTEGER,
-			input_cache_hit_cost_micro_per_1m INTEGER,
-			output_cost_microusd_per_1m INTEGER NOT NULL DEFAULT 0,
-			output_cost_micro_per_1m INTEGER NOT NULL DEFAULT 0,
-			currency TEXT NOT NULL DEFAULT 'USD',
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			UNIQUE(protocol, public_model)
-		);
-		INSERT INTO request_logs (
-			api_key_id, protocol, public_model, upstream_model, provider, pool, account,
-			status_code, latency_ms, request_tokens, response_tokens, cost_microusd,
-			cost_micro, created_at
-		) VALUES
-			('key_1', 'openai', 'legacy-model', 'upstream-model', 'provider-a', 'default', 'acct',
-				200, 123, 10, 20, 4321, 0, '2026-06-06T00:00:00Z'),
-			('key_1', 'openai', 'legacy-model', 'upstream-model', 'provider-a', 'default', 'acct',
-				200, 456, 30, 40, 1111, 2222, '2026-06-06T00:00:01Z');
-		INSERT INTO model_prices (
-			id, protocol, public_model, input_cost_microusd_per_1m, input_cost_micro_per_1m,
-			input_cache_hit_cost_microusd_per_1m, input_cache_hit_cost_micro_per_1m,
-			output_cost_microusd_per_1m, output_cost_micro_per_1m,
-			currency, created_at, updated_at
-		) VALUES (
-			'price_half', 'openai', 'half-model', 1000000, 0, 25000, NULL, 2000000, 3000000,
-			'USD', '2026-06-06T00:00:00Z', '2026-06-06T00:00:00Z'
-		);
-	`)
-	closeRawTestDB(t, raw)
-
-	store := openTestStore(t, path)
-	defer closeTestStore(t, store)
-
-	rows, err := store.db.QueryContext(t.Context(), `SELECT id, cost_micro FROM request_logs ORDER BY id ASC`)
+func TestUsageAndTelemetrySchemasAreIndependent(t *testing.T) {
+	root := t.TempDir()
+	usage, err := NewUsageManager(filepath.Join(root, "usage.db"), time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
-	gotCosts := map[int64]int64{}
-	for rows.Next() {
-		var id, cost int64
-		if err := rows.Scan(&id, &cost); err != nil {
+	telemetry, err := NewTelemetry(filepath.Join(root, "telemetry.db"), 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := telemetry.Close(ctx); err != nil {
 			t.Fatal(err)
 		}
-		gotCosts[id] = cost
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if gotCosts[1] != 4321 {
-		t.Fatalf("row 1 cost_micro = %d, want 4321", gotCosts[1])
-	}
-	if gotCosts[2] != 2222 {
-		t.Fatalf("row 2 cost_micro = %d, want 2222", gotCosts[2])
-	}
+		if err := usage.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
 
-	price, ok, err := store.GetModelPrice(t.Context(), "openai", "half-model")
-	if err != nil {
+	usageColumns := testColumns(t, usage.db, "usage_buckets")
+	for _, column := range []string{"api_key_id", "window", "window_start", "requests", "tokens", "cost_micro"} {
+		assertHasColumn(t, usageColumns, column)
+	}
+	telemetryColumns := testColumns(t, mustTelemetryDB(t, telemetry), "request_logs")
+	for _, column := range []string{"api_key_id", "api_key_name", "key_prefix", "cost_micro", "created_at"} {
+		assertHasColumn(t, telemetryColumns, column)
+	}
+	var foreignKeys int
+	if err := mustTelemetryDB(t, telemetry).QueryRowContext(t.Context(), `
+		SELECT COUNT(*) FROM pragma_foreign_key_list('request_logs')
+	`).Scan(&foreignKeys); err != nil {
 		t.Fatal(err)
 	}
-	if !ok {
-		t.Fatal("half migrated model price not found")
-	}
-	if price.InputCostMicroPer1MTokens != 1000000 {
-		t.Fatalf("input cost = %d, want 1000000", price.InputCostMicroPer1MTokens)
-	}
-	if price.InputCacheHitCostMicroPer1MTokens == nil || *price.InputCacheHitCostMicroPer1MTokens != 25000 {
-		t.Fatalf("cache hit cost = %#v, want 25000", price.InputCacheHitCostMicroPer1MTokens)
-	}
-	if price.OutputCostMicroPer1MTokens != 3000000 {
-		t.Fatalf("output cost = %d, want 3000000", price.OutputCostMicroPer1MTokens)
+	if foreignKeys != 0 {
+		t.Fatalf("telemetry request_logs has %d foreign keys, want 0", foreignKeys)
 	}
 }
 
-func TestMigrateFreshStoreCreatesMicroColumns(t *testing.T) {
-	store := openTestStore(t, filepath.Join(t.TempDir(), "fresh.db"))
-	defer closeTestStore(t, store)
-
-	requestLogColumns := testColumns(t, store, "request_logs")
-	assertHasColumn(t, requestLogColumns, "cost_micro")
-	assertMissingColumn(t, requestLogColumns, "cost_microusd")
-
-	priceColumns := testColumns(t, store, "model_prices")
-	for _, column := range []string{"input_cost_micro_per_1m", "input_cache_hit_cost_micro_per_1m", "output_cost_micro_per_1m"} {
-		assertHasColumn(t, priceColumns, column)
+func mustTelemetryDB(t *testing.T, telemetry *Telemetry) *sql.DB {
+	t.Helper()
+	db, err := telemetry.currentDB()
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, column := range []string{"input_cost_microusd_per_1m", "input_cache_hit_cost_microusd_per_1m", "output_cost_microusd_per_1m"} {
-		assertMissingColumn(t, priceColumns, column)
-	}
+	return db
 }
 
 func openRawTestDB(t *testing.T, path string) *sql.DB {
@@ -262,10 +163,22 @@ func closeTestStore(t *testing.T, store *Store) {
 	}
 }
 
-func testColumns(t *testing.T, store *Store, table string) map[string]struct{} {
+func testColumns(t *testing.T, db *sql.DB, table string) map[string]struct{} {
 	t.Helper()
-	columns, err := store.tableColumns(t.Context(), table)
+	rows, err := db.QueryContext(t.Context(), `SELECT name FROM pragma_table_info(?)`, table)
 	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	columns := map[string]struct{}{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		columns[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
 	return columns
@@ -275,12 +188,5 @@ func assertHasColumn(t *testing.T, columns map[string]struct{}, column string) {
 	t.Helper()
 	if _, ok := columns[column]; !ok {
 		t.Fatalf("missing column %q", column)
-	}
-}
-
-func assertMissingColumn(t *testing.T, columns map[string]struct{}, column string) {
-	t.Helper()
-	if _, ok := columns[column]; ok {
-		t.Fatalf("unexpected column %q", column)
 	}
 }

@@ -35,7 +35,11 @@ ADMIN_TOKEN=replace-with-a-long-random-token
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `ADDR` | `:8080` | 服务监听地址 |
-| `DB_PATH` | `data/transit-hub.db` | SQLite 数据库路径 |
+| `DB_PATH` | `data/transit-hub.db` | `CONTROL_DB_PATH` 的兼容别名 |
+| `CONTROL_DB_PATH` | `DB_PATH` 的值 | 鉴权、管理员、配置和价格等核心 SQLite 路径；无法打开时服务启动失败 |
+| `USAGE_DB_PATH` | `data/transit-hub-usage.db` | 累计用量和五种固定窗口计数 SQLite 路径；无法写入时以内存计数继续服务 |
+| `TELEMETRY_DB_PATH` | `data/transit-hub-telemetry.db` | 请求日志、设备会话和报表 SQLite 路径；无法写入时丢弃日志但继续服务 |
+| `TELEMETRY_RETENTION` | `720h` | 请求日志和设备会话保留时间 |
 | `CONFIG_DIR` | `configs` | 配置根目录；provider 配置位于 `$CONFIG_DIR/providers` |
 | `ISSUER_CONFIG_PATH` | `$CONFIG_DIR/issuer/config.yaml` | JWT grant 签发配置路径 |
 | `ADMIN_TOKEN` | 无 | Admin API 令牌，必填 |
@@ -105,7 +109,7 @@ pools:
 sqlite3 data/transit-hub.db < scripts/seed_prices.sql
 ```
 
-如果 `.env` 中修改了 `DB_PATH`，请把命令里的 `data/transit-hub.db` 换成实际数据库路径。价格单位是当前 `CURRENCY` 下的每百万 token 金额，脚本以 micro-CNY 存储；导入后刷新管理站 `/pricing` 即可看到多模型价格清单。
+如果 `.env` 中修改了 `CONTROL_DB_PATH`（或兼容变量 `DB_PATH`），请把命令里的 `data/transit-hub.db` 换成实际 Control 数据库路径。价格单位是当前 `CURRENCY` 下的每百万 token 金额，脚本以 micro-CNY 存储；导入后刷新管理站 `/pricing` 即可看到多模型价格清单。
 
 脚本包含 DeepSeek、MiniMax 和 Mimo 的常见公开模型名。Token Plan 的四个百炼路由使用独立的 `scripts/seed_bailian_token_plan_prices.sql`，价格按百炼按量 API 的当前 CNY 单价记录，而非 Credits。当前价格模型支持 input、cache hit/read 和 output 三项；MiniMax 的 cache write 费用没有独立字段，会按普通 input 估算。生产导入前请按实际上游账单复核，尤其是自定义公开模型名、长上下文档位、优先级服务或非 CNY 结算场景。
 
@@ -158,6 +162,35 @@ docker compose up -d --build
 容器启动前同样需要先准备 `.env`，并在 `configs/providers/` 下放置真实的 provider 配置。后端镜像名固定为 `transit-hub-server`，容器名固定为 `transit-hub-server`；容器会固定监听 `:8080`，加入 external Docker network `transit-hub-net`，挂载 `./data` 保存 SQLite 数据库，并以只读方式挂载 `./configs` 读取 provider 和 issuer 配置。
 
 生产部署时后端不映射宿主机端口，对外入口由 `transit-hub-website` 提供。website 容器会在同一个 `transit-hub-net` 网络内通过服务名 `transit-hub:8080` 访问后端。
+
+### 从单库迁移到三库
+
+镜像同时包含 `/app/transit-hub-migrate`，支持幂等的 `split`、`verify` 和 `merge-back`。迁移必须在后端停止后执行，且三个数据库路径应位于同一个持久化 `/app/data` 目录。
+
+```bash
+# 1. 先构建新镜像并停止后端
+docker compose build transit-hub
+docker compose stop transit-hub
+
+# 2. 运行迁移；split 会先 checkpoint，并把完整 data 目录备份到 data/backups/split-<时间戳>
+docker compose run --rm transit-hub /app/transit-hub-migrate split
+docker compose run --rm transit-hub /app/transit-hub-migrate verify
+
+# 3. 启动并检查
+docker compose up -d transit-hub
+curl -sS http://localhost:8080/healthz
+```
+
+`split` 输出包含 `backup_path`、三库 `quick_check`、用量/窗口/日志/会话行数。Control 中原有的日志、会话和累计用量列不会删除，新版本运行时不再读写它们。
+
+回滚前先停止新版本，再将新产生的用量和日志合并回旧库：
+
+```bash
+docker compose stop transit-hub
+docker compose run --rm transit-hub /app/transit-hub-migrate merge-back
+```
+
+然后恢复旧镜像及原 `DB_PATH` 配置。上线后至少观察 30 分钟：`/healthz` 的 `degraded_components`、`pending_usage_updates`、`dropped_logs`，三个 WAL 文件大小，以及管理员登录和代理错误率。`/healthz` 即使降级仍返回 HTTP 200；Telemetry 纯统计接口在不可用时返回 HTTP 503。
 
 ## 创建客户端 API Key
 

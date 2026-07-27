@@ -74,7 +74,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 
 		route, ok := g.registry.Resolve(protocol, envelope.Model)
 		if !ok {
-			g.logCompletedRequest(r, key.ID, store.RequestLog{
+			g.logCompletedRequest(r, key, store.RequestLog{
 				Protocol:      protocol,
 				PublicModel:   envelope.Model,
 				StatusCode:    http.StatusNotFound,
@@ -87,7 +87,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			return
 		}
 		if !store.APIKeyAllowsModel(key, route.PublicModel) {
-			g.logCompletedRequest(r, key.ID, store.RequestLog{
+			g.logCompletedRequest(r, key, store.RequestLog{
 				Protocol:      protocol,
 				PublicModel:   route.PublicModel,
 				UpstreamModel: route.UpstreamModel,
@@ -103,7 +103,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			return
 		}
 		if !endpointSupportsRoute(endpointKey, route) {
-			g.logCompletedRequest(r, key.ID, store.RequestLog{
+			g.logCompletedRequest(r, key, store.RequestLog{
 				Protocol:      protocol,
 				PublicModel:   route.PublicModel,
 				UpstreamModel: route.UpstreamModel,
@@ -127,13 +127,14 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 				return
 			}
 		}
-		if !g.requireCostRateLimitPrice(w, r, key, protocol, route.PublicModel) {
+		modelPrice, ok := g.requestModelPrice(w, r, key, protocol, route.PublicModel)
+		if !ok {
 			return
 		}
 
 		account, err := route.PickAccount()
 		if err != nil {
-			g.logCompletedRequest(r, key.ID, store.RequestLog{
+			g.logCompletedRequest(r, key, store.RequestLog{
 				Protocol:      protocol,
 				PublicModel:   route.PublicModel,
 				UpstreamModel: route.UpstreamModel,
@@ -144,6 +145,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 				RequestTokens: usage.EstimateTokens(body),
 				Estimated:     true,
 				ErrorType:     "no_healthy_account",
+				ModelPrice:    modelPrice,
 			})
 			writeError(w, http.StatusServiceUnavailable, "no healthy upstream account")
 			return
@@ -163,7 +165,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		resp, err := g.client.Do(upstreamReq)
 		if err != nil {
 			account.Breaker.Record(false)
-			g.logCompletedRequest(r, key.ID, store.RequestLog{
+			g.logCompletedRequest(r, key, store.RequestLog{
 				Protocol:      protocol,
 				PublicModel:   route.PublicModel,
 				UpstreamModel: route.UpstreamModel,
@@ -175,6 +177,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 				RequestTokens: usage.EstimateTokens(body),
 				Estimated:     true,
 				ErrorType:     "upstream_error",
+				ModelPrice:    modelPrice,
 			})
 			writeError(w, http.StatusBadGateway, "upstream request failed")
 			return
@@ -199,7 +202,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		} else if !upstreamHealthy {
 			errorType = "upstream_status"
 		}
-		g.logCompletedRequest(r, key.ID, store.RequestLog{
+		g.logCompletedRequest(r, key, store.RequestLog{
 			Protocol:        protocol,
 			PublicModel:     route.PublicModel,
 			UpstreamModel:   route.UpstreamModel,
@@ -214,6 +217,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			CacheMissTokens: observed.CacheMissTokens,
 			Estimated:       observed.Estimated,
 			ErrorType:       errorType,
+			ModelPrice:      modelPrice,
 		})
 	}
 }
@@ -304,24 +308,25 @@ func (g *Gateway) enforceAPIKeyRateLimits(w http.ResponseWriter, r *http.Request
 	return false
 }
 
-func (g *Gateway) requireCostRateLimitPrice(w http.ResponseWriter, r *http.Request, key store.APIKey, protocol, publicModel string) bool {
-	if !store.RateLimitsNeedCost(key.RateLimits) {
-		return true
-	}
-	price, ok, err := g.store.GetModelPrice(r.Context(), protocol, publicModel)
+func (g *Gateway) requestModelPrice(w http.ResponseWriter, r *http.Request, key store.APIKey, protocol, publicModel string) (*store.ModelPrice, bool) {
+	price, found, err := g.store.GetModelPrice(r.Context(), protocol, publicModel)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
-		return false
+		return nil, false
 	}
-	if !ok {
+	needsCost := store.RateLimitsNeedCost(key.RateLimits)
+	if needsCost && !found {
 		writeError(w, http.StatusTooManyRequests, "cost rate limit requires a model price for "+publicModel)
-		return false
+		return nil, false
 	}
-	if !strings.EqualFold(price.Currency, g.configuredCurrency()) {
+	if needsCost && !strings.EqualFold(price.Currency, g.configuredCurrency()) {
 		writeError(w, http.StatusTooManyRequests, "model price currency does not match configured currency")
-		return false
+		return nil, false
 	}
-	return true
+	if !found {
+		return nil, true
+	}
+	return &price, true
 }
 
 func (g *Gateway) buildUpstreamRequest(r *http.Request, route provider.Route, account *provider.Account, endpointKey string, body []byte) (*http.Request, error) {
@@ -517,29 +522,31 @@ func isEventStream(headers http.Header) bool {
 	return strings.Contains(strings.ToLower(headers.Get("Content-Type")), "text/event-stream")
 }
 
-func (g *Gateway) logCompletedRequest(r *http.Request, keyID string, logEntry store.RequestLog) {
-	if keyID == "" {
+func (g *Gateway) logCompletedRequest(r *http.Request, key store.APIKey, logEntry store.RequestLog) {
+	if key.ID == "" {
 		return
 	}
+	logEntry.APIKeyID = key.ID
+	logEntry.APIKeyName = key.Name
+	logEntry.KeyPrefix = key.KeyPrefix
+	logEntry.CreatedAt = time.Now().UTC()
 	logEntry.DeviceID, logEntry.Source = sessionHeaders(r)
-	if logEntry.CostMicro == 0 && logEntry.Protocol != "" && logEntry.PublicModel != "" {
-		cost, err := g.store.EstimateCost(
-			r.Context(),
-			logEntry.Protocol,
-			logEntry.PublicModel,
+	if logEntry.CostMicro == 0 && logEntry.ModelPrice != nil {
+		logEntry.CostMicro = store.EstimateCostWithPrice(
+			*logEntry.ModelPrice,
 			logEntry.RequestTokens,
 			logEntry.ResponseTokens,
 			logEntry.CacheHitTokens,
 			logEntry.CacheMissTokens,
 		)
-		if err != nil {
-			g.logger.Printf("estimate request cost failed: %v", err)
-		} else {
-			logEntry.CostMicro = cost
-		}
 	}
-	if err := g.store.AddUsageAndLog(r.Context(), keyID, logEntry); err != nil {
-		g.logger.Printf("write request log failed: %v", err)
+	if g.usage != nil {
+		g.usage.Record(key.ID, logEntry.RequestTokens, logEntry.ResponseTokens, logEntry.CostMicro, logEntry.CreatedAt)
+	}
+	if g.telemetry != nil {
+		if !g.telemetry.Enqueue(logEntry) {
+			g.logger.Printf("request log dropped: telemetry queue unavailable")
+		}
 	}
 }
 

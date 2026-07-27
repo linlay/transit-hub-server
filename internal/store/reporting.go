@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 )
@@ -34,17 +33,18 @@ type ModelPriceParams struct {
 }
 
 type Overview struct {
-	TotalRequests  int64           `json:"total_requests"`
-	TotalTokens    int64           `json:"total_tokens"`
-	RequestTokens  int64           `json:"request_tokens"`
-	ResponseTokens int64           `json:"response_tokens"`
-	TotalCost      int64           `json:"total_cost_micro"`
-	ErrorRequests  int64           `json:"error_requests"`
-	AverageLatency float64         `json:"average_latency_ms"`
-	ActiveDevices  int64           `json:"active_devices"`
-	APIKeys        APIKeyCounts    `json:"api_keys"`
-	RecentTraffic  []TrafficBucket `json:"recent_traffic"`
-	RiskKeys       []APIKeyRisk    `json:"risk_keys"`
+	TotalRequests      int64           `json:"total_requests"`
+	TotalTokens        int64           `json:"total_tokens"`
+	RequestTokens      int64           `json:"request_tokens"`
+	ResponseTokens     int64           `json:"response_tokens"`
+	TotalCost          int64           `json:"total_cost_micro"`
+	ErrorRequests      int64           `json:"error_requests"`
+	AverageLatency     float64         `json:"average_latency_ms"`
+	ActiveDevices      int64           `json:"active_devices"`
+	APIKeys            APIKeyCounts    `json:"api_keys"`
+	RecentTraffic      []TrafficBucket `json:"recent_traffic"`
+	RiskKeys           []APIKeyRisk    `json:"risk_keys"`
+	DegradedComponents []string        `json:"degraded_components,omitempty"`
 }
 
 type APIKeyCounts struct {
@@ -330,19 +330,26 @@ func (s *Store) EstimateCost(ctx context.Context, protocol, publicModel string, 
 	if err != nil || !ok {
 		return 0, err
 	}
+	return EstimateCostWithPrice(price, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens), nil
+}
+
+func EstimateCostWithPrice(price ModelPrice, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens int64) int64 {
 	if price.InputCacheHitCostMicroPer1MTokens != nil && cacheHitTokens+cacheMissTokens > 0 {
 		normalInputTokens := cacheMissTokens
 		if remainder := requestTokens - cacheHitTokens - cacheMissTokens; remainder > 0 {
 			normalInputTokens += remainder
 		}
-		return (cacheHitTokens*(*price.InputCacheHitCostMicroPer1MTokens) + normalInputTokens*price.InputCostMicroPer1MTokens + responseTokens*price.OutputCostMicroPer1MTokens) / 1_000_000, nil
+		return (cacheHitTokens*(*price.InputCacheHitCostMicroPer1MTokens) + normalInputTokens*price.InputCostMicroPer1MTokens + responseTokens*price.OutputCostMicroPer1MTokens) / 1_000_000
 	}
-	return (requestTokens*price.InputCostMicroPer1MTokens + responseTokens*price.OutputCostMicroPer1MTokens) / 1_000_000, nil
+	return (requestTokens*price.InputCostMicroPer1MTokens + responseTokens*price.OutputCostMicroPer1MTokens) / 1_000_000
 }
 
 func (s *Store) Overview(ctx context.Context, activeWindow time.Duration, from, to *time.Time) (Overview, error) {
+	if s.telemetry == nil {
+		return Overview{}, ErrTelemetryUnavailable
+	}
 	var overview Overview
-	summary, err := s.RequestLogSummary(ctx, RequestLogQuery{From: from, To: to})
+	summary, err := s.telemetry.RequestLogSummary(ctx, RequestLogQuery{From: from, To: to})
 	if err != nil {
 		return Overview{}, err
 	}
@@ -353,127 +360,57 @@ func (s *Store) Overview(ctx context.Context, activeWindow time.Duration, from, 
 	overview.TotalCost = summary.CostMicro
 	overview.ErrorRequests = summary.ErrorRequests
 	overview.AverageLatency = summary.AverageLatency
-	counts, err := s.apiKeyCounts(ctx)
-	if err != nil {
+	if overview.APIKeys, err = s.apiKeyCounts(ctx); err != nil {
 		return Overview{}, err
 	}
-	overview.APIKeys = counts
-	activeDevices, err := s.CountActiveSessions(ctx, activeWindow)
-	if err != nil {
+	if overview.ActiveDevices, err = s.telemetry.CountActiveSessions(ctx, activeWindow); err != nil {
 		return Overview{}, err
 	}
-	overview.ActiveDevices = activeDevices
-	var recent []TrafficBucket
 	if from != nil || to != nil {
-		recent, err = s.Traffic(ctx, TrafficQuery{From: from, To: to, Bucket: "day"})
+		overview.RecentTraffic, err = s.telemetry.Traffic(ctx, TrafficQuery{From: from, To: to, Bucket: "day"})
 	} else {
 		recentFrom := time.Now().UTC().Add(-14 * 24 * time.Hour)
-		recent, err = s.Traffic(ctx, TrafficQuery{From: &recentFrom, Bucket: "day"})
+		overview.RecentTraffic, err = s.telemetry.Traffic(ctx, TrafficQuery{From: &recentFrom, Bucket: "day"})
 	}
 	if err != nil {
 		return Overview{}, err
 	}
-	overview.RecentTraffic = recent
-	risks, err := s.quotaRiskKeys(ctx)
-	if err != nil {
-		return Overview{}, err
-	}
-	overview.RiskKeys = risks
-	return overview, nil
+	overview.RiskKeys, err = s.quotaRiskKeys(ctx)
+	return overview, err
 }
 
 func (s *Store) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficBucket, error) {
-	bucketExpr := `substr(created_at, 1, 10)`
-	switch strings.ToLower(strings.TrimSpace(query.Bucket)) {
-	case "hour":
-		bucketExpr = `substr(created_at, 1, 13)`
-	case "month":
-		bucketExpr = `substr(created_at, 1, 7)`
+	if s.telemetry == nil {
+		return nil, ErrTelemetryUnavailable
 	}
-	where, args := requestLogWhere(query.APIKeyID, query.From, query.To)
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT %s AS bucket,
-		       COUNT(*) AS requests,
-		       COALESCE(SUM(request_tokens), 0),
-		       COALESCE(SUM(response_tokens), 0),
-		       COALESCE(SUM(cache_hit_tokens), 0),
-		       COALESCE(SUM(cache_miss_tokens), 0),
-		       COALESCE(SUM(cost_micro), 0),
-		       COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0),
-		       COALESCE(AVG(latency_ms), 0)
-		FROM request_logs
-		%s
-		GROUP BY bucket
-		ORDER BY bucket ASC
-	`, bucketExpr, where), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	buckets := []TrafficBucket{}
-	for rows.Next() {
-		var bucket TrafficBucket
-		if err := rows.Scan(&bucket.Bucket, &bucket.Requests, &bucket.RequestTokens, &bucket.ResponseTokens, &bucket.CacheHitTokens, &bucket.CacheMissTokens, &bucket.CostMicro, &bucket.ErrorRequests, &bucket.AverageLatency); err != nil {
-			return nil, err
-		}
-		fillTrafficDerived(&bucket)
-		buckets = append(buckets, bucket)
-	}
-	return buckets, rows.Err()
+	return s.telemetry.Traffic(ctx, query)
 }
 
 func (s *Store) RequestLogSummary(ctx context.Context, query RequestLogQuery) (TrafficBucket, error) {
-	where, args := requestLogWhere(query.APIKeyID, query.From, query.To)
-	var summary TrafficBucket
-	err := s.db.QueryRowContext(ctx, fmt.Sprintf(`
-		SELECT COUNT(*),
-		       COALESCE(SUM(request_tokens), 0),
-		       COALESCE(SUM(response_tokens), 0),
-		       COALESCE(SUM(cache_hit_tokens), 0),
-		       COALESCE(SUM(cache_miss_tokens), 0),
-		       COALESCE(SUM(cost_micro), 0),
-		       COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0),
-		       COALESCE(AVG(latency_ms), 0)
-		FROM request_logs
-		%s
-	`, where), args...).Scan(&summary.Requests, &summary.RequestTokens, &summary.ResponseTokens, &summary.CacheHitTokens, &summary.CacheMissTokens, &summary.CostMicro, &summary.ErrorRequests, &summary.AverageLatency)
-	if err != nil {
-		return TrafficBucket{}, err
+	if s.telemetry == nil {
+		return TrafficBucket{}, ErrTelemetryUnavailable
 	}
-	fillTrafficDerived(&summary)
-	return summary, nil
+	return s.telemetry.RequestLogSummary(ctx, query)
 }
 
 func (s *Store) APIKeyUsage(ctx context.Context, apiKeyID string, activeWindow time.Duration, now time.Time, loc *time.Location) (map[string]any, error) {
+	if s.telemetry == nil {
+		return nil, ErrTelemetryUnavailable
+	}
 	key, err := s.GetAPIKey(ctx, apiKeyID)
 	if err != nil {
 		return nil, err
 	}
-	var summary TrafficBucket
-	where, args := requestLogWhere(apiKeyID, nil, nil)
-	err = s.db.QueryRowContext(ctx, fmt.Sprintf(`
-		SELECT COUNT(*),
-		       COALESCE(SUM(request_tokens), 0),
-		       COALESCE(SUM(response_tokens), 0),
-		       COALESCE(SUM(cache_hit_tokens), 0),
-		       COALESCE(SUM(cache_miss_tokens), 0),
-		       COALESCE(SUM(cost_micro), 0),
-		       COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0),
-		       COALESCE(AVG(latency_ms), 0)
-		FROM request_logs
-		%s
-	`, where), args...).Scan(&summary.Requests, &summary.RequestTokens, &summary.ResponseTokens, &summary.CacheHitTokens, &summary.CacheMissTokens, &summary.CostMicro, &summary.ErrorRequests, &summary.AverageLatency)
+	summary, err := s.telemetry.RequestLogSummary(ctx, RequestLogQuery{APIKeyID: apiKeyID})
 	if err != nil {
 		return nil, err
 	}
-	fillTrafficDerived(&summary)
 	recentFrom := time.Now().UTC().Add(-14 * 24 * time.Hour)
-	traffic, err := s.Traffic(ctx, TrafficQuery{APIKeyID: apiKeyID, From: &recentFrom, Bucket: "day"})
+	traffic, err := s.telemetry.Traffic(ctx, TrafficQuery{APIKeyID: apiKeyID, From: &recentFrom, Bucket: "day"})
 	if err != nil {
 		return nil, err
 	}
-	sessions, err := s.ListAPISessions(ctx, APISessionQuery{APIKeyID: apiKeyID, ActiveWindow: activeWindow, Limit: 200})
+	sessions, err := s.telemetry.ListAPISessions(ctx, APISessionQuery{APIKeyID: apiKeyID, ActiveWindow: activeWindow, Limit: 200})
 	if err != nil {
 		return nil, err
 	}
@@ -497,237 +434,38 @@ func (s *Store) APIKeyUsage(ctx context.Context, apiKeyID string, activeWindow t
 }
 
 func (s *Store) ListRequestLogs(ctx context.Context, query RequestLogQuery) (RequestLogListResult, error) {
-	limit := query.Limit
-	if limit <= 0 || limit > 500 {
-		limit = 100
+	if s.telemetry == nil {
+		return RequestLogListResult{}, ErrTelemetryUnavailable
 	}
-	offset := query.Offset
-	if offset < 0 {
-		offset = 0
-	}
-	where, args := requestLogWhere(query.APIKeyID, query.From, query.To)
-	var total int64
-	if err := s.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM request_logs %s`, where), args...).Scan(&total); err != nil {
-		return RequestLogListResult{}, err
-	}
-	queryArgs := append([]any{}, args...)
-	queryArgs = append(queryArgs, limit, offset)
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT l.id, l.api_key_id, COALESCE(k.name, ''), l.protocol, l.public_model, l.upstream_model,
-		       l.provider, l.pool, l.account, l.device_id, l.source, l.status_code, l.latency_ms,
-		       l.request_tokens, l.response_tokens, l.cache_hit_tokens, l.cache_miss_tokens,
-		       l.cost_micro, l.estimated, l.error_type, l.created_at
-		FROM request_logs l
-		LEFT JOIN api_keys k ON k.id = l.api_key_id
-		%s
-		ORDER BY l.created_at DESC, l.id DESC
-		LIMIT ? OFFSET ?
-	`, qualifyRequestLogWhere(where)), queryArgs...)
-	if err != nil {
-		return RequestLogListResult{}, err
-	}
-	defer rows.Close()
-	items := []RequestLogEntry{}
-	for rows.Next() {
-		var item RequestLogEntry
-		var estimated int
-		var createdAt string
-		if err := rows.Scan(&item.ID, &item.APIKeyID, &item.APIKeyName, &item.Protocol, &item.PublicModel, &item.UpstreamModel, &item.Provider, &item.Pool, &item.Account, &item.DeviceID, &item.Source, &item.StatusCode, &item.LatencyMS, &item.RequestTokens, &item.ResponseTokens, &item.CacheHitTokens, &item.CacheMissTokens, &item.CostMicro, &estimated, &item.ErrorType, &createdAt); err != nil {
-			return RequestLogListResult{}, err
-		}
-		item.Estimated = estimated != 0
-		item.TotalTokens = item.RequestTokens + item.ResponseTokens
-		item.CacheTotalTokens = item.CacheHitTokens + item.CacheMissTokens
-		item.CacheHitRate = cacheHitRate(item.CacheHitTokens, item.CacheMissTokens)
-		parsed, err := parseTime(createdAt)
-		if err != nil {
-			return RequestLogListResult{}, err
-		}
-		item.CreatedAt = parsed
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return RequestLogListResult{}, err
-	}
-	return RequestLogListResult{Items: items, Total: total, Limit: limit, Offset: offset}, nil
+	return s.telemetry.ListRequestLogs(ctx, query)
 }
 
 func (s *Store) ProviderUsage(ctx context.Context, query ProviderUsageQuery) ([]ProviderUsage, error) {
-	where, args := requestLogWhere("", query.From, query.To)
-	if where == "" {
-		where = "WHERE provider <> ''"
-	} else {
-		where += " AND provider <> ''"
+	if s.telemetry == nil {
+		return nil, ErrTelemetryUnavailable
 	}
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT provider,
-		       COUNT(*) AS requests,
-		       COALESCE(SUM(request_tokens), 0),
-		       COALESCE(SUM(response_tokens), 0),
-		       COALESCE(SUM(cache_hit_tokens), 0),
-		       COALESCE(SUM(cache_miss_tokens), 0),
-		       COALESCE(SUM(cost_micro), 0),
-		       COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0),
-		       COALESCE(AVG(latency_ms), 0)
-		FROM request_logs
-		%s
-		GROUP BY provider
-		ORDER BY requests DESC, provider ASC
-	`, where), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	items := []ProviderUsage{}
-	for rows.Next() {
-		var item ProviderUsage
-		if err := rows.Scan(&item.Provider, &item.Requests, &item.RequestTokens, &item.ResponseTokens, &item.CacheHitTokens, &item.CacheMissTokens, &item.CostMicro, &item.ErrorRequests, &item.AverageLatency); err != nil {
-			return nil, err
-		}
-		item.TotalTokens = item.RequestTokens + item.ResponseTokens
-		item.CacheTotalTokens = item.CacheHitTokens + item.CacheMissTokens
-		item.CacheHitRate = cacheHitRate(item.CacheHitTokens, item.CacheMissTokens)
-		items = append(items, item)
-	}
-	return items, rows.Err()
+	return s.telemetry.ProviderUsage(ctx, query)
 }
 
 func (s *Store) ProviderAccountUsage(ctx context.Context, query ProviderUsageQuery) ([]ProviderAccountUsage, error) {
-	where, args := requestLogWhere("", query.From, query.To)
-	if where == "" {
-		where = "WHERE provider <> '' AND account <> ''"
-	} else {
-		where += " AND provider <> '' AND account <> ''"
+	if s.telemetry == nil {
+		return nil, ErrTelemetryUnavailable
 	}
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT provider,
-		       pool,
-		       account,
-		       COUNT(*) AS requests,
-		       COALESCE(SUM(request_tokens), 0),
-		       COALESCE(SUM(response_tokens), 0),
-		       COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0)
-		FROM request_logs
-		%s
-		GROUP BY provider, pool, account
-		ORDER BY provider ASC, pool ASC, requests DESC, account ASC
-	`, where), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	items := []ProviderAccountUsage{}
-	for rows.Next() {
-		var item ProviderAccountUsage
-		if err := rows.Scan(&item.Provider, &item.Pool, &item.Account, &item.Requests, &item.RequestTokens, &item.ResponseTokens, &item.ErrorRequests); err != nil {
-			return nil, err
-		}
-		item.TotalTokens = item.RequestTokens + item.ResponseTokens
-		items = append(items, item)
-	}
-	return items, rows.Err()
+	return s.telemetry.ProviderAccountUsage(ctx, query)
 }
 
 func (s *Store) CountActiveSessions(ctx context.Context, activeWindow time.Duration) (int64, error) {
-	cutoff := time.Now().UTC().Add(-activeWindow)
-	var count int64
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM api_key_sessions
-		WHERE last_seen_at >= ?
-	`, formatTime(cutoff)).Scan(&count)
-	return count, err
+	if s.telemetry == nil {
+		return 0, ErrTelemetryUnavailable
+	}
+	return s.telemetry.CountActiveSessions(ctx, activeWindow)
 }
 
 func (s *Store) ListAPISessions(ctx context.Context, query APISessionQuery) (APISessionListResult, error) {
-	activeWindow := query.ActiveWindow
-	if activeWindow <= 0 {
-		activeWindow = 5 * time.Minute
+	if s.telemetry == nil {
+		return APISessionListResult{}, ErrTelemetryUnavailable
 	}
-	limit := query.Limit
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	offset := query.Offset
-	if offset < 0 {
-		offset = 0
-	}
-	cutoff := time.Now().UTC().Add(-activeWindow)
-	where := []string{}
-	args := []any{}
-	if strings.TrimSpace(query.APIKeyID) != "" {
-		where = append(where, "s.api_key_id = ?")
-		args = append(args, strings.TrimSpace(query.APIKeyID))
-	}
-	if strings.TrimSpace(query.Source) != "" {
-		where = append(where, "s.source = ?")
-		args = append(args, strings.TrimSpace(query.Source))
-	}
-	if strings.TrimSpace(query.Search) != "" {
-		where = append(where, "(s.device_id LIKE ? OR s.source LIKE ? OR k.name LIKE ?)")
-		like := "%" + strings.TrimSpace(query.Search) + "%"
-		args = append(args, like, like, like)
-	}
-	if !query.IncludeStale {
-		where = append(where, "s.last_seen_at >= ?")
-		args = append(args, formatTime(cutoff))
-	}
-	whereSQL := ""
-	if len(where) > 0 {
-		whereSQL = "WHERE " + strings.Join(where, " AND ")
-	}
-	var total int64
-	if err := s.db.QueryRowContext(ctx, fmt.Sprintf(`
-		SELECT COUNT(*)
-		FROM api_key_sessions s
-		JOIN api_keys k ON k.id = s.api_key_id
-		%s
-	`, whereSQL), args...).Scan(&total); err != nil {
-		return APISessionListResult{}, err
-	}
-	queryArgs := append([]any{}, args...)
-	queryArgs = append(queryArgs, limit, offset)
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT s.api_key_id, k.name, k.key_prefix, s.device_id, s.source,
-		       s.first_seen_at, s.last_seen_at, s.last_status_code,
-		       s.request_count, s.token_count
-		FROM api_key_sessions s
-		JOIN api_keys k ON k.id = s.api_key_id
-		%s
-		ORDER BY s.last_seen_at DESC
-		LIMIT ? OFFSET ?
-	`, whereSQL), queryArgs...)
-	if err != nil {
-		return APISessionListResult{}, err
-	}
-	defer rows.Close()
-
-	items := []APISession{}
-	for rows.Next() {
-		var item APISession
-		var firstSeenAt, lastSeenAt string
-		if err := rows.Scan(&item.APIKeyID, &item.APIKeyName, &item.KeyPrefix, &item.DeviceID, &item.Source, &firstSeenAt, &lastSeenAt, &item.LastStatusCode, &item.RequestCount, &item.TokenCount); err != nil {
-			return APISessionListResult{}, err
-		}
-		parsedFirst, err := parseTime(firstSeenAt)
-		if err != nil {
-			return APISessionListResult{}, err
-		}
-		parsedLast, err := parseTime(lastSeenAt)
-		if err != nil {
-			return APISessionListResult{}, err
-		}
-		item.FirstSeenAt = parsedFirst
-		item.LastSeenAt = parsedLast
-		item.Active = !parsedLast.Before(cutoff)
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return APISessionListResult{}, err
-	}
-	return APISessionListResult{Items: items, Total: total, Limit: limit, Offset: offset}, nil
+	return s.telemetry.ListAPISessions(ctx, query)
 }
 
 func (s *Store) apiKeyCounts(ctx context.Context) (APIKeyCounts, error) {
@@ -743,6 +481,10 @@ func (s *Store) apiKeyCounts(ctx context.Context) (APIKeyCounts, error) {
 		return APIKeyCounts{}, err
 	}
 	return counts, nil
+}
+
+func (s *Store) APIKeyCounts(ctx context.Context) (APIKeyCounts, error) {
+	return s.apiKeyCounts(ctx)
 }
 
 func (s *Store) quotaRiskKeys(ctx context.Context) ([]APIKeyRisk, error) {
@@ -778,6 +520,10 @@ func (s *Store) quotaRiskKeys(ctx context.Context) ([]APIKeyRisk, error) {
 		}
 	}
 	return risks, nil
+}
+
+func (s *Store) QuotaRiskKeys(ctx context.Context) ([]APIKeyRisk, error) {
+	return s.quotaRiskKeys(ctx)
 }
 
 func requestLogWhere(apiKeyID string, from, to *time.Time) (string, []any) {

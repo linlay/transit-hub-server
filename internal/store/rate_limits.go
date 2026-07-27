@@ -18,6 +18,8 @@ const (
 	RateLimitWindow30D = "30d"
 )
 
+var ErrUsageUnavailable = errors.New("usage unavailable")
+
 var rateLimitWindowOrder = map[string]int{
 	RateLimitWindow1H:  0,
 	RateLimitWindow5H:  1,
@@ -119,39 +121,10 @@ func decodeRateLimits(value string) ([]RateLimit, error) {
 }
 
 func (s *Store) RateLimitStatuses(ctx context.Context, apiKeyID string, limits []RateLimit, now time.Time, loc *time.Location) ([]RateLimitStatus, error) {
-	normalized, err := NormalizeRateLimits(limits)
-	if err != nil {
-		return nil, err
+	if s.usage != nil {
+		return s.usage.RateLimitStatuses(apiKeyID, limits, now)
 	}
-	statuses := make([]RateLimitStatus, 0, len(normalized))
-	for _, limit := range normalized {
-		start, end, err := rateLimitWindowBounds(limit.Window, now, loc)
-		if err != nil {
-			return nil, err
-		}
-		status := RateLimitStatus{
-			Window:         limit.Window,
-			StartsAt:       start,
-			ResetsAt:       end,
-			RequestQuota:   limit.RequestQuota,
-			TokenQuota:     limit.TokenQuota,
-			CostQuotaMicro: limit.CostQuotaMicro,
-		}
-		if err := s.db.QueryRowContext(ctx, `
-			SELECT COUNT(*),
-			       COALESCE(SUM(request_tokens + response_tokens), 0),
-			       COALESCE(SUM(cost_micro), 0)
-			FROM request_logs
-			WHERE api_key_id = ? AND created_at >= ? AND created_at < ?
-		`, strings.TrimSpace(apiKeyID), formatTime(start.UTC()), formatTime(end.UTC())).Scan(&status.Requests, &status.Tokens, &status.CostMicro); err != nil {
-			return nil, err
-		}
-		status.RequestRemaining = remaining(status.RequestQuota, status.Requests)
-		status.TokenRemaining = remaining(status.TokenQuota, status.Tokens)
-		status.CostRemainingMicro = remaining(status.CostQuotaMicro, status.CostMicro)
-		statuses = append(statuses, status)
-	}
-	return statuses, nil
+	return nil, ErrUsageUnavailable
 }
 
 func FirstRateLimitViolation(statuses []RateLimitStatus) (RateLimitViolation, bool) {

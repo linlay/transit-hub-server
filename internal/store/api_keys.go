@@ -112,7 +112,7 @@ func (s *Store) SearchAPIKeys(ctx context.Context, params APIKeyListParams) (API
 		if err != nil {
 			return APIKeyListResult{}, err
 		}
-		items = append(items, key)
+		items = append(items, s.withUsage(key))
 	}
 	if err := rows.Err(); err != nil {
 		return APIKeyListResult{}, err

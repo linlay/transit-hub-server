@@ -18,6 +18,8 @@ import (
 type Gateway struct {
 	env               config.Env
 	store             *store.Store
+	usage             *store.UsageManager
+	telemetry         *store.Telemetry
 	issuer            *issuer.Service
 	registry          *provider.Registry
 	client            *http.Client
@@ -26,12 +28,14 @@ type Gateway struct {
 }
 
 type Options struct {
-	Env      config.Env
-	Store    *store.Store
-	Issuer   *issuer.Service
-	Registry *provider.Registry
-	Client   *http.Client
-	Logger   *log.Logger
+	Env       config.Env
+	Store     *store.Store
+	Usage     *store.UsageManager
+	Telemetry *store.Telemetry
+	Issuer    *issuer.Service
+	Registry  *provider.Registry
+	Client    *http.Client
+	Logger    *log.Logger
 }
 
 func New(options Options) *Gateway {
@@ -59,6 +63,8 @@ func New(options Options) *Gateway {
 	return &Gateway{
 		env:               options.Env,
 		store:             options.Store,
+		usage:             options.Usage,
+		telemetry:         options.Telemetry,
 		issuer:            options.Issuer,
 		registry:          options.Registry,
 		client:            client,
@@ -75,7 +81,25 @@ func (g *Gateway) Handler() http.Handler {
 	r.Use(g.cors)
 
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		degraded := g.degradedComponents()
+		pendingUsage := int64(0)
+		droppedLogs := int64(0)
+		if g.usage != nil {
+			pendingUsage = g.usage.PendingUpdates()
+		}
+		if g.telemetry != nil {
+			droppedLogs = g.telemetry.DroppedLogs()
+		}
+		status := "ok"
+		if len(degraded) > 0 {
+			status = "degraded"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":                status,
+			"degraded_components":   degraded,
+			"dropped_logs":          droppedLogs,
+			"pending_usage_updates": pendingUsage,
+		})
 	})
 
 	r.Post("/admin/auth/login", g.login)

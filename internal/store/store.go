@@ -32,7 +32,9 @@ var (
 )
 
 type Store struct {
-	db *sql.DB
+	db        *sql.DB
+	usage     *UsageManager
+	telemetry *Telemetry
 }
 
 type APIKey struct {
@@ -92,6 +94,8 @@ type APIKeyPatch struct {
 
 type RequestLog struct {
 	APIKeyID        string
+	APIKeyName      string
+	KeyPrefix       string
 	Protocol        string
 	PublicModel     string
 	UpstreamModel   string
@@ -109,23 +113,22 @@ type RequestLog struct {
 	CostMicro       int64
 	Estimated       bool
 	ErrorType       string
+	CreatedAt       time.Time
+	ModelPrice      *ModelPrice
 }
 
 func Open(path string) (*Store, error) {
+	return OpenControl(path)
+}
+
+func OpenControl(path string) (*Store, error) {
 	if path == "" {
 		path = "data/transit-hub.db"
 	}
-	if path != ":memory:" && !strings.HasPrefix(path, "file:") {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return nil, fmt.Errorf("create database dir: %w", err)
-		}
-	}
-
-	db, err := sql.Open("sqlite", sqliteDSN(path))
+	db, err := openSQLite(path, 5*time.Second)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
 
 	store := &Store{db: db}
 	if err := store.migrate(context.Background()); err != nil {
@@ -133,6 +136,18 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return store, nil
+}
+
+func (s *Store) AttachRuntime(usage *UsageManager, telemetry *Telemetry) {
+	s.usage = usage
+	s.telemetry = telemetry
+}
+
+func (s *Store) withUsage(key APIKey) APIKey {
+	if s.usage == nil {
+		return key
+	}
+	return s.usage.Overlay(key)
 }
 
 func (s *Store) Close() error {
@@ -234,7 +249,7 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 		if err != nil {
 			return nil, err
 		}
-		keys = append(keys, key)
+		keys = append(keys, s.withUsage(key))
 	}
 	return keys, rows.Err()
 }
@@ -246,7 +261,8 @@ func (s *Store) GetAPIKey(ctx context.Context, id string) (APIKey, error) {
 		FROM api_keys
 		WHERE id = ?
 	`, id)
-	return scanAPIKey(row)
+	key, err := scanAPIKey(row)
+	return s.withUsage(key), err
 }
 
 func (s *Store) FindAPIKeyByPlainText(ctx context.Context, plain string) (APIKey, error) {
@@ -260,7 +276,7 @@ func (s *Store) FindAPIKeyByPlainText(ctx context.Context, plain string) (APIKey
 	if errors.Is(err, ErrNotFound) {
 		return APIKey{}, ErrKeyNotFound
 	}
-	return key, err
+	return s.withUsage(key), err
 }
 
 func (s *Store) UpdateAPIKey(ctx context.Context, id string, patch APIKeyPatch) (APIKey, error) {
@@ -349,66 +365,6 @@ func ValidateUsableKey(key APIKey, now time.Time) error {
 		return ErrQuotaExhausted
 	}
 	return nil
-}
-
-func (s *Store) AddUsageAndLog(ctx context.Context, keyID string, log RequestLog) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	tokenDelta := log.RequestTokens + log.ResponseTokens
-	now := time.Now().UTC()
-	deviceID := sanitizeSessionValue(log.DeviceID)
-	source := ""
-	if deviceID != "" {
-		source = sanitizeSessionValue(defaultSource(log.Source))
-	}
-	_, err = tx.ExecContext(ctx, `
-		UPDATE api_keys
-		SET used_requests = used_requests + 1,
-		    used_tokens = used_tokens + ?,
-		    last_used_at = ?,
-		    updated_at = ?
-		WHERE id = ?
-	`, tokenDelta, formatTime(now), formatTime(now), keyID)
-	if err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO request_logs (
-			api_key_id, protocol, public_model, upstream_model, provider, pool, account,
-			device_id, source, status_code, latency_ms, request_tokens, response_tokens,
-			cache_hit_tokens, cache_miss_tokens, cost_micro, estimated, error_type, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, keyID, log.Protocol, log.PublicModel, log.UpstreamModel, log.Provider, log.Pool, log.Account,
-		deviceID, source, log.StatusCode, log.Latency.Milliseconds(), log.RequestTokens, log.ResponseTokens,
-		log.CacheHitTokens, log.CacheMissTokens, log.CostMicro, boolInt(log.Estimated), log.ErrorType, formatTime(now))
-	if err != nil {
-		return err
-	}
-	if deviceID != "" {
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO api_key_sessions (
-				api_key_id, device_id, source, first_seen_at, last_seen_at,
-				last_status_code, request_count, token_count
-			) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-			ON CONFLICT(api_key_id, device_id, source) DO UPDATE SET
-				last_seen_at = excluded.last_seen_at,
-				last_status_code = excluded.last_status_code,
-				request_count = request_count + 1,
-				token_count = token_count + excluded.token_count
-		`, keyID, deviceID, source, formatTime(now), formatTime(now), log.StatusCode, tokenDelta)
-		if err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
 }
 
 func (s *Store) ListRouteOverrides(ctx context.Context) (map[string]string, error) {
@@ -503,30 +459,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at TEXT NOT NULL
 		);
 
-		CREATE TABLE IF NOT EXISTS request_logs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			api_key_id TEXT NOT NULL,
-			protocol TEXT NOT NULL,
-			public_model TEXT NOT NULL,
-			upstream_model TEXT NOT NULL,
-			provider TEXT NOT NULL,
-			pool TEXT NOT NULL,
-			account TEXT NOT NULL,
-			device_id TEXT NOT NULL DEFAULT '',
-			source TEXT NOT NULL DEFAULT '',
-			status_code INTEGER NOT NULL,
-			latency_ms INTEGER NOT NULL,
-			request_tokens INTEGER NOT NULL,
-			response_tokens INTEGER NOT NULL,
-			cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
-			cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
-			cost_micro INTEGER NOT NULL DEFAULT 0,
-			estimated INTEGER NOT NULL DEFAULT 0,
-			error_type TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL,
-			FOREIGN KEY(api_key_id) REFERENCES api_keys(id)
-		);
-
 		CREATE TABLE IF NOT EXISTS route_overrides (
 			public_model TEXT PRIMARY KEY,
 			pool TEXT NOT NULL,
@@ -551,8 +483,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at TEXT NOT NULL
 		);
 
-		CREATE INDEX IF NOT EXISTS idx_request_logs_api_key_created_at
-			ON request_logs(api_key_id, created_at DESC);
 	`)
 	if err != nil {
 		return err
@@ -566,10 +496,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE api_keys ADD COLUMN deleted_at TEXT`,
 		`ALTER TABLE api_keys ADD COLUMN allowed_models TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE api_keys ADD COLUMN rate_limits TEXT NOT NULL DEFAULT '[]'`,
-		`ALTER TABLE request_logs ADD COLUMN device_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE request_logs ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE request_logs ADD COLUMN cache_hit_tokens INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE request_logs ADD COLUMN cache_miss_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE jwt_grants ADD COLUMN request_quota INTEGER NOT NULL DEFAULT 500`,
 		`ALTER TABLE jwt_grants ADD COLUMN token_quota INTEGER NOT NULL DEFAULT 2000000`,
 		`ALTER TABLE jwt_grants ADD COLUMN allowed_models TEXT NOT NULL DEFAULT '[]'`,
@@ -579,16 +505,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !isDuplicateColumnError(err) {
 			return err
 		}
-	}
-	if err := s.migrateMicroColumns(ctx, []microColumnMigration{
-		{
-			Table:      "request_logs",
-			OldName:    "cost_microusd",
-			NewName:    "cost_micro",
-			Definition: "INTEGER NOT NULL DEFAULT 0",
-		},
-	}); err != nil {
-		return err
 	}
 	_, err = s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS admin_users (
@@ -624,31 +540,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			UNIQUE(protocol, public_model)
 		);
 
-		CREATE TABLE IF NOT EXISTS api_key_sessions (
-			api_key_id TEXT NOT NULL,
-			device_id TEXT NOT NULL,
-			source TEXT NOT NULL,
-			first_seen_at TEXT NOT NULL,
-			last_seen_at TEXT NOT NULL,
-			last_status_code INTEGER NOT NULL DEFAULT 0,
-			request_count INTEGER NOT NULL DEFAULT 0,
-			token_count INTEGER NOT NULL DEFAULT 0,
-			PRIMARY KEY(api_key_id, device_id, source),
-			FOREIGN KEY(api_key_id) REFERENCES api_keys(id)
-		);
-
 		CREATE INDEX IF NOT EXISTS idx_api_keys_deleted_status
 			ON api_keys(deleted_at, status);
 		CREATE INDEX IF NOT EXISTS idx_api_keys_source_issuer
 			ON api_keys(source, issuer_jti);
 		CREATE INDEX IF NOT EXISTS idx_jwt_grants_status
 			ON jwt_grants(status, expires_at);
-		CREATE INDEX IF NOT EXISTS idx_request_logs_created_at
-			ON request_logs(created_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_request_logs_provider_created_at
-			ON request_logs(provider, created_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_api_key_sessions_last_seen
-			ON api_key_sessions(last_seen_at DESC);
 	`)
 	if err != nil {
 		return err
@@ -849,6 +746,38 @@ func newID(prefix string) string {
 
 func sqliteDSN(path string) string {
 	return path
+}
+
+func openSQLite(path string, busyTimeout time.Duration) (*sql.DB, error) {
+	if path == "" {
+		return nil, errors.New("database path is required")
+	}
+	if path != ":memory:" && !strings.HasPrefix(path, "file:") {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, fmt.Errorf("create database dir: %w", err)
+		}
+	}
+	db, err := sql.Open("sqlite", sqliteDSN(path))
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	timeoutMS := busyTimeout.Milliseconds()
+	if timeoutMS < 1 {
+		timeoutMS = 1
+	}
+	if _, err := db.Exec(fmt.Sprintf(`
+		PRAGMA foreign_keys = ON;
+		PRAGMA journal_mode = WAL;
+		PRAGMA busy_timeout = %d;
+		PRAGMA synchronous = NORMAL;
+		PRAGMA wal_autocheckpoint = 1000;
+	`, timeoutMS)); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure sqlite: %w", err)
+	}
+	return db, nil
 }
 
 func nullableTime(value *time.Time) any {

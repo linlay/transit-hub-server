@@ -1,23 +1,23 @@
 package store
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestTrafficSupportsMonthBuckets(t *testing.T) {
-	store := openTestStore(t, filepath.Join(t.TempDir(), "reporting.db"))
-	defer closeTestStore(t, store)
+	store, telemetry := openReportingStores(t)
 
 	key, err := store.CreateAPIKey(t.Context(), CreateAPIKeyParams{Name: "monthly"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	insertRequestLogForReportingTest(t, store, key.ID, time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC), 200, 10, 20, 3, 7, 111, "")
-	insertRequestLogForReportingTest(t, store, key.ID, time.Date(2026, 1, 31, 23, 0, 0, 0, time.UTC), 502, 5, 8, 2, 1, 222, "upstream")
-	insertRequestLogForReportingTest(t, store, key.ID, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), 200, 4, 6, 0, 0, 333, "")
+	enqueueRequestLogForReportingTest(t, telemetry, key.APIKey, time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC), 200, 10, 20, 3, 7, 111, "")
+	enqueueRequestLogForReportingTest(t, telemetry, key.APIKey, time.Date(2026, 1, 31, 23, 0, 0, 0, time.UTC), 502, 5, 8, 2, 1, 222, "upstream")
+	enqueueRequestLogForReportingTest(t, telemetry, key.APIKey, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), 200, 4, 6, 0, 0, 333, "")
 
 	traffic, err := store.Traffic(t.Context(), TrafficQuery{APIKeyID: key.ID, Bucket: "month"})
 	if err != nil {
@@ -48,17 +48,16 @@ func TestTrafficSupportsMonthBuckets(t *testing.T) {
 }
 
 func TestOverviewSupportsTimeRange(t *testing.T) {
-	store := openTestStore(t, filepath.Join(t.TempDir(), "overview.db"))
-	defer closeTestStore(t, store)
+	store, telemetry := openReportingStores(t)
 
 	key, err := store.CreateAPIKey(t.Context(), CreateAPIKeyParams{Name: "overview"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	insertRequestLogForReportingTest(t, store, key.ID, time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC), 200, 10, 20, 3, 7, 111, "")
-	insertRequestLogForReportingTest(t, store, key.ID, time.Date(2026, 1, 31, 23, 0, 0, 0, time.UTC), 502, 5, 8, 2, 1, 222, "upstream")
-	insertRequestLogForReportingTest(t, store, key.ID, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), 200, 4, 6, 0, 0, 333, "")
+	enqueueRequestLogForReportingTest(t, telemetry, key.APIKey, time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC), 200, 10, 20, 3, 7, 111, "")
+	enqueueRequestLogForReportingTest(t, telemetry, key.APIKey, time.Date(2026, 1, 31, 23, 0, 0, 0, time.UTC), 502, 5, 8, 2, 1, 222, "upstream")
+	enqueueRequestLogForReportingTest(t, telemetry, key.APIKey, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), 200, 4, 6, 0, 0, 333, "")
 
 	all, err := store.Overview(t.Context(), 5*time.Minute, nil, nil)
 	if err != nil {
@@ -95,16 +94,48 @@ func TestOverviewSupportsTimeRange(t *testing.T) {
 	}
 }
 
-func insertRequestLogForReportingTest(t *testing.T, store *Store, apiKeyID string, createdAt time.Time, statusCode int, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens, costMicro int64, errorType string) {
+func openReportingStores(t *testing.T) (*Store, *Telemetry) {
 	t.Helper()
-	_, err := store.db.ExecContext(t.Context(), `
-		INSERT INTO request_logs (
-			api_key_id, protocol, public_model, upstream_model, provider, pool, account,
-			status_code, latency_ms, request_tokens, response_tokens, cache_hit_tokens,
-			cache_miss_tokens, cost_micro, error_type, created_at
-		) VALUES (?, 'openai', 'public-model', 'upstream-model', 'provider-a', 'default', 'acct', ?, 10, ?, ?, ?, ?, ?, ?, ?)
-	`, apiKeyID, statusCode, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens, costMicro, errorType, formatTime(createdAt.UTC()))
+	root := t.TempDir()
+	control := openTestStore(t, filepath.Join(root, "control.db"))
+	telemetry, err := NewTelemetry(filepath.Join(root, "telemetry.db"), 30*24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
+	}
+	control.AttachRuntime(nil, telemetry)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := telemetry.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+		closeTestStore(t, control)
+	})
+	return control, telemetry
+}
+
+func enqueueRequestLogForReportingTest(t *testing.T, telemetry *Telemetry, key APIKey, createdAt time.Time, statusCode int, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens, costMicro int64, errorType string) {
+	t.Helper()
+	if !telemetry.Enqueue(RequestLog{
+		APIKeyID:        key.ID,
+		APIKeyName:      key.Name,
+		KeyPrefix:       key.KeyPrefix,
+		Protocol:        "openai",
+		PublicModel:     "public-model",
+		UpstreamModel:   "upstream-model",
+		Provider:        "provider-a",
+		Pool:            "default",
+		Account:         "acct",
+		StatusCode:      statusCode,
+		Latency:         10 * time.Millisecond,
+		RequestTokens:   requestTokens,
+		ResponseTokens:  responseTokens,
+		CacheHitTokens:  cacheHitTokens,
+		CacheMissTokens: cacheMissTokens,
+		CostMicro:       costMicro,
+		ErrorType:       errorType,
+		CreatedAt:       createdAt,
+	}) {
+		t.Fatal("telemetry queue unexpectedly full")
 	}
 }

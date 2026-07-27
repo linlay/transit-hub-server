@@ -25,12 +25,31 @@ func main() {
 		logger.Fatalf("load env: %v", err)
 	}
 
-	db, err := store.Open(env.DBPath)
+	db, err := store.OpenControl(env.ControlDBPath)
 	store.DefaultCurrency = env.Currency
 	if err != nil {
-		logger.Fatalf("open store: %v", err)
+		logger.Fatalf("open control store: %v", err)
 	}
 	defer db.Close()
+
+	rateLimitLocation, err := time.LoadLocation(env.RateLimitTimezone)
+	if err != nil {
+		logger.Fatalf("load rate limit timezone: %v", err)
+	}
+	usageManager, usageErr := store.NewUsageManager(env.UsageDBPath, rateLimitLocation)
+	if usageErr != nil {
+		logger.Printf("usage database unavailable; continuing with in-memory counters: %v", usageErr)
+	}
+	if keys, listErr := db.ListAPIKeys(context.Background()); listErr != nil {
+		logger.Printf("load legacy usage totals failed: %v", listErr)
+	} else {
+		usageManager.Bootstrap(keys)
+	}
+	telemetry, telemetryErr := store.NewTelemetry(env.TelemetryDBPath, env.TelemetryRetention)
+	if telemetryErr != nil {
+		logger.Printf("telemetry database unavailable; request logging is degraded: %v", telemetryErr)
+	}
+	db.AttachRuntime(usageManager, telemetry)
 	if env.AdminPassword != "" {
 		user, created, err := db.EnsureAdminUser(context.Background(), env.AdminUsername, env.AdminPassword)
 		if err != nil {
@@ -72,11 +91,13 @@ func main() {
 	}
 
 	app := gateway.New(gateway.Options{
-		Env:      env,
-		Store:    db,
-		Issuer:   issuerService,
-		Registry: registry,
-		Logger:   logger,
+		Env:       env,
+		Store:     db,
+		Usage:     usageManager,
+		Telemetry: telemetry,
+		Issuer:    issuerService,
+		Registry:  registry,
+		Logger:    logger,
 	})
 
 	server := &http.Server{
@@ -96,9 +117,21 @@ func main() {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Printf("shutdown: %v", err)
 	}
+	shutdownCancel()
+
+	usageCtx, usageCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := usageManager.Close(usageCtx); err != nil {
+		logger.Printf("close usage manager: %v", err)
+	}
+	usageCancel()
+
+	telemetryCtx, telemetryCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := telemetry.Close(telemetryCtx); err != nil {
+		logger.Printf("close telemetry: %v", err)
+	}
+	telemetryCancel()
 }

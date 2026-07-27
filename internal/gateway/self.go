@@ -44,10 +44,11 @@ type selfLifetimeLimits struct {
 }
 
 type selfBalanceResponse struct {
-	Currency  string                  `json:"currency"`
-	CostMicro int64                   `json:"cost_micro"`
-	Unlimited bool                    `json:"unlimited"`
-	Items     []store.RateLimitStatus `json:"items"`
+	Currency           string                  `json:"currency"`
+	CostMicro          int64                   `json:"cost_micro"`
+	Unlimited          bool                    `json:"unlimited"`
+	Items              []store.RateLimitStatus `json:"items"`
+	DegradedComponents []string                `json:"degraded_components,omitempty"`
 }
 
 func (g *Gateway) currentAPIKey(w http.ResponseWriter, r *http.Request) {
@@ -84,13 +85,17 @@ func (g *Gateway) currentAPIKeyUsage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if g.telemetryUnavailable() {
+		writeTelemetryUnavailable(w)
+		return
+	}
 	summary, err := g.store.RequestLogSummary(r.Context(), store.RequestLogQuery{
 		APIKeyID: key.ID,
 		From:     from,
 		To:       to,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeTelemetryUnavailable(w)
 		return
 	}
 	items, err := g.store.Traffic(r.Context(), store.TrafficQuery{
@@ -100,7 +105,7 @@ func (g *Gateway) currentAPIKeyUsage(w http.ResponseWriter, r *http.Request) {
 		Bucket:   r.URL.Query().Get("bucket"),
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeTelemetryUnavailable(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -114,10 +119,12 @@ func (g *Gateway) currentAPIKeyBalance(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	summary, err := g.store.RequestLogSummary(r.Context(), store.RequestLogQuery{APIKeyID: key.ID})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	summary := store.TrafficBucket{}
+	telemetryDegraded := g.telemetryUnavailable()
+	if !telemetryDegraded {
+		var err error
+		summary, err = g.store.RequestLogSummary(r.Context(), store.RequestLogQuery{APIKeyID: key.ID})
+		telemetryDegraded = err != nil
 	}
 	statuses, err := g.store.RateLimitStatuses(r.Context(), key.ID, key.RateLimits, time.Now().UTC(), g.rateLimitLocation)
 	if err != nil {
@@ -130,17 +137,29 @@ func (g *Gateway) currentAPIKeyBalance(w http.ResponseWriter, r *http.Request) {
 			items = append(items, status)
 		}
 	}
-	writeJSON(w, http.StatusOK, selfBalanceResponse{
+	response := selfBalanceResponse{
 		Currency:  g.configuredCurrency(),
 		CostMicro: summary.CostMicro,
 		Unlimited: len(items) == 0,
 		Items:     items,
-	})
+	}
+	components := g.degradedComponents()
+	if telemetryDegraded {
+		components = withDegradedComponent(components, "telemetry")
+	}
+	if len(components) > 0 {
+		response.DegradedComponents = components
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (g *Gateway) currentAPIKeyLogs(w http.ResponseWriter, r *http.Request) {
 	key, ok := g.authenticatePublicMetadataKey(w, r)
 	if !ok {
+		return
+	}
+	if g.telemetryUnavailable() {
+		writeTelemetryUnavailable(w)
 		return
 	}
 	limit, offset := pagination(r, 100, 500)
@@ -157,7 +176,7 @@ func (g *Gateway) currentAPIKeyLogs(w http.ResponseWriter, r *http.Request) {
 		Offset:   offset,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeTelemetryUnavailable(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -166,6 +185,10 @@ func (g *Gateway) currentAPIKeyLogs(w http.ResponseWriter, r *http.Request) {
 func (g *Gateway) currentAPIKeySessions(w http.ResponseWriter, r *http.Request) {
 	key, ok := g.authenticatePublicMetadataKey(w, r)
 	if !ok {
+		return
+	}
+	if g.telemetryUnavailable() {
+		writeTelemetryUnavailable(w)
 		return
 	}
 	limit, offset := pagination(r, 100, 500)
@@ -179,7 +202,7 @@ func (g *Gateway) currentAPIKeySessions(w http.ResponseWriter, r *http.Request) 
 		Offset:       offset,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeTelemetryUnavailable(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

@@ -9,7 +9,10 @@ services:
       - .env
     environment:
       ADDR: ":8080"
-      DB_PATH: /app/data/transit-hub.db
+      DB_PATH: ${DB_PATH:-/app/data/transit-hub.db}
+      USAGE_DB_PATH: ${USAGE_DB_PATH:-/app/data/transit-hub-usage.db}
+      TELEMETRY_DB_PATH: ${TELEMETRY_DB_PATH:-/app/data/transit-hub-telemetry.db}
+      TELEMETRY_RETENTION: ${TELEMETRY_RETENTION:-720h}
       CONFIG_DIR: /app/configs
     volumes:
       - ./data:/app/data

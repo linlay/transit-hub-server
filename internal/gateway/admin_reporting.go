@@ -27,12 +27,37 @@ func (g *Gateway) overview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if g.telemetryUnavailable() {
+		g.writeDegradedOverview(w, r)
+		return
+	}
 	overview, err := g.store.Overview(r.Context(), g.env.SessionActiveWindow, from, to)
+	if err != nil {
+		g.writeDegradedOverview(w, r)
+		return
+	}
+	overview.DegradedComponents = g.degradedComponents()
+	writeJSON(w, http.StatusOK, overview)
+}
+
+func (g *Gateway) writeDegradedOverview(w http.ResponseWriter, r *http.Request) {
+	counts, err := g.store.APIKeyCounts(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, overview)
+	risks, err := g.store.QuotaRiskKeys(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	components := withDegradedComponent(g.degradedComponents(), "telemetry")
+	writeJSON(w, http.StatusOK, store.Overview{
+		APIKeys:            counts,
+		RiskKeys:           risks,
+		RecentTraffic:      []store.TrafficBucket{},
+		DegradedComponents: components,
+	})
 }
 
 func (g *Gateway) traffic(w http.ResponseWriter, r *http.Request) {
@@ -41,16 +66,39 @@ func (g *Gateway) traffic(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if g.telemetryUnavailable() {
+		writeTelemetryUnavailable(w)
+		return
+	}
 	buckets, err := g.store.Traffic(r.Context(), query)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeTelemetryUnavailable(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": buckets})
 }
 
 func (g *Gateway) apiKeyUsage(w http.ResponseWriter, r *http.Request) {
-	usage, err := g.store.APIKeyUsage(r.Context(), chi.URLParam(r, "id"), g.env.SessionActiveWindow, time.Now().UTC(), g.rateLimitLocation)
+	apiKeyID := chi.URLParam(r, "id")
+	if g.telemetryUnavailable() {
+		g.writeDegradedAPIKeyUsage(w, r, apiKeyID)
+		return
+	}
+	usage, err := g.store.APIKeyUsage(r.Context(), apiKeyID, g.env.SessionActiveWindow, time.Now().UTC(), g.rateLimitLocation)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "api key not found")
+		return
+	}
+	if err != nil {
+		g.writeDegradedAPIKeyUsage(w, r, apiKeyID)
+		return
+	}
+	usage["degraded_components"] = g.degradedComponents()
+	writeJSON(w, http.StatusOK, usage)
+}
+
+func (g *Gateway) writeDegradedAPIKeyUsage(w http.ResponseWriter, r *http.Request, apiKeyID string) {
+	key, err := g.store.GetAPIKey(r.Context(), apiKeyID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "api key not found")
 		return
@@ -59,7 +107,20 @@ func (g *Gateway) apiKeyUsage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, usage)
+	statuses, err := g.store.RateLimitStatuses(r.Context(), key.ID, key.RateLimits, time.Now().UTC(), g.rateLimitLocation)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	components := withDegradedComponent(g.degradedComponents(), "telemetry")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"key":                 key,
+		"summary":             store.TrafficBucket{},
+		"recent_traffic":      []store.TrafficBucket{},
+		"active_devices":      int64(0),
+		"rate_limit_usage":    statuses,
+		"degraded_components": components,
+	})
 }
 
 func (g *Gateway) apiKeyLogs(w http.ResponseWriter, r *http.Request) {
@@ -67,6 +128,10 @@ func (g *Gateway) apiKeyLogs(w http.ResponseWriter, r *http.Request) {
 	from, to, err := parseTimeRange(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if g.telemetryUnavailable() {
+		writeTelemetryUnavailable(w)
 		return
 	}
 	result, err := g.store.ListRequestLogs(r.Context(), store.RequestLogQuery{
@@ -77,7 +142,7 @@ func (g *Gateway) apiKeyLogs(w http.ResponseWriter, r *http.Request) {
 		Offset:   offset,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeTelemetryUnavailable(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -90,6 +155,10 @@ func (g *Gateway) requestLogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if g.telemetryUnavailable() {
+		writeTelemetryUnavailable(w)
+		return
+	}
 	result, err := g.store.ListRequestLogs(r.Context(), store.RequestLogQuery{
 		APIKeyID: r.URL.Query().Get("api_key_id"),
 		From:     from,
@@ -98,7 +167,7 @@ func (g *Gateway) requestLogs(w http.ResponseWriter, r *http.Request) {
 		Offset:   offset,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeTelemetryUnavailable(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -110,12 +179,16 @@ func (g *Gateway) providerUsage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if g.telemetryUnavailable() {
+		writeTelemetryUnavailable(w)
+		return
+	}
 	items, err := g.store.ProviderUsage(r.Context(), store.ProviderUsageQuery{
 		From: from,
 		To:   to,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeTelemetryUnavailable(w)
 		return
 	}
 	accountItems, err := g.store.ProviderAccountUsage(r.Context(), store.ProviderUsageQuery{
@@ -123,13 +196,17 @@ func (g *Gateway) providerUsage(w http.ResponseWriter, r *http.Request) {
 		To:   to,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeTelemetryUnavailable(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "account_items": accountItems})
 }
 
 func (g *Gateway) sessions(w http.ResponseWriter, r *http.Request) {
+	if g.telemetryUnavailable() {
+		writeTelemetryUnavailable(w)
+		return
+	}
 	limit, offset := pagination(r, 100, 500)
 	result, err := g.store.ListAPISessions(r.Context(), store.APISessionQuery{
 		APIKeyID:     r.URL.Query().Get("api_key_id"),
@@ -141,13 +218,17 @@ func (g *Gateway) sessions(w http.ResponseWriter, r *http.Request) {
 		Offset:       offset,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeTelemetryUnavailable(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
 }
 
 func (g *Gateway) apiKeySessions(w http.ResponseWriter, r *http.Request) {
+	if g.telemetryUnavailable() {
+		writeTelemetryUnavailable(w)
+		return
+	}
 	limit, offset := pagination(r, 100, 500)
 	result, err := g.store.ListAPISessions(r.Context(), store.APISessionQuery{
 		APIKeyID:     chi.URLParam(r, "id"),
@@ -159,7 +240,7 @@ func (g *Gateway) apiKeySessions(w http.ResponseWriter, r *http.Request) {
 		Offset:       offset,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeTelemetryUnavailable(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
