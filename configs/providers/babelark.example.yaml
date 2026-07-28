@@ -1,6 +1,6 @@
 name: babelark
 protocol: openai
-base_url: https://api.babelark.com
+base_url: https://api.babelark.ai
 default_pool: primary
 headers: {}
 endpoints:
