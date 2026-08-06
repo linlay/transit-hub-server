@@ -202,6 +202,14 @@ func (g *Gateway) providerUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "account_items": accountItems})
 }
 
+func (g *Gateway) providerQuotaSnapshot(w http.ResponseWriter, r *http.Request) {
+	if g.providerQuota == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, g.providerQuota.Snapshot())
+}
+
 func (g *Gateway) sessions(w http.ResponseWriter, r *http.Request) {
 	if g.telemetryUnavailable() {
 		writeTelemetryUnavailable(w)

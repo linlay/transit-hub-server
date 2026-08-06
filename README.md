@@ -99,6 +99,37 @@ pools:
 - `models[].image.endpointPath` 可为图片生成模型覆盖上游路径；未配置时使用 provider 级 endpoint，再未配置时使用请求路径。
 - `models[].owned_by`、`models[].display_name`、`models[].created_at` 可选，用于公开模型查询接口；未配置时分别使用 provider 名、公开模型名和 `1970-01-01T00:00:00Z`。
 
+可选的 `quota` 块会按账号定时查询上游额度，并通过字段映射把不同厂商的 JSON 归一化。`items_path` 和字段路径使用点分隔的对象路径；根响应本身是数组或单个额度对象时可省略 `items_path`。例如 MiniMax：
+
+```yaml
+quota:
+  url: https://www.minimaxi.com/v1/token_plan/remains
+  interval: 10m
+  items_path: model_remains
+  fields:
+    model_name: model_name
+    current_used_count: current_interval_usage_count
+    current_remaining_percent: current_interval_remaining_percent
+    current_status: current_interval_status
+    weekly_used_count: current_weekly_usage_count
+    weekly_remaining_percent: current_weekly_remaining_percent
+    weekly_status: current_weekly_status
+    weekly_boost_multiplier: weekly_boost_permille
+  scales:
+    weekly_boost_multiplier: 0.001
+  status_values:
+    "1": normal
+    "2": exhausted
+    "3": unlimited
+```
+
+- `interval` 省略时为 `10m`，最小为 `1m`；配置块省略时不查询该 provider。
+- `fields` 支持 `model_name`，以及 `current_` / `weekly_` 前缀的 `start_time`、`end_time`、`remaining_seconds`、`total_count`、`used_count`、`remaining_percent`、`status`；另支持 `weekly_boost_multiplier`。
+- `scales` 可对数值字段做乘法换算，例如千分制加成乘以 `0.001`、0～1 的比例乘以 `100`。
+- `status_values` 将厂商原始状态值映射为 `normal`、`exhausted`、`unlimited` 或 `unknown`。
+- 时间字段可为 Unix 秒、Unix 毫秒或 RFC3339；数值字段可为 JSON number 或数字字符串。
+- 查询固定使用账号 Key 的 Bearer 鉴权；同一轮中相同 URL 和 Key 只请求一次。查询结果只保存在内存，失败时保留最后一次成功快照。
+
 ### 3. 导入模型价格
 
 管理站 `/pricing` 读取 SQLite 中的 `model_prices`，不会从 provider YAML 自动生成。需要为每个对外暴露的 `models[].public` 配置价格；否则成本估算会为 `0`，金额固定窗口限流也无法对该模型生效。
@@ -445,6 +476,13 @@ curl -sS 'http://localhost:8080/admin/models/detail?protocol=openai&public_model
 
 ```bash
 curl -sS http://localhost:8080/admin/providers \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+查看定时采集的上游额度缓存；该接口不会现场请求厂商，也不会返回查询 URL 或 API Key：
+
+```bash
+curl -sS http://localhost:8080/admin/providers/quota \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 

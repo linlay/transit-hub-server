@@ -22,6 +22,7 @@ import (
 	"github.com/linlay/transit-hub/internal/config"
 	"github.com/linlay/transit-hub/internal/issuer"
 	"github.com/linlay/transit-hub/internal/provider"
+	"github.com/linlay/transit-hub/internal/providerquota"
 	"github.com/linlay/transit-hub/internal/store"
 )
 
@@ -1945,6 +1946,64 @@ func TestProxyRecordsDeepSeekCacheAndProviderUsage(t *testing.T) {
 	}
 	if len(usagePayload.AccountItems) != 1 || usagePayload.AccountItems[0].Account != "acct1" {
 		t.Fatalf("unexpected provider usage response: %s", usageRec.Body.String())
+	}
+}
+
+func TestProviderQuotaEndpointReturnsCachedSnapshotWithoutSecrets(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer quota-secret" {
+			t.Fatalf("unexpected quota auth: %q", got)
+		}
+		_, _ = w.Write([]byte(`{"model_remains":[{"model_name":"general","current_interval_usage_count":1,"current_interval_remaining_percent":99}]}`))
+	}))
+	defer upstream.Close()
+
+	providerConfig := openAIProvider("https://api.example.invalid")
+	providerConfig.Quota = &config.ProviderQuotaConfig{
+		URL:       upstream.URL,
+		Interval:  "10m",
+		ItemsPath: "model_remains",
+		Fields: map[string]string{
+			"model_name":                "model_name",
+			"current_used_count":        "current_interval_usage_count",
+			"current_remaining_percent": "current_interval_remaining_percent",
+		},
+	}
+	providerConfig.Pools[0].Accounts[0].APIKey = "quota-secret"
+
+	app, _, _ := newTestGateway(t, []config.ProviderConfig{providerConfig})
+	monitor, err := providerquota.New([]config.ProviderConfig{providerConfig}, providerquota.Options{Client: upstream.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitor.Start(t.Context())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = monitor.Close(ctx)
+	})
+	app.providerQuota = monitor
+
+	deadline := time.Now().Add(2 * time.Second)
+	for monitor.Snapshot().Items[0].State == "pending" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/admin/providers/quota", nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	recorder := httptest.NewRecorder()
+	app.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "quota-secret") || strings.Contains(recorder.Body.String(), upstream.URL) {
+		t.Fatalf("quota response leaked secret configuration: %s", recorder.Body.String())
+	}
+	var response providerquota.Snapshot
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Items) != 1 || response.Items[0].State != "ok" || len(response.Items[0].Quotas) != 1 {
+		t.Fatalf("unexpected quota response: %#v", response)
 	}
 }
 

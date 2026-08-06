@@ -107,6 +107,17 @@ name: babelark
 protocol: openai
 base_url: https://api.babelark.com
 default_pool: primary
+quota:
+  url: https://quota.babelark.com/v1/limits
+  interval: 10m
+  items_path: data.limits
+  fields:
+    model_name: model.name
+    current_remaining_percent: usage.remaining_ratio
+  scales:
+    current_remaining_percent: 100
+  status_values:
+    ready: normal
 models:
   - public: babelark-embedding
     upstream: text-embedding-v4
@@ -132,6 +143,9 @@ pools:
 	}
 	if len(configs) != 1 || len(configs[0].Models) != 2 {
 		t.Fatalf("unexpected configs: %#v", configs)
+	}
+	if configs[0].Quota == nil || configs[0].Quota.ItemsPath != "data.limits" || configs[0].Quota.Fields["model_name"] != "model.name" || configs[0].Quota.Scales["current_remaining_percent"] != 100 {
+		t.Fatalf("unexpected quota config: %#v", configs[0].Quota)
 	}
 	if configs[0].Models[0].Type != ModelTypeEmbedding {
 		t.Fatalf("embedding model type = %q", configs[0].Models[0].Type)
@@ -173,4 +187,77 @@ pools:
 	if got := configs[0].Pools[0].Accounts[0].APIKey; got != "sk-test-from-environment" {
 		t.Fatalf("resolved api key = %q", got)
 	}
+}
+
+func TestValidateProviderConfigQuotaMapping(t *testing.T) {
+	base := ProviderConfig{
+		Name:     "minimax",
+		Protocol: "openai",
+		BaseURL:  "https://api.minimaxi.com",
+		Models:   []ModelConfig{{Public: "minimax", Upstream: "MiniMax-M3"}},
+		Pools: []PoolConfig{{
+			Name:     "primary",
+			Accounts: []AccountConfig{{Name: "main", APIKey: "sk-test"}},
+		}},
+		Quota: &ProviderQuotaConfig{
+			URL:       "https://www.minimaxi.com/v1/token_plan/remains",
+			ItemsPath: "model_remains",
+			Fields: map[string]string{
+				"model_name":                "model_name",
+				"current_remaining_percent": "current_interval_remaining_percent",
+			},
+		},
+	}
+
+	if err := ValidateProviderConfig(base); err != nil {
+		t.Fatalf("valid quota config rejected: %v", err)
+	}
+	if interval, err := ProviderQuotaInterval(*base.Quota); err != nil || interval != 10*time.Minute {
+		t.Fatalf("default quota interval = %s, %v", interval, err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*ProviderQuotaConfig)
+	}{
+		{"missing url", func(quota *ProviderQuotaConfig) { quota.URL = "" }},
+		{"relative url", func(quota *ProviderQuotaConfig) { quota.URL = "/quota" }},
+		{"short interval", func(quota *ProviderQuotaConfig) { quota.Interval = "30s" }},
+		{"invalid interval", func(quota *ProviderQuotaConfig) { quota.Interval = "often" }},
+		{"missing fields", func(quota *ProviderQuotaConfig) { quota.Fields = nil }},
+		{"missing model name", func(quota *ProviderQuotaConfig) { delete(quota.Fields, "model_name") }},
+		{"unknown field", func(quota *ProviderQuotaConfig) { quota.Fields["balance"] = "balance" }},
+		{"invalid scale", func(quota *ProviderQuotaConfig) { quota.Scales = map[string]float64{"current_remaining_percent": 0} }},
+		{"invalid status", func(quota *ProviderQuotaConfig) { quota.StatusValues = map[string]string{"1": "healthy"} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := base
+			quota := *base.Quota
+			quota.Fields = cloneTestStringMap(base.Quota.Fields)
+			quota.Scales = cloneTestFloatMap(base.Quota.Scales)
+			quota.StatusValues = cloneTestStringMap(base.Quota.StatusValues)
+			candidate.Quota = &quota
+			test.mutate(candidate.Quota)
+			if err := ValidateProviderConfig(candidate); err == nil {
+				t.Fatal("expected quota validation error")
+			}
+		})
+	}
+}
+
+func cloneTestStringMap(input map[string]string) map[string]string {
+	output := make(map[string]string, len(input))
+	for key, value := range input {
+		output[key] = value
+	}
+	return output
+}
+
+func cloneTestFloatMap(input map[string]float64) map[string]float64 {
+	output := make(map[string]float64, len(input))
+	for key, value := range input {
+		output[key] = value
+	}
+	return output
 }

@@ -328,6 +328,12 @@ func (g *Gateway) reloadProviders(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if g.providerQuota != nil {
+		if err := g.providerQuota.Replace(providerConfigs); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "reloaded", "providers": len(providerConfigs)})
 }
 

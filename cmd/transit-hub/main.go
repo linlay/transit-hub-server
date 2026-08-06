@@ -14,6 +14,7 @@ import (
 	"github.com/linlay/transit-hub/internal/gateway"
 	"github.com/linlay/transit-hub/internal/issuer"
 	"github.com/linlay/transit-hub/internal/provider"
+	"github.com/linlay/transit-hub/internal/providerquota"
 	"github.com/linlay/transit-hub/internal/store"
 )
 
@@ -76,6 +77,11 @@ func main() {
 	if len(providerConfigs) == 0 {
 		logger.Printf("no provider configs loaded from %s; copy an example config and call /admin/providers/reload", config.ProviderConfigDir(env.ConfigDir))
 	}
+	quotaMonitor, err := providerquota.New(providerConfigs, providerquota.Options{Logger: logger})
+	if err != nil {
+		logger.Fatalf("build provider quota monitor: %v", err)
+	}
+	quotaMonitor.Start(context.Background())
 
 	var issuerService *issuer.Service
 	if issuerConfig, found, err := config.LoadIssuerConfig(env.IssuerConfigPath); err != nil {
@@ -91,13 +97,14 @@ func main() {
 	}
 
 	app := gateway.New(gateway.Options{
-		Env:       env,
-		Store:     db,
-		Usage:     usageManager,
-		Telemetry: telemetry,
-		Issuer:    issuerService,
-		Registry:  registry,
-		Logger:    logger,
+		Env:           env,
+		Store:         db,
+		Usage:         usageManager,
+		Telemetry:     telemetry,
+		Issuer:        issuerService,
+		Registry:      registry,
+		ProviderQuota: quotaMonitor,
+		Logger:        logger,
 	})
 
 	server := &http.Server{
@@ -122,6 +129,12 @@ func main() {
 		logger.Printf("shutdown: %v", err)
 	}
 	shutdownCancel()
+
+	quotaCtx, quotaCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := quotaMonitor.Close(quotaCtx); err != nil {
+		logger.Printf("close provider quota monitor: %v", err)
+	}
+	quotaCancel()
 
 	usageCtx, usageCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := usageManager.Close(usageCtx); err != nil {

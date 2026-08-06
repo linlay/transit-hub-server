@@ -40,14 +40,24 @@ type Env struct {
 }
 
 type ProviderConfig struct {
-	Name        string            `yaml:"name" json:"name"`
-	Protocol    string            `yaml:"protocol" json:"protocol"`
-	BaseURL     string            `yaml:"base_url" json:"base_url"`
-	DefaultPool string            `yaml:"default_pool" json:"default_pool"`
-	Headers     map[string]string `yaml:"headers" json:"headers,omitempty"`
-	Endpoints   map[string]string `yaml:"endpoints" json:"endpoints,omitempty"`
-	Models      []ModelConfig     `yaml:"models" json:"models"`
-	Pools       []PoolConfig      `yaml:"pools" json:"pools"`
+	Name        string               `yaml:"name" json:"name"`
+	Protocol    string               `yaml:"protocol" json:"protocol"`
+	BaseURL     string               `yaml:"base_url" json:"base_url"`
+	DefaultPool string               `yaml:"default_pool" json:"default_pool"`
+	Headers     map[string]string    `yaml:"headers" json:"headers,omitempty"`
+	Endpoints   map[string]string    `yaml:"endpoints" json:"endpoints,omitempty"`
+	Quota       *ProviderQuotaConfig `yaml:"quota" json:"-"`
+	Models      []ModelConfig        `yaml:"models" json:"models"`
+	Pools       []PoolConfig         `yaml:"pools" json:"pools"`
+}
+
+type ProviderQuotaConfig struct {
+	URL          string             `yaml:"url" json:"-"`
+	Interval     string             `yaml:"interval" json:"interval,omitempty"`
+	ItemsPath    string             `yaml:"items_path" json:"items_path,omitempty"`
+	Fields       map[string]string  `yaml:"fields" json:"fields"`
+	Scales       map[string]float64 `yaml:"scales" json:"scales,omitempty"`
+	StatusValues map[string]string  `yaml:"status_values" json:"status_values,omitempty"`
 }
 
 type ModelConfig struct {
@@ -102,10 +112,65 @@ type issuerConfigFile struct {
 }
 
 const (
-	ModelTypeChat            = "chat"
-	ModelTypeEmbedding       = "embedding"
-	ModelTypeImageGeneration = "image-generation"
+	ModelTypeChat                = "chat"
+	ModelTypeEmbedding           = "embedding"
+	ModelTypeImageGeneration     = "image-generation"
+	DefaultProviderQuotaInterval = 10 * time.Minute
+	MinimumProviderQuotaInterval = time.Minute
 )
+
+var providerQuotaFields = map[string]struct{}{
+	"model_name":                {},
+	"current_start_time":        {},
+	"current_end_time":          {},
+	"current_remaining_seconds": {},
+	"current_total_count":       {},
+	"current_used_count":        {},
+	"current_remaining_percent": {},
+	"current_status":            {},
+	"weekly_start_time":         {},
+	"weekly_end_time":           {},
+	"weekly_remaining_seconds":  {},
+	"weekly_total_count":        {},
+	"weekly_used_count":         {},
+	"weekly_remaining_percent":  {},
+	"weekly_status":             {},
+	"weekly_boost_multiplier":   {},
+}
+
+var providerQuotaScalableFields = map[string]struct{}{
+	"current_remaining_seconds": {},
+	"current_total_count":       {},
+	"current_used_count":        {},
+	"current_remaining_percent": {},
+	"weekly_remaining_seconds":  {},
+	"weekly_total_count":        {},
+	"weekly_used_count":         {},
+	"weekly_remaining_percent":  {},
+	"weekly_boost_multiplier":   {},
+}
+
+var providerQuotaStatuses = map[string]struct{}{
+	"normal":    {},
+	"exhausted": {},
+	"unlimited": {},
+	"unknown":   {},
+}
+
+func ProviderQuotaInterval(cfg ProviderQuotaConfig) (time.Duration, error) {
+	raw := strings.TrimSpace(cfg.Interval)
+	if raw == "" {
+		return DefaultProviderQuotaInterval, nil
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("interval is invalid: %w", err)
+	}
+	if interval < MinimumProviderQuotaInterval {
+		return 0, fmt.Errorf("interval must be at least %s", MinimumProviderQuotaInterval)
+	}
+	return interval, nil
+}
 
 func NormalizeModelType(value string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(value))
@@ -313,6 +378,11 @@ func ValidateProviderConfig(cfg ProviderConfig) error {
 	if _, err := url.ParseRequestURI(cfg.BaseURL); err != nil {
 		return fmt.Errorf("base_url is invalid: %w", err)
 	}
+	if cfg.Quota != nil {
+		if err := validateProviderQuotaConfig(*cfg.Quota); err != nil {
+			return fmt.Errorf("quota %w", err)
+		}
+	}
 	if len(cfg.Pools) == 0 {
 		return errors.New("at least one pool is required")
 	}
@@ -374,6 +444,70 @@ func ValidateProviderConfig(cfg ProviderConfig) error {
 		}
 		if _, ok := pools[pool]; !ok {
 			return fmt.Errorf("model %q references missing pool %q", model.Public, pool)
+		}
+	}
+	return nil
+}
+
+func validateProviderQuotaConfig(cfg ProviderQuotaConfig) error {
+	rawURL := strings.TrimSpace(cfg.URL)
+	if rawURL == "" {
+		return errors.New("url is required")
+	}
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return errors.New("url must be an absolute HTTP(S) URL")
+	}
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return errors.New("url must use http or https")
+	}
+	if parsedURL.User != nil {
+		return errors.New("url must not contain user info")
+	}
+	if _, err := ProviderQuotaInterval(cfg); err != nil {
+		return err
+	}
+	if len(cfg.Fields) == 0 {
+		return errors.New("fields are required")
+	}
+	for name, path := range cfg.Fields {
+		if _, ok := providerQuotaFields[name]; !ok {
+			return fmt.Errorf("field %q is not supported", name)
+		}
+		if strings.TrimSpace(path) == "" {
+			return fmt.Errorf("field %q path is required", name)
+		}
+	}
+	if strings.TrimSpace(cfg.Fields["model_name"]) == "" {
+		return errors.New("field \"model_name\" is required")
+	}
+	metricConfigured := false
+	for name := range cfg.Fields {
+		if name != "model_name" {
+			metricConfigured = true
+			break
+		}
+	}
+	if !metricConfigured {
+		return errors.New("at least one quota metric field is required")
+	}
+	for name, scale := range cfg.Scales {
+		if _, ok := providerQuotaScalableFields[name]; !ok {
+			return fmt.Errorf("scale field %q is not supported", name)
+		}
+		if strings.TrimSpace(cfg.Fields[name]) == "" {
+			return fmt.Errorf("scale field %q has no field mapping", name)
+		}
+		if scale <= 0 {
+			return fmt.Errorf("scale for field %q must be positive", name)
+		}
+	}
+	for raw, normalized := range cfg.StatusValues {
+		if strings.TrimSpace(raw) == "" {
+			return errors.New("status_values key must not be empty")
+		}
+		if _, ok := providerQuotaStatuses[strings.ToLower(strings.TrimSpace(normalized))]; !ok {
+			return fmt.Errorf("status_values[%q] must be normal, exhausted, unlimited, or unknown", raw)
 		}
 	}
 	return nil

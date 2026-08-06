@@ -3,6 +3,34 @@ protocol: openai
 base_url: https://api.minimaxi.com
 default_pool: primary
 headers: {}
+quota:
+  url: https://www.minimaxi.com/v1/token_plan/remains
+  interval: 10m
+  items_path: model_remains
+  fields:
+    model_name: model_name
+    current_start_time: start_time
+    current_end_time: end_time
+    current_remaining_seconds: remains_time
+    current_total_count: current_interval_total_count
+    current_used_count: current_interval_usage_count
+    current_remaining_percent: current_interval_remaining_percent
+    current_status: current_interval_status
+    weekly_start_time: weekly_start_time
+    weekly_end_time: weekly_end_time
+    weekly_remaining_seconds: weekly_remains_time
+    weekly_total_count: current_weekly_total_count
+    weekly_used_count: current_weekly_usage_count
+    weekly_remaining_percent: current_weekly_remaining_percent
+    weekly_status: current_weekly_status
+    weekly_boost_multiplier: weekly_boost_permille
+  scales:
+    weekly_boost_multiplier: 0.001
+  status_values:
+    "1": normal
+    "2": exhausted
+    "3": unlimited
+
 # endpoints:
 #   openai_chat_completions: /v1/chat/completions
 models:

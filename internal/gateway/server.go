@@ -12,6 +12,7 @@ import (
 	"github.com/linlay/transit-hub/internal/config"
 	"github.com/linlay/transit-hub/internal/issuer"
 	"github.com/linlay/transit-hub/internal/provider"
+	"github.com/linlay/transit-hub/internal/providerquota"
 	"github.com/linlay/transit-hub/internal/store"
 )
 
@@ -22,20 +23,22 @@ type Gateway struct {
 	telemetry         *store.Telemetry
 	issuer            *issuer.Service
 	registry          *provider.Registry
+	providerQuota     *providerquota.Monitor
 	client            *http.Client
 	logger            *log.Logger
 	rateLimitLocation *time.Location
 }
 
 type Options struct {
-	Env       config.Env
-	Store     *store.Store
-	Usage     *store.UsageManager
-	Telemetry *store.Telemetry
-	Issuer    *issuer.Service
-	Registry  *provider.Registry
-	Client    *http.Client
-	Logger    *log.Logger
+	Env           config.Env
+	Store         *store.Store
+	Usage         *store.UsageManager
+	Telemetry     *store.Telemetry
+	Issuer        *issuer.Service
+	Registry      *provider.Registry
+	ProviderQuota *providerquota.Monitor
+	Client        *http.Client
+	Logger        *log.Logger
 }
 
 func New(options Options) *Gateway {
@@ -67,6 +70,7 @@ func New(options Options) *Gateway {
 		telemetry:         options.Telemetry,
 		issuer:            options.Issuer,
 		registry:          options.Registry,
+		providerQuota:     options.ProviderQuota,
 		client:            client,
 		logger:            logger,
 		rateLimitLocation: rateLimitLocation,
@@ -137,6 +141,7 @@ func (g *Gateway) Handler() http.Handler {
 		r.Patch("/users/{id}", g.patchAdminUser)
 		r.Delete("/users/{id}", g.deleteAdminUser)
 		r.Get("/providers/usage", g.providerUsage)
+		r.Get("/providers/quota", g.providerQuotaSnapshot)
 		r.Get("/providers", g.listProviders)
 		r.Post("/providers/test", g.testProviderConnectivity)
 		r.Post("/playground/chat", g.playgroundChat)
