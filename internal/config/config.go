@@ -52,12 +52,17 @@ type ProviderConfig struct {
 }
 
 type ProviderQuotaConfig struct {
-	URL          string             `yaml:"url" json:"-"`
-	Interval     string             `yaml:"interval" json:"interval,omitempty"`
-	ItemsPath    string             `yaml:"items_path" json:"items_path,omitempty"`
-	Fields       map[string]string  `yaml:"fields" json:"fields"`
-	Scales       map[string]float64 `yaml:"scales" json:"scales,omitempty"`
-	StatusValues map[string]string  `yaml:"status_values" json:"status_values,omitempty"`
+	URL       string                     `yaml:"url" json:"-"`
+	Interval  string                     `yaml:"interval" json:"interval,omitempty"`
+	ItemsPath string                     `yaml:"items_path" json:"items_path,omitempty"`
+	Fields    map[string]string          `yaml:"fields" json:"fields"`
+	Display   ProviderQuotaDisplayConfig `yaml:"display" json:"display"`
+}
+
+type ProviderQuotaDisplayConfig struct {
+	Title     string                       `yaml:"title" json:"title"`
+	Lines     []string                     `yaml:"lines" json:"lines"`
+	ValueMaps map[string]map[string]string `yaml:"value_maps" json:"value_maps,omitempty"`
 }
 
 type ModelConfig struct {
@@ -118,44 +123,6 @@ const (
 	DefaultProviderQuotaInterval = 10 * time.Minute
 	MinimumProviderQuotaInterval = time.Minute
 )
-
-var providerQuotaFields = map[string]struct{}{
-	"model_name":                {},
-	"current_start_time":        {},
-	"current_end_time":          {},
-	"current_remaining_seconds": {},
-	"current_total_count":       {},
-	"current_used_count":        {},
-	"current_remaining_percent": {},
-	"current_status":            {},
-	"weekly_start_time":         {},
-	"weekly_end_time":           {},
-	"weekly_remaining_seconds":  {},
-	"weekly_total_count":        {},
-	"weekly_used_count":         {},
-	"weekly_remaining_percent":  {},
-	"weekly_status":             {},
-	"weekly_boost_multiplier":   {},
-}
-
-var providerQuotaScalableFields = map[string]struct{}{
-	"current_remaining_seconds": {},
-	"current_total_count":       {},
-	"current_used_count":        {},
-	"current_remaining_percent": {},
-	"weekly_remaining_seconds":  {},
-	"weekly_total_count":        {},
-	"weekly_used_count":         {},
-	"weekly_remaining_percent":  {},
-	"weekly_boost_multiplier":   {},
-}
-
-var providerQuotaStatuses = map[string]struct{}{
-	"normal":    {},
-	"exhausted": {},
-	"unlimited": {},
-	"unknown":   {},
-}
 
 func ProviderQuotaInterval(cfg ProviderQuotaConfig) (time.Duration, error) {
 	raw := strings.TrimSpace(cfg.Interval)
@@ -471,44 +438,65 @@ func validateProviderQuotaConfig(cfg ProviderQuotaConfig) error {
 		return errors.New("fields are required")
 	}
 	for name, path := range cfg.Fields {
-		if _, ok := providerQuotaFields[name]; !ok {
-			return fmt.Errorf("field %q is not supported", name)
+		if !validQuotaTemplateIdentifier(name) {
+			return fmt.Errorf("field %q must be a valid template identifier", name)
 		}
-		if strings.TrimSpace(path) == "" {
-			return fmt.Errorf("field %q path is required", name)
-		}
-	}
-	if strings.TrimSpace(cfg.Fields["model_name"]) == "" {
-		return errors.New("field \"model_name\" is required")
-	}
-	metricConfigured := false
-	for name := range cfg.Fields {
-		if name != "model_name" {
-			metricConfigured = true
-			break
+		if !validQuotaFieldPath(path) {
+			return fmt.Errorf("field %q path is invalid", name)
 		}
 	}
-	if !metricConfigured {
-		return errors.New("at least one quota metric field is required")
+	if strings.TrimSpace(cfg.Display.Title) == "" {
+		return errors.New("display.title is required")
 	}
-	for name, scale := range cfg.Scales {
-		if _, ok := providerQuotaScalableFields[name]; !ok {
-			return fmt.Errorf("scale field %q is not supported", name)
+	if len(cfg.Display.Lines) == 0 {
+		return errors.New("display.lines requires at least one line")
+	}
+	if len(cfg.Display.Lines) > 50 {
+		return errors.New("display.lines must not contain more than 50 lines")
+	}
+	for name, values := range cfg.Display.ValueMaps {
+		if !validQuotaTemplateIdentifier(name) {
+			return fmt.Errorf("display.value_maps name %q must be a valid template identifier", name)
 		}
-		if strings.TrimSpace(cfg.Fields[name]) == "" {
-			return fmt.Errorf("scale field %q has no field mapping", name)
+		if len(values) == 0 {
+			return fmt.Errorf("display.value_maps.%s must not be empty", name)
 		}
-		if scale <= 0 {
-			return fmt.Errorf("scale for field %q must be positive", name)
+		for raw, display := range values {
+			if strings.TrimSpace(raw) == "" || strings.TrimSpace(display) == "" {
+				return fmt.Errorf("display.value_maps.%s keys and values must not be empty", name)
+			}
 		}
 	}
-	for raw, normalized := range cfg.StatusValues {
-		if strings.TrimSpace(raw) == "" {
-			return errors.New("status_values key must not be empty")
+	templates := append([]string{cfg.Display.Title}, cfg.Display.Lines...)
+	hasPlaceholder := false
+	for index, rawTemplate := range templates {
+		if len(rawTemplate) > 4096 {
+			return fmt.Errorf("display template %d exceeds 4096 characters", index)
 		}
-		if _, ok := providerQuotaStatuses[strings.ToLower(strings.TrimSpace(normalized))]; !ok {
-			return fmt.Errorf("status_values[%q] must be normal, exhausted, unlimited, or unknown", raw)
+		parsed, err := ParseProviderQuotaTemplate(rawTemplate)
+		if err != nil {
+			return fmt.Errorf("display template %d: %w", index, err)
 		}
+		for _, part := range parsed.Parts {
+			if part.Field == "" {
+				continue
+			}
+			hasPlaceholder = true
+			if _, ok := cfg.Fields[part.Field]; !ok {
+				return fmt.Errorf("display template %d references undefined field %q", index, part.Field)
+			}
+			for _, formatter := range part.Formatters {
+				if formatter.Name != "map" {
+					continue
+				}
+				if _, ok := cfg.Display.ValueMaps[formatter.Argument]; !ok {
+					return fmt.Errorf("display template %d references undefined value map %q", index, formatter.Argument)
+				}
+			}
+		}
+	}
+	if !hasPlaceholder {
+		return errors.New("display templates must reference at least one field")
 	}
 	return nil
 }

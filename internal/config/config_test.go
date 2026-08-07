@@ -112,12 +112,12 @@ quota:
   interval: 10m
   items_path: data.limits
   fields:
-    model_name: model.name
-    current_remaining_percent: usage.remaining_ratio
-  scales:
-    current_remaining_percent: 100
-  status_values:
-    ready: normal
+    model: model.name
+    remaining: usage.remaining_ratio
+  display:
+    title: "{{ model }}"
+    lines:
+      - "剩余：{{ remaining | scale:100 | percent:1 }}"
 models:
   - public: babelark-embedding
     upstream: text-embedding-v4
@@ -144,7 +144,7 @@ pools:
 	if len(configs) != 1 || len(configs[0].Models) != 2 {
 		t.Fatalf("unexpected configs: %#v", configs)
 	}
-	if configs[0].Quota == nil || configs[0].Quota.ItemsPath != "data.limits" || configs[0].Quota.Fields["model_name"] != "model.name" || configs[0].Quota.Scales["current_remaining_percent"] != 100 {
+	if configs[0].Quota == nil || configs[0].Quota.ItemsPath != "data.limits" || configs[0].Quota.Fields["model"] != "model.name" || configs[0].Quota.Display.Title != "{{ model }}" {
 		t.Fatalf("unexpected quota config: %#v", configs[0].Quota)
 	}
 	if configs[0].Models[0].Type != ModelTypeEmbedding {
@@ -203,8 +203,12 @@ func TestValidateProviderConfigQuotaMapping(t *testing.T) {
 			URL:       "https://www.minimaxi.com/v1/token_plan/remains",
 			ItemsPath: "model_remains",
 			Fields: map[string]string{
-				"model_name":                "model_name",
-				"current_remaining_percent": "current_interval_remaining_percent",
+				"model":     "model_name",
+				"remaining": "current_interval_remaining_percent",
+			},
+			Display: ProviderQuotaDisplayConfig{
+				Title: "{{ model }}",
+				Lines: []string{"剩余：{{ remaining | percent:1 }}"},
 			},
 		},
 	}
@@ -225,18 +229,23 @@ func TestValidateProviderConfigQuotaMapping(t *testing.T) {
 		{"short interval", func(quota *ProviderQuotaConfig) { quota.Interval = "30s" }},
 		{"invalid interval", func(quota *ProviderQuotaConfig) { quota.Interval = "often" }},
 		{"missing fields", func(quota *ProviderQuotaConfig) { quota.Fields = nil }},
-		{"missing model name", func(quota *ProviderQuotaConfig) { delete(quota.Fields, "model_name") }},
-		{"unknown field", func(quota *ProviderQuotaConfig) { quota.Fields["balance"] = "balance" }},
-		{"invalid scale", func(quota *ProviderQuotaConfig) { quota.Scales = map[string]float64{"current_remaining_percent": 0} }},
-		{"invalid status", func(quota *ProviderQuotaConfig) { quota.StatusValues = map[string]string{"1": "healthy"} }},
+		{"invalid field name", func(quota *ProviderQuotaConfig) { quota.Fields["not-valid"] = "balance" }},
+		{"invalid field path", func(quota *ProviderQuotaConfig) { quota.Fields["balance"] = "$root." }},
+		{"missing title", func(quota *ProviderQuotaConfig) { quota.Display.Title = "" }},
+		{"missing lines", func(quota *ProviderQuotaConfig) { quota.Display.Lines = nil }},
+		{"undefined field", func(quota *ProviderQuotaConfig) { quota.Display.Lines = []string{"{{ balance }}"} }},
+		{"malformed template", func(quota *ProviderQuotaConfig) { quota.Display.Title = "{{ model" }},
+		{"unsupported formatter", func(quota *ProviderQuotaConfig) { quota.Display.Lines = []string{"{{ remaining | money }}"} }},
+		{"invalid scale", func(quota *ProviderQuotaConfig) { quota.Display.Lines = []string{"{{ remaining | scale:0 }}"} }},
+		{"undefined value map", func(quota *ProviderQuotaConfig) { quota.Display.Lines = []string{"{{ remaining | map:status }}"} }},
+		{"empty value map", func(quota *ProviderQuotaConfig) { quota.Display.ValueMaps = map[string]map[string]string{"status": {}} }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := base
 			quota := *base.Quota
 			quota.Fields = cloneTestStringMap(base.Quota.Fields)
-			quota.Scales = cloneTestFloatMap(base.Quota.Scales)
-			quota.StatusValues = cloneTestStringMap(base.Quota.StatusValues)
+			quota.Display = cloneTestQuotaDisplay(base.Quota.Display)
 			candidate.Quota = &quota
 			test.mutate(candidate.Quota)
 			if err := ValidateProviderConfig(candidate); err == nil {
@@ -254,10 +263,14 @@ func cloneTestStringMap(input map[string]string) map[string]string {
 	return output
 }
 
-func cloneTestFloatMap(input map[string]float64) map[string]float64 {
-	output := make(map[string]float64, len(input))
-	for key, value := range input {
-		output[key] = value
+func cloneTestQuotaDisplay(input ProviderQuotaDisplayConfig) ProviderQuotaDisplayConfig {
+	output := ProviderQuotaDisplayConfig{
+		Title:     input.Title,
+		Lines:     append([]string(nil), input.Lines...),
+		ValueMaps: make(map[string]map[string]string, len(input.ValueMaps)),
+	}
+	for name, values := range input.ValueMaps {
+		output.ValueMaps[name] = cloneTestStringMap(values)
 	}
 	return output
 }

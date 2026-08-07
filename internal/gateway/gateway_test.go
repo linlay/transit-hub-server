@@ -1954,7 +1954,7 @@ func TestProviderQuotaEndpointReturnsCachedSnapshotWithoutSecrets(t *testing.T) 
 		if got := r.Header.Get("Authorization"); got != "Bearer quota-secret" {
 			t.Fatalf("unexpected quota auth: %q", got)
 		}
-		_, _ = w.Write([]byte(`{"model_remains":[{"model_name":"general","current_interval_usage_count":1,"current_interval_remaining_percent":99}]}`))
+		_, _ = w.Write([]byte(`{"model_remains":[{"model_name":"general","current_interval_usage_count":1,"current_interval_remaining_percent":99,"unmapped_private_field":"must-not-return"}]}`))
 	}))
 	defer upstream.Close()
 
@@ -1964,9 +1964,13 @@ func TestProviderQuotaEndpointReturnsCachedSnapshotWithoutSecrets(t *testing.T) 
 		Interval:  "10m",
 		ItemsPath: "model_remains",
 		Fields: map[string]string{
-			"model_name":                "model_name",
-			"current_used_count":        "current_interval_usage_count",
-			"current_remaining_percent": "current_interval_remaining_percent",
+			"model":     "model_name",
+			"used":      "current_interval_usage_count",
+			"remaining": "current_interval_remaining_percent",
+		},
+		Display: config.ProviderQuotaDisplayConfig{
+			Title: "{{ model }}",
+			Lines: []string{"已用 {{ used | number:0 }}，剩余 {{ remaining | percent:1 }}"},
 		},
 	}
 	providerConfig.Pools[0].Accounts[0].APIKey = "quota-secret"
@@ -1995,15 +1999,18 @@ func TestProviderQuotaEndpointReturnsCachedSnapshotWithoutSecrets(t *testing.T) 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
 	}
-	if strings.Contains(recorder.Body.String(), "quota-secret") || strings.Contains(recorder.Body.String(), upstream.URL) {
+	if strings.Contains(recorder.Body.String(), "quota-secret") || strings.Contains(recorder.Body.String(), upstream.URL) || strings.Contains(recorder.Body.String(), "must-not-return") {
 		t.Fatalf("quota response leaked secret configuration: %s", recorder.Body.String())
 	}
 	var response providerquota.Snapshot
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Items) != 1 || response.Items[0].State != "ok" || len(response.Items[0].Quotas) != 1 {
+	if len(response.Items) != 1 || response.Items[0].State != "ok" || len(response.Items[0].Entries) != 1 {
 		t.Fatalf("unexpected quota response: %#v", response)
+	}
+	if got := response.Items[0].Entries[0]; got.Title != "general" || strings.Join(got.Lines, "\n") != "已用 1，剩余 99%" {
+		t.Fatalf("unexpected rendered quota entry: %#v", got)
 	}
 }
 

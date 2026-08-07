@@ -9,27 +9,36 @@ quota:
   items_path: model_remains
   fields:
     model_name: model_name
-    current_start_time: start_time
-    current_end_time: end_time
+    current_used: current_interval_usage_count
+    current_total: current_interval_total_count
+    current_remaining: current_interval_remaining_percent
+    current_reset: end_time
     current_remaining_seconds: remains_time
-    current_total_count: current_interval_total_count
-    current_used_count: current_interval_usage_count
-    current_remaining_percent: current_interval_remaining_percent
     current_status: current_interval_status
-    weekly_start_time: weekly_start_time
-    weekly_end_time: weekly_end_time
+    weekly_used: current_weekly_usage_count
+    weekly_total: current_weekly_total_count
+    weekly_remaining: current_weekly_remaining_percent
+    weekly_reset: weekly_end_time
     weekly_remaining_seconds: weekly_remains_time
-    weekly_total_count: current_weekly_total_count
-    weekly_used_count: current_weekly_usage_count
-    weekly_remaining_percent: current_weekly_remaining_percent
     weekly_status: current_weekly_status
-    weekly_boost_multiplier: weekly_boost_permille
-  scales:
-    weekly_boost_multiplier: 0.001
-  status_values:
-    "1": normal
-    "2": exhausted
-    "3": unlimited
+    weekly_boost: weekly_boost_permille
+  display:
+    title: "{{ model_name }}"
+    lines:
+      - "当前窗口：已用量 {{ current_used | number:0 }}，剩余 {{ current_remaining | percent:1 }}"
+      - "当前计数：已用 {{ current_used | number:0 }} / {{ current_total | nonzero | number:0 }}"
+      - "当前重置：{{ current_reset | datetime:Asia/Shanghai }}，剩余 {{ current_remaining_seconds | duration:zh-CN }}"
+      - "当前状态：{{ current_status | map:quota_status }}"
+      - "本周：已用量 {{ weekly_used | number:0 }}，剩余 {{ weekly_remaining | percent:1 }}"
+      - "周计数：已用 {{ weekly_used | number:0 }} / {{ weekly_total | nonzero | number:0 }}"
+      - "周重置：{{ weekly_reset | datetime:Asia/Shanghai }}，剩余 {{ weekly_remaining_seconds | duration:zh-CN }}"
+      - "周状态：{{ weekly_status | map:quota_status }}"
+      - "周额度加成：{{ weekly_boost | scale:0.001 | number:2 }} 倍"
+    value_maps:
+      quota_status:
+        "1": 正常
+        "2": 已耗尽
+        "3": 无限
 
 # endpoints:
 #   openai_chat_completions: /v1/chat/completions

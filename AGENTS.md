@@ -84,7 +84,7 @@ configs/
 - `accounts[].api_key_env`：可选的上游账号密钥环境变量名；当 `api_key` 为空时读取该变量，适合由部署环境注入的密钥。
 - `accounts[].weight`：权重；`0` 会在运行时按 `1` 处理，负数非法。
 - `accounts[].auth_header` / `auth_scheme`：覆盖上游鉴权头。OpenAI 默认 `Authorization: Bearer ...`，Anthropic 默认 `x-api-key: ...`。
-- `quota`：可选的上游额度定时查询；包含绝对 `url`、不小于 `1m` 的 `interval`、响应数组 `items_path`、标准字段到点分 JSON 路径的 `fields`，以及可选的数值 `scales` 和 `status_values`。额度查询固定使用账号 Key 的 Bearer 鉴权，快照只保存在内存。
+- `quota`：可选的上游额度定时查询；包含绝对 `url`、不小于 `1m` 的 `interval`、响应数组 `items_path`、模板变量到点分 JSON 路径的 `fields`，以及文字模板 `display.title`、`display.lines` 和可选 `display.value_maps`。额度查询固定使用账号 Key 的 Bearer 鉴权，管理 API 只返回渲染后的文字摘要，快照只保存在内存。
 
 ## 数据模型
 

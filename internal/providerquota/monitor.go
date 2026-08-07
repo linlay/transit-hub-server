@@ -32,7 +32,7 @@ type AccountSnapshot struct {
 	LastAttemptAt   *time.Time `json:"last_attempt_at,omitempty"`
 	LastSuccessAt   *time.Time `json:"last_success_at,omitempty"`
 	LastError       string     `json:"last_error,omitempty"`
-	Quotas          []Quota    `json:"quotas"`
+	Entries         []Entry    `json:"entries"`
 }
 
 type Snapshot struct {
@@ -161,7 +161,10 @@ func (m *Monitor) Snapshot() Snapshot {
 	items := make([]AccountSnapshot, 0, len(m.snapshots))
 	for _, snapshot := range m.snapshots {
 		copySnapshot := snapshot
-		copySnapshot.Quotas = append([]Quota(nil), snapshot.Quotas...)
+		copySnapshot.Entries = make([]Entry, len(snapshot.Entries))
+		for index, entry := range snapshot.Entries {
+			copySnapshot.Entries[index] = Entry{Title: entry.Title, Lines: append([]string(nil), entry.Lines...)}
+		}
 		items = append(items, copySnapshot)
 	}
 	m.mu.RUnlock()
@@ -280,12 +283,12 @@ func (m *Monitor) queryGroup(ctx context.Context, targets []target) {
 			m.applyError(current, attemptAt, err.Error())
 			continue
 		}
-		quotas, parseErr := parseQuotas(body, current.quota)
+		entries, parseErr := parseEntries(body, current.quota)
 		if parseErr != nil {
 			m.applyError(current, attemptAt, parseErr.Error())
 			continue
 		}
-		m.applySuccess(current, attemptAt, quotas)
+		m.applySuccess(current, attemptAt, entries)
 	}
 }
 
@@ -340,7 +343,7 @@ func (m *Monitor) applyError(target target, at time.Time, message string) {
 	m.logger.Printf("provider quota query failed for provider=%q pool=%q account=%q: %s", target.provider, target.pool, target.account, message)
 }
 
-func (m *Monitor) applySuccess(target target, at time.Time, quotas []Quota) {
+func (m *Monitor) applySuccess(target target, at time.Time, entries []Entry) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	current, ok := m.targets[target.id]
@@ -352,7 +355,10 @@ func (m *Monitor) applySuccess(target target, at time.Time, quotas []Quota) {
 	snapshot.LastAttemptAt = timePointer(at)
 	snapshot.LastSuccessAt = timePointer(at)
 	snapshot.LastError = ""
-	snapshot.Quotas = append([]Quota(nil), quotas...)
+	snapshot.Entries = make([]Entry, len(entries))
+	for index, entry := range entries {
+		snapshot.Entries[index] = Entry{Title: entry.Title, Lines: append([]string(nil), entry.Lines...)}
+	}
 	m.snapshots[target.id] = snapshot
 }
 
@@ -392,7 +398,7 @@ func buildTargets(configs []config.ProviderConfig, now time.Time) (map[string]ta
 					Account:         account.Name,
 					IntervalSeconds: int64(interval / time.Second),
 					State:           "pending",
-					Quotas:          []Quota{},
+					Entries:         []Entry{},
 				}
 			}
 		}
@@ -410,21 +416,24 @@ func quotaConfigIdentity(cfg config.ProviderQuotaConfig, interval time.Duration,
 	for _, name := range fieldNames {
 		parts = append(parts, "field", name, cfg.Fields[name])
 	}
-	scaleNames := make([]string, 0, len(cfg.Scales))
-	for name := range cfg.Scales {
-		scaleNames = append(scaleNames, name)
+	parts = append(parts, "display-title", cfg.Display.Title)
+	for _, line := range cfg.Display.Lines {
+		parts = append(parts, "display-line", line)
 	}
-	sort.Strings(scaleNames)
-	for _, name := range scaleNames {
-		parts = append(parts, "scale", name, fmt.Sprintf("%g", cfg.Scales[name]))
+	valueMapNames := make([]string, 0, len(cfg.Display.ValueMaps))
+	for name := range cfg.Display.ValueMaps {
+		valueMapNames = append(valueMapNames, name)
 	}
-	statusNames := make([]string, 0, len(cfg.StatusValues))
-	for name := range cfg.StatusValues {
-		statusNames = append(statusNames, name)
-	}
-	sort.Strings(statusNames)
-	for _, name := range statusNames {
-		parts = append(parts, "status", name, cfg.StatusValues[name])
+	sort.Strings(valueMapNames)
+	for _, name := range valueMapNames {
+		valueNames := make([]string, 0, len(cfg.Display.ValueMaps[name]))
+		for raw := range cfg.Display.ValueMaps[name] {
+			valueNames = append(valueNames, raw)
+		}
+		sort.Strings(valueNames)
+		for _, raw := range valueNames {
+			parts = append(parts, "value-map", name, raw, cfg.Display.ValueMaps[name][raw])
+		}
 	}
 	return fingerprint(parts...)
 }

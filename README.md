@@ -99,7 +99,7 @@ pools:
 - `models[].image.endpointPath` 可为图片生成模型覆盖上游路径；未配置时使用 provider 级 endpoint，再未配置时使用请求路径。
 - `models[].owned_by`、`models[].display_name`、`models[].created_at` 可选，用于公开模型查询接口；未配置时分别使用 provider 名、公开模型名和 `1970-01-01T00:00:00Z`。
 
-可选的 `quota` 块会按账号定时查询上游额度，并通过字段映射把不同厂商的 JSON 归一化。`items_path` 和字段路径使用点分隔的对象路径；根响应本身是数组或单个额度对象时可省略 `items_path`。例如 MiniMax：
+可选的 `quota` 块会按账号定时查询上游额度，并把配置明确引用的响应字段渲染为文字摘要。不同厂商可以自由定义标题和行，不需要统一成固定的小时、每日、每周、次数或余额结构。`items_path` 和字段路径使用点分隔的对象路径；根响应本身是数组或单个额度对象时可省略 `items_path`。例如 MiniMax：
 
 ```yaml
 quota:
@@ -108,27 +108,46 @@ quota:
   items_path: model_remains
   fields:
     model_name: model_name
-    current_used_count: current_interval_usage_count
-    current_remaining_percent: current_interval_remaining_percent
+    current_used: current_interval_usage_count
+    current_total: current_interval_total_count
+    current_remaining: current_interval_remaining_percent
+    current_reset: end_time
+    current_remaining_seconds: remains_time
     current_status: current_interval_status
-    weekly_used_count: current_weekly_usage_count
-    weekly_remaining_percent: current_weekly_remaining_percent
+    weekly_used: current_weekly_usage_count
+    weekly_total: current_weekly_total_count
+    weekly_remaining: current_weekly_remaining_percent
+    weekly_reset: weekly_end_time
+    weekly_remaining_seconds: weekly_remains_time
     weekly_status: current_weekly_status
-    weekly_boost_multiplier: weekly_boost_permille
-  scales:
-    weekly_boost_multiplier: 0.001
-  status_values:
-    "1": normal
-    "2": exhausted
-    "3": unlimited
+    weekly_boost: weekly_boost_permille
+  display:
+    title: "{{ model_name }}"
+    lines:
+      - "当前窗口：已用量 {{ current_used | number:0 }}，剩余 {{ current_remaining | percent:1 }}"
+      - "当前计数：已用 {{ current_used | number:0 }} / {{ current_total | nonzero | number:0 }}"
+      - "当前重置：{{ current_reset | datetime:Asia/Shanghai }}，剩余 {{ current_remaining_seconds | duration:zh-CN }}"
+      - "当前状态：{{ current_status | map:quota_status }}"
+      - "本周：已用量 {{ weekly_used | number:0 }}，剩余 {{ weekly_remaining | percent:1 }}"
+      - "周计数：已用 {{ weekly_used | number:0 }} / {{ weekly_total | nonzero | number:0 }}"
+      - "周重置：{{ weekly_reset | datetime:Asia/Shanghai }}，剩余 {{ weekly_remaining_seconds | duration:zh-CN }}"
+      - "周状态：{{ weekly_status | map:quota_status }}"
+      - "周额度加成：{{ weekly_boost | scale:0.001 | number:2 }} 倍"
+    value_maps:
+      quota_status:
+        "1": 正常
+        "2": 已耗尽
+        "3": 无限
 ```
 
 - `interval` 省略时为 `10m`，最小为 `1m`；配置块省略时不查询该 provider。
-- `fields` 支持 `model_name`，以及 `current_` / `weekly_` 前缀的 `start_time`、`end_time`、`remaining_seconds`、`total_count`、`used_count`、`remaining_percent`、`status`；另支持 `weekly_boost_multiplier`。
-- `scales` 可对数值字段做乘法换算，例如千分制加成乘以 `0.001`、0～1 的比例乘以 `100`。
-- `status_values` 将厂商原始状态值映射为 `normal`、`exhausted`、`unlimited` 或 `unknown`。
-- 时间字段可为 Unix 秒、Unix 毫秒或 RFC3339；数值字段可为 JSON number 或数字字符串。
+- `fields` 的键是模板变量名，值是响应条目内的任意点分 JSON 路径；使用 `$root.` 可读取响应根字段，`$item.` 可显式读取当前条目，数字路径段可访问数组下标。
+- `display.title` 和 `display.lines` 使用 `{{ field }}` 占位符。标题引用的字段缺失时该次查询报错；某一行有字段缺失或被 `nonzero` 判定为零时只隐藏该行。
+- 模板只支持受限格式化器：`scale:<倍率>`、`number[:精度]`、`percent[:精度]`、`datetime[:时区]`、`duration[:en|zh-CN]`、`nonzero` 和 `map:<映射名>`，不会执行任意代码。
+- `display.value_maps` 可把厂商状态码等标量映射为展示文字；未命中的值保留原样，便于兼容厂商新增状态。
+- 时间输入可为 Unix 秒、Unix 毫秒或 RFC3339；数值输入可为 JSON number 或数字字符串。
 - 查询固定使用账号 Key 的 Bearer 鉴权；同一轮中相同 URL 和 Key 只请求一次。查询结果只保存在内存，失败时保留最后一次成功快照。
+- 管理 API 只返回渲染后的 `entries[].title` 和 `entries[].lines`，不会返回查询 URL、API Key、字段路径或上游响应原文。
 
 ### 3. 导入模型价格
 
