@@ -100,6 +100,13 @@ func (t *Telemetry) Degraded() bool {
 	return t.degraded.Load()
 }
 
+func (t *Telemetry) markQueryFailure(err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	t.degraded.Store(true)
+}
+
 func (t *Telemetry) Close(ctx context.Context) error {
 	t.stopOnce.Do(func() { close(t.stop) })
 	select {
@@ -335,7 +342,7 @@ func (t *Telemetry) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficB
 		ORDER BY bucket ASC
 	`, bucketExpr, where), args...)
 	if err != nil {
-		t.degraded.Store(true)
+		t.markQueryFailure(err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -351,7 +358,7 @@ func (t *Telemetry) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficB
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		t.degraded.Store(true)
+		t.markQueryFailure(err)
 		return nil, err
 	}
 	modelRows, err := db.QueryContext(ctx, fmt.Sprintf(`
@@ -363,7 +370,7 @@ func (t *Telemetry) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficB
 		ORDER BY bucket ASC, COUNT(*) DESC, public_model ASC
 	`, bucketExpr, where), args...)
 	if err != nil {
-		t.degraded.Store(true)
+		t.markQueryFailure(err)
 		return nil, err
 	}
 	defer modelRows.Close()
@@ -382,7 +389,7 @@ func (t *Telemetry) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficB
 		}
 	}
 	if err := modelRows.Err(); err != nil {
-		t.degraded.Store(true)
+		t.markQueryFailure(err)
 		return nil, err
 	}
 	return items, nil
@@ -410,7 +417,7 @@ func (t *Telemetry) RequestLogSummary(ctx context.Context, query RequestLogQuery
 		&summary.CacheHitTokens, &summary.CacheMissTokens, &summary.CostMicro,
 		&summary.ErrorRequests, &summary.AverageLatency)
 	if err != nil {
-		t.degraded.Store(true)
+		t.markQueryFailure(err)
 		return TrafficBucket{}, err
 	}
 	fillTrafficDerived(&summary)
@@ -436,7 +443,7 @@ func (t *Telemetry) ListRequestLogs(ctx context.Context, query RequestLogQuery) 
 	where, args := requestLogWhere(query.APIKeyID, query.From, query.To)
 	var total int64
 	if err := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM request_logs %s`, where), args...).Scan(&total); err != nil {
-		t.degraded.Store(true)
+		t.markQueryFailure(err)
 		return RequestLogListResult{}, err
 	}
 	queryArgs := append([]any{}, args...)
@@ -452,7 +459,7 @@ func (t *Telemetry) ListRequestLogs(ctx context.Context, query RequestLogQuery) 
 		LIMIT ? OFFSET ?
 	`, where), queryArgs...)
 	if err != nil {
-		t.degraded.Store(true)
+		t.markQueryFailure(err)
 		return RequestLogListResult{}, err
 	}
 	defer rows.Close()
@@ -479,7 +486,7 @@ func (t *Telemetry) ListRequestLogs(ctx context.Context, query RequestLogQuery) 
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		t.degraded.Store(true)
+		t.markQueryFailure(err)
 		return RequestLogListResult{}, err
 	}
 	return RequestLogListResult{Items: items, Total: total, Limit: limit, Offset: offset}, nil
@@ -511,7 +518,7 @@ func (t *Telemetry) ProviderUsage(ctx context.Context, query ProviderUsageQuery)
 		ORDER BY COUNT(*) DESC, provider ASC
 	`, where), args...)
 	if err != nil {
-		t.degraded.Store(true)
+		t.markQueryFailure(err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -555,7 +562,7 @@ func (t *Telemetry) ProviderAccountUsage(ctx context.Context, query ProviderUsag
 		ORDER BY provider ASC, pool ASC, COUNT(*) DESC, account ASC
 	`, where), args...)
 	if err != nil {
-		t.degraded.Store(true)
+		t.markQueryFailure(err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -586,7 +593,7 @@ func (t *Telemetry) CountActiveSessions(ctx context.Context, activeWindow time.D
 		SELECT COUNT(*) FROM api_key_sessions WHERE last_seen_at >= ?
 	`, formatTime(cutoff)).Scan(&count)
 	if err != nil {
-		t.degraded.Store(true)
+		t.markQueryFailure(err)
 	}
 	return count, err
 }
@@ -639,7 +646,7 @@ func (t *Telemetry) ListAPISessions(ctx context.Context, query APISessionQuery) 
 	if err := db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COUNT(*) FROM api_key_sessions %s
 	`, whereSQL), args...).Scan(&total); err != nil {
-		t.degraded.Store(true)
+		t.markQueryFailure(err)
 		return APISessionListResult{}, err
 	}
 	queryArgs := append([]any{}, args...)
@@ -653,7 +660,7 @@ func (t *Telemetry) ListAPISessions(ctx context.Context, query APISessionQuery) 
 		LIMIT ? OFFSET ?
 	`, whereSQL), queryArgs...)
 	if err != nil {
-		t.degraded.Store(true)
+		t.markQueryFailure(err)
 		return APISessionListResult{}, err
 	}
 	defer rows.Close()

@@ -2,10 +2,54 @@ package store
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestCanceledTelemetryQueryDoesNotDegradeService(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "telemetry.db")
+	telemetry, err := NewTelemetry(path, 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := telemetry.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	connection, err := telemetry.db.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	result := make(chan error, 1)
+	go func() {
+		_, err := telemetry.ProviderUsage(ctx, ProviderUsageQuery{})
+		result <- err
+	}()
+	deadline := time.Now().Add(time.Second)
+	for telemetry.db.Stats().WaitCount == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if telemetry.db.Stats().WaitCount == 0 {
+		cancel()
+		t.Fatal("provider usage query did not wait for the occupied database connection")
+	}
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("provider usage error = %v, want context canceled", err)
+	}
+	if telemetry.Degraded() {
+		t.Fatal("client cancellation degraded telemetry service")
+	}
+}
 
 func TestTelemetryQueueDoesNotBlockOnWriteLock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "telemetry.db")
