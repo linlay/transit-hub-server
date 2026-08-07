@@ -74,18 +74,25 @@ type TrafficQuery struct {
 }
 
 type TrafficBucket struct {
-	Bucket           string   `json:"bucket"`
-	Requests         int64    `json:"requests"`
-	RequestTokens    int64    `json:"request_tokens"`
-	ResponseTokens   int64    `json:"response_tokens"`
-	TotalTokens      int64    `json:"total_tokens"`
-	CacheHitTokens   int64    `json:"cache_hit_tokens"`
-	CacheMissTokens  int64    `json:"cache_miss_tokens"`
-	CacheTotalTokens int64    `json:"cache_total_tokens"`
-	CacheHitRate     *float64 `json:"cache_hit_rate"`
-	CostMicro        int64    `json:"cost_micro"`
-	ErrorRequests    int64    `json:"error_requests"`
-	AverageLatency   float64  `json:"average_latency_ms"`
+	Bucket           string              `json:"bucket"`
+	Requests         int64               `json:"requests"`
+	RequestTokens    int64               `json:"request_tokens"`
+	ResponseTokens   int64               `json:"response_tokens"`
+	TotalTokens      int64               `json:"total_tokens"`
+	CacheHitTokens   int64               `json:"cache_hit_tokens"`
+	CacheMissTokens  int64               `json:"cache_miss_tokens"`
+	CacheTotalTokens int64               `json:"cache_total_tokens"`
+	CacheHitRate     *float64            `json:"cache_hit_rate"`
+	CostMicro        int64               `json:"cost_micro"`
+	ErrorRequests    int64               `json:"error_requests"`
+	AverageLatency   float64             `json:"average_latency_ms"`
+	Models           []TrafficModelUsage `json:"models,omitempty"`
+}
+
+type TrafficModelUsage struct {
+	Model       string `json:"model"`
+	Requests    int64  `json:"requests"`
+	TotalTokens int64  `json:"total_tokens"`
 }
 
 type RequestLogQuery struct {

@@ -354,6 +354,37 @@ func (t *Telemetry) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficB
 		t.degraded.Store(true)
 		return nil, err
 	}
+	modelRows, err := db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT %s AS bucket, public_model, COUNT(*),
+		       COALESCE(SUM(request_tokens + response_tokens), 0)
+		FROM request_logs
+		%s
+		GROUP BY bucket, public_model
+		ORDER BY bucket ASC, COUNT(*) DESC, public_model ASC
+	`, bucketExpr, where), args...)
+	if err != nil {
+		t.degraded.Store(true)
+		return nil, err
+	}
+	defer modelRows.Close()
+	bucketsByName := make(map[string]*TrafficBucket, len(items))
+	for i := range items {
+		bucketsByName[items[i].Bucket] = &items[i]
+	}
+	for modelRows.Next() {
+		var bucket string
+		var usage TrafficModelUsage
+		if err := modelRows.Scan(&bucket, &usage.Model, &usage.Requests, &usage.TotalTokens); err != nil {
+			return nil, err
+		}
+		if item := bucketsByName[bucket]; item != nil {
+			item.Models = append(item.Models, usage)
+		}
+	}
+	if err := modelRows.Err(); err != nil {
+		t.degraded.Store(true)
+		return nil, err
+	}
 	return items, nil
 }
 

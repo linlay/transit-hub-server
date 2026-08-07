@@ -37,6 +37,9 @@ func TestTrafficSupportsMonthBuckets(t *testing.T) {
 	if jan.CostMicro != 333 || jan.ErrorRequests != 1 {
 		t.Fatalf("unexpected January cost/error totals: %#v", jan)
 	}
+	if len(jan.Models) != 1 || jan.Models[0].Model != "public-model" || jan.Models[0].Requests != 2 || jan.Models[0].TotalTokens != 43 {
+		t.Fatalf("unexpected January model usage: %#v", jan.Models)
+	}
 	if jan.CacheHitRate == nil || *jan.CacheHitRate < 0.3846 || *jan.CacheHitRate > 0.3847 {
 		t.Fatalf("unexpected January cache hit rate: %#v", jan.CacheHitRate)
 	}
@@ -44,6 +47,34 @@ func TestTrafficSupportsMonthBuckets(t *testing.T) {
 	feb := traffic[1]
 	if feb.Bucket != "2026-02" || feb.Requests != 1 || feb.TotalTokens != 10 || feb.CostMicro != 333 || feb.ErrorRequests != 0 {
 		t.Fatalf("unexpected February traffic totals: %#v", feb)
+	}
+}
+
+func TestTrafficBreaksRequestsDownByModel(t *testing.T) {
+	store, telemetry := openReportingStores(t)
+
+	key, err := store.CreateAPIKey(t.Context(), CreateAPIKeyParams{Name: "models"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	enqueueRequestLogForModelReportingTest(t, telemetry, key.APIKey, "model-b", at, 200, 3, 5, 0, 0, 0, "")
+	enqueueRequestLogForModelReportingTest(t, telemetry, key.APIKey, "model-a", at.Add(time.Minute), 200, 7, 11, 0, 0, 0, "")
+	enqueueRequestLogForModelReportingTest(t, telemetry, key.APIKey, "model-b", at.Add(2*time.Minute), 200, 13, 17, 0, 0, 0, "")
+
+	traffic, err := store.Traffic(t.Context(), TrafficQuery{APIKeyID: key.ID, Bucket: "day"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(traffic) != 1 || len(traffic[0].Models) != 2 {
+		t.Fatalf("unexpected traffic model groups: %#v", traffic)
+	}
+	models := traffic[0].Models
+	if models[0].Model != "model-b" || models[0].Requests != 2 || models[0].TotalTokens != 38 {
+		t.Fatalf("unexpected leading model usage: %#v", models[0])
+	}
+	if models[1].Model != "model-a" || models[1].Requests != 1 || models[1].TotalTokens != 18 {
+		t.Fatalf("unexpected secondary model usage: %#v", models[1])
 	}
 }
 
@@ -116,12 +147,17 @@ func openReportingStores(t *testing.T) (*Store, *Telemetry) {
 
 func enqueueRequestLogForReportingTest(t *testing.T, telemetry *Telemetry, key APIKey, createdAt time.Time, statusCode int, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens, costMicro int64, errorType string) {
 	t.Helper()
+	enqueueRequestLogForModelReportingTest(t, telemetry, key, "public-model", createdAt, statusCode, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens, costMicro, errorType)
+}
+
+func enqueueRequestLogForModelReportingTest(t *testing.T, telemetry *Telemetry, key APIKey, publicModel string, createdAt time.Time, statusCode int, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens, costMicro int64, errorType string) {
+	t.Helper()
 	if !telemetry.Enqueue(RequestLog{
 		APIKeyID:        key.ID,
 		APIKeyName:      key.Name,
 		KeyPrefix:       key.KeyPrefix,
 		Protocol:        "openai",
-		PublicModel:     "public-model",
+		PublicModel:     publicModel,
 		UpstreamModel:   "upstream-model",
 		Provider:        "provider-a",
 		Pool:            "default",
