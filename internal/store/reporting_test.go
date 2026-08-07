@@ -78,7 +78,7 @@ func TestTrafficBreaksRequestsDownByModel(t *testing.T) {
 	}
 }
 
-func TestTrafficCountsDeviceIDsWithAPIKeyFallback(t *testing.T) {
+func TestTrafficCountsUniqueAPIKeys(t *testing.T) {
 	store, telemetry := openReportingStores(t)
 
 	key, err := store.CreateAPIKey(t.Context(), CreateAPIKeyParams{Name: "devices"})
@@ -118,8 +118,8 @@ func TestTrafficCountsDeviceIDsWithAPIKeyFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(traffic) != 1 || traffic[0].Requests != 6 || traffic[0].UniqueDevices != 4 {
-		t.Fatalf("unexpected user and PV traffic: %#v", traffic)
+	if len(traffic) != 1 || traffic[0].Requests != 6 || traffic[0].UniqueAPIKeys != 2 {
+		t.Fatalf("unexpected API key and PV traffic: %#v", traffic)
 	}
 }
 

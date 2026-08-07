@@ -331,10 +331,7 @@ func (t *Telemetry) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficB
 	where, args := requestLogWhere(query.APIKeyID, query.From, query.To)
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT %s AS bucket,
-		       COUNT(*), COUNT(DISTINCT CASE
-		           WHEN device_id <> '' THEN 'device:' || device_id
-		           WHEN api_key_id <> '' THEN 'key:' || api_key_id
-		       END),
+		       COUNT(*), COUNT(DISTINCT NULLIF(api_key_id, '')),
 		       COALESCE(SUM(request_tokens), 0), COALESCE(SUM(response_tokens), 0),
 		       COALESCE(SUM(cache_hit_tokens), 0), COALESCE(SUM(cache_miss_tokens), 0),
 		       COALESCE(SUM(cost_micro), 0),
@@ -353,7 +350,7 @@ func (t *Telemetry) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficB
 	items := []TrafficBucket{}
 	for rows.Next() {
 		var item TrafficBucket
-		if err := rows.Scan(&item.Bucket, &item.Requests, &item.UniqueDevices, &item.RequestTokens, &item.ResponseTokens,
+		if err := rows.Scan(&item.Bucket, &item.Requests, &item.UniqueAPIKeys, &item.RequestTokens, &item.ResponseTokens,
 			&item.CacheHitTokens, &item.CacheMissTokens, &item.CostMicro, &item.ErrorRequests,
 			&item.AverageLatency); err != nil {
 			return nil, err
