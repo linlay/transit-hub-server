@@ -148,6 +148,7 @@ quota:
 - 时间输入可为 Unix 秒、Unix 毫秒或 RFC3339；数值输入可为 JSON number 或数字字符串。
 - 查询固定使用账号 Key 的 Bearer 鉴权；同一轮中相同 URL 和 Key 只请求一次。查询结果只保存在内存，失败时保留最后一次成功快照。
 - 管理 API 只返回渲染后的 `entries[].title` 和 `entries[].lines`，不会返回查询 URL、API Key、字段路径或上游响应原文。
+- `deepseek.example.yaml` 已配置 DeepSeek 官方 `/user/balance` 接口，折叠摘要优先使用 `display.lines` 的第一条文字。百炼 Token Plan 与 Xiaomi MiMo 目前只在官方控制台提供套餐用量或余额查看，没有公开可由模型 API Key 调用的额度查询接口，因此示例配置不会填写未经官方支持的查询 URL。
 
 ### 3. 导入模型价格
 

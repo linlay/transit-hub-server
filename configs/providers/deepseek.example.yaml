@@ -3,6 +3,33 @@ protocol: openai
 base_url: https://api.deepseek.com
 default_pool: primary
 headers: {}
+quota:
+  url: https://api.deepseek.com/user/balance
+  interval: 10m
+  items_path: balance_infos
+  fields:
+    available: $root.is_available
+    currency: currency
+    total: total_balance
+    granted: granted_balance
+    topped_up: topped_up_balance
+  display:
+    title: "{{ currency | map:currency_name }}余额"
+    lines:
+      - "可用余额：{{ currency | map:currency_symbol }}{{ total | number:2 }}"
+      - "账户状态：{{ available | map:availability }}"
+      - "充值余额：{{ currency | map:currency_symbol }}{{ topped_up | number:2 }}"
+      - "赠送余额：{{ currency | map:currency_symbol }}{{ granted | number:2 }}"
+    value_maps:
+      availability:
+        "true": 可用
+        "false": 不可用
+      currency_name:
+        CNY: 人民币
+        USD: 美元
+      currency_symbol:
+        CNY: ¥
+        USD: $
 # endpoints:
 #   openai_chat_completions: /v1/chat/completions
 models:

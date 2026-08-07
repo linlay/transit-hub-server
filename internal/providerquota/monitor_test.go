@@ -128,15 +128,17 @@ func TestParseEntriesSupportsBalanceInsteadOfTimeWindows(t *testing.T) {
 			"topped_up": "topped_up_balance",
 		},
 		Display: config.ProviderQuotaDisplayConfig{
-			Title: "{{ currency }} 账户余额",
+			Title: "{{ currency | map:currency_name }}余额",
 			Lines: []string{
-				"服务状态：{{ available | map:availability }}",
-				"总余额：{{ total | number:2 }} {{ currency }}",
-				"赠送余额：{{ granted | number:2 }} {{ currency }}",
-				"充值余额：{{ topped_up | number:2 }} {{ currency }}",
+				"可用余额：{{ currency | map:currency_symbol }}{{ total | number:2 }}",
+				"账户状态：{{ available | map:availability }}",
+				"充值余额：{{ currency | map:currency_symbol }}{{ topped_up | number:2 }}",
+				"赠送余额：{{ currency | map:currency_symbol }}{{ granted | number:2 }}",
 			},
 			ValueMaps: map[string]map[string]string{
-				"availability": {"true": "可用", "false": "不可用"},
+				"availability":    {"true": "可用", "false": "不可用"},
+				"currency_name":   {"CNY": "人民币", "USD": "美元"},
+				"currency_symbol": {"CNY": "¥", "USD": "$"},
 			},
 		},
 	}
@@ -147,12 +149,12 @@ func TestParseEntriesSupportsBalanceInsteadOfTimeWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Entry{
-		Title: "CNY 账户余额",
+		Title: "人民币余额",
 		Lines: []string{
-			"服务状态：可用",
-			"总余额：18.5 CNY",
-			"赠送余额：3.5 CNY",
-			"充值余额：15 CNY",
+			"可用余额：¥18.5",
+			"账户状态：可用",
+			"充值余额：¥15",
+			"赠送余额：¥3.5",
 		},
 	}
 	if len(entries) != 1 || entries[0].Title != want.Title || strings.Join(entries[0].Lines, "\n") != strings.Join(want.Lines, "\n") {
