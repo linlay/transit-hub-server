@@ -78,6 +78,51 @@ func TestTrafficBreaksRequestsDownByModel(t *testing.T) {
 	}
 }
 
+func TestTrafficCountsDeviceIDsWithAPIKeyFallback(t *testing.T) {
+	store, telemetry := openReportingStores(t)
+
+	key, err := store.CreateAPIKey(t.Context(), CreateAPIKeyParams{Name: "devices"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherKey, err := store.CreateAPIKey(t.Context(), CreateAPIKeyParams{Name: "other-device"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	enqueue := func(key APIKey, deviceID string) {
+		if !telemetry.Enqueue(RequestLog{
+			APIKeyID:      key.ID,
+			APIKeyName:    key.Name,
+			KeyPrefix:     key.KeyPrefix,
+			Protocol:      "openai",
+			PublicModel:   "public-model",
+			UpstreamModel: "upstream-model",
+			Provider:      "provider-a",
+			Pool:          "default",
+			Account:       "acct",
+			DeviceID:      deviceID,
+			StatusCode:    200,
+			Latency:       10 * time.Millisecond,
+			CreatedAt:     at,
+		}) {
+			t.Fatal("telemetry queue unexpectedly full")
+		}
+	}
+	for _, deviceID := range []string{"device-a", "device-a", "device-b", "", ""} {
+		enqueue(key.APIKey, deviceID)
+	}
+	enqueue(otherKey.APIKey, "")
+
+	traffic, err := store.Traffic(t.Context(), TrafficQuery{Bucket: "day"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(traffic) != 1 || traffic[0].Requests != 6 || traffic[0].UniqueDevices != 4 {
+		t.Fatalf("unexpected user and PV traffic: %#v", traffic)
+	}
+}
+
 func TestOverviewSupportsTimeRange(t *testing.T) {
 	store, telemetry := openReportingStores(t)
 

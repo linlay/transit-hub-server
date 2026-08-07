@@ -76,6 +76,7 @@ type TrafficQuery struct {
 type TrafficBucket struct {
 	Bucket           string              `json:"bucket"`
 	Requests         int64               `json:"requests"`
+	UniqueDevices    int64               `json:"unique_devices"`
 	RequestTokens    int64               `json:"request_tokens"`
 	ResponseTokens   int64               `json:"response_tokens"`
 	TotalTokens      int64               `json:"total_tokens"`
