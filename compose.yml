@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        GOPROXY: ${BUILD_GOPROXY:-}
     env_file:
       - .env
     environment:
