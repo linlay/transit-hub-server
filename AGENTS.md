@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-Transit Hub 是一个 Go 编写的 LLM API 中转网关。它对外提供 OpenAI 兼容的 `POST /v1/chat/completions`、`POST /v1/embeddings`、`POST /v1/images/generations` 和 Anthropic 兼容的 `POST /v1/messages`，对内根据配置文件把公开模型名路由到上游 provider、模型、账号池和账号。
+Transit Hub 是一个 Go 编写的 LLM API 中转网关。它对外提供 OpenAI 兼容的 `POST /v1/chat/completions`、`POST /v1/embeddings`、`POST /v1/images/generations`、`POST /v1/images/edits`、`POST /v1/images/variations` 和 Anthropic 兼容的 `POST /v1/messages`，对内根据配置文件把公开模型名路由到上游 provider、模型、账号池和账号。
 
 项目核心目标：
 
@@ -24,6 +24,7 @@ internal/config/
 internal/gateway/
   server.go               HTTP 路由定义。
   proxy.go                客户端鉴权、请求解析、模型改写、转发上游、响应透传、用量记录。
+  proxy_body.go           JSON/multipart 请求体解析和模型字段改写。
   admin.go                Admin API：API Key、provider 状态、配置重载、路由池覆盖。
   json.go                 JSON 响应和错误响应工具。
 
@@ -49,7 +50,7 @@ configs/
 3. `config.LoadProviderConfigs()` 读取 `CONFIG_DIR/providers` 下非 `*.example.yaml` 的 YAML 文件。
 4. `provider.NewRegistry()` 根据 provider 配置构建公开模型到上游模型、账号池的路由表。
 5. `gateway.New(...).Handler()` 注册公开代理接口和 `/admin` 管理接口。
-6. 公开请求先校验客户端 API Key，再解析 `model`，查找路由，应用数据库中的 pool override，选择健康账号，改写请求体中的 `model` 后转发上游。
+6. 公开请求先校验客户端 API Key，再从 JSON 或受支持的图片 multipart 请求中解析 `model`，查找路由，应用数据库中的 pool override，选择健康账号，改写请求体中的 `model` 后转发上游。图片 multipart 请求会原样保留文件 part、重复字段、顺序和 headers，并使用新 boundary 重建请求。
 7. 响应头和响应体会尽量透传；SSE 请求会 flush。请求完成后写入用量和日志。
 
 ## 配置定义
@@ -76,9 +77,9 @@ configs/
 - `base_url`：上游基础 URL，必须包含 scheme 和 host。
 - `default_pool`：默认账号池；为空时使用第一个 pool。
 - `headers`：provider 级固定请求头。
-- `endpoints`：可选路径覆盖，例如 `openai_chat_completions: /v1/chat/completions`、`openai_embeddings: /v1/embeddings`、`openai_image_generations: /v1/images/generations`。
+- `endpoints`：可选路径覆盖，例如 `openai_chat_completions: /v1/chat/completions`、`openai_embeddings: /v1/embeddings`、`openai_image_generations: /v1/images/generations`、`openai_image_edits: /v1/images/edits`、`openai_image_variations: /v1/images/variations`。
 - `models`：公开模型到上游模型的映射；`models[].type` 支持 `chat`、`embedding`、`image-generation`，为空时默认为 `chat`。
-- `models[].image.endpointPath`：图片生成模型的模型侧路径覆盖，优先级高于 provider 级 `endpoints.openai_image_generations`。
+- `models[].image.endpointPath`：仅用于 `/v1/images/generations` 的模型侧路径覆盖，优先级高于 provider 级 `endpoints.openai_image_generations`；不覆盖 edits 或 variations。
 - `pools`：账号池列表，每个 pool 至少一个 account。
 - `accounts[].api_key`：上游账号密钥，只放在真实配置里。
 - `accounts[].api_key_env`：可选的上游账号密钥环境变量名；当 `api_key` 为空时读取该变量，适合由部署环境注入的密钥。
@@ -105,6 +106,7 @@ configs/
 - `*.example.yaml` 是模板，不会被运行时加载。修改真实 provider 配置后，需要重启服务或调用 `POST /admin/providers/reload`。
 - Admin API 支持 `Authorization: Bearer $ADMIN_TOKEN` 或 `x-admin-token: $ADMIN_TOKEN`。
 - 公开代理接口支持 `Authorization: Bearer <client-key>` 或 `x-api-key: <client-key>`。
+- `/v1/images/edits` 支持 JSON 和 multipart/form-data；`/v1/images/variations` 的标准请求格式为 multipart/form-data。multipart 代理只改写普通 `model` 字段，不会把图片或 mask 转成 JSON/base64。
 - 创建客户端 API Key 时，明文 key 只会在创建接口响应里返回一次。
 - 当前路由覆盖以公开模型名为 key；同名公开模型跨协议使用时需要谨慎，因为覆盖存储没有协议维度。
 - 上游返回 `429` 或 `5xx` 会记为不健康，可能触发账号熔断；冷却后进入 half-open 再试。

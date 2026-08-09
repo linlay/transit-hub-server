@@ -4,8 +4,8 @@ Transit Hub 是一个 Go 1.26 LLM API 中转网关。它对外提供 OpenAI 兼�
 
 ## 功能
 
-- OpenAI 兼容接口：`POST /v1/chat/completions`、`POST /v1/embeddings`、`POST /v1/images/generations`
-- OpenAI 图片扩展入口：`POST /v1/images/edits`、`POST /v1/images/variations`
+- OpenAI 兼容接口：`POST /v1/chat/completions`、`POST /v1/embeddings`
+- OpenAI 图片接口：`POST /v1/images/generations`、`POST /v1/images/edits`、`POST /v1/images/variations`
 - Anthropic 兼容接口：`POST /v1/messages`
 - 客户端 API Key 创建、禁用、过期、配额和用量累计
 - 内部管理员账号登录、网页登录态和管理后台 API
@@ -96,7 +96,7 @@ pools:
 - `protocol` 只能是 `openai` 或 `anthropic`。
 - `endpoints.openai_chat_completions`、`endpoints.openai_embeddings`、`endpoints.openai_image_generations`、`endpoints.openai_image_edits`、`endpoints.openai_image_variations` 和 `endpoints.anthropic_messages` 可用于覆盖上游路径。
 - `models[].type` 可选，支持 `chat`、`embedding`、`image-generation`，为空时默认为 `chat`。
-- `models[].image.endpointPath` 可为图片生成模型覆盖上游路径；未配置时使用 provider 级 endpoint，再未配置时使用请求路径。
+- `models[].image.endpointPath` 仅为 `/v1/images/generations` 覆盖上游路径；未配置时使用 provider 级 `openai_image_generations`，再未配置时使用请求路径。edits 和 variations 只使用各自的 provider 级 endpoint 或请求路径。
 - `models[].owned_by`、`models[].display_name`、`models[].created_at` 可选，用于公开模型查询接口；未配置时分别使用 provider 名、公开模型名和 `1970-01-01T00:00:00Z`。
 
 可选的 `quota` 块会按账号定时查询上游额度，并把配置明确引用的响应字段渲染为文字摘要。不同厂商可以自由定义标题和行，不需要统一成固定的小时、每日、每周、次数或余额结构。`items_path` 和字段路径使用点分隔的对象路径；根响应本身是数组或单个额度对象时可省略 `items_path`。例如 MiniMax：
@@ -431,6 +431,34 @@ curl -sS http://localhost:8080/v1/images/generations \
     "response_format": "b64_json"
   }'
 ```
+
+OpenAI 兼容图片编辑请求支持 `application/json` 和 `multipart/form-data`。multipart 示例：
+
+```bash
+curl -sS http://localhost:8080/v1/images/edits \
+  -H "Authorization: Bearer $CLIENT_API_KEY" \
+  -F "model=example-image" \
+  -F "prompt=remove the background" \
+  -F "size=1024x1024" \
+  -F "response_format=b64_json" \
+  -F "n=1" \
+  -F "image[]=@source.png" \
+  -F "mask=@mask.png"
+```
+
+OpenAI 兼容图片变体请求使用 `multipart/form-data`：
+
+```bash
+curl -sS http://localhost:8080/v1/images/variations \
+  -H "Authorization: Bearer $CLIENT_API_KEY" \
+  -F "model=example-image" \
+  -F "size=1024x1024" \
+  -F "response_format=b64_json" \
+  -F "n=1" \
+  -F "image=@source.png"
+```
+
+Transit Hub 会保留 multipart 的文件内容、filename、Content-Type、其他 part headers、重复字段和 part 顺序，只把普通 `model` 字段改写成 provider 配置的上游模型。重建后的请求使用新的 multipart boundary，不会沿用客户端 boundary；图片和 mask 不会被转换成 JSON、base64 或 file_id。
 
 Anthropic 兼容请求：
 

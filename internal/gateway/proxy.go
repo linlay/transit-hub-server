@@ -2,9 +2,7 @@ package gateway
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/textproto"
@@ -30,11 +28,6 @@ var hopByHopHeaders = map[string]struct{}{
 	"Trailer":             {},
 	"Transfer-Encoding":   {},
 	"Upgrade":             {},
-}
-
-type requestEnvelope struct {
-	Model  string
-	Stream bool
 }
 
 type copyResult struct {
@@ -63,11 +56,12 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "read request body failed")
 			return
 		}
-		envelope, err := parseRequestEnvelope(body)
+		parsedBody, err := parseProxyBody(endpointKey, r.Header.Get("Content-Type"), body)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		envelope := parsedBody.Envelope
 		if !g.enforceAPIKeyRateLimits(w, r, key) {
 			return
 		}
@@ -151,7 +145,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			return
 		}
 
-		upstreamBody, err := rewriteModel(body, route.UpstreamModel)
+		upstreamBody, err := parsedBody.prepare(route.UpstreamModel)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -190,12 +184,12 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 
-		result, copyErr := copyResponse(w, resp.Body, envelope.Stream || isEventStream(resp.Header))
+		result, copyErr := copyResponse(w, resp.Body, upstreamBody.Envelope.Stream || isEventStream(resp.Header))
 		if copyErr != nil {
 			g.logger.Printf("copy upstream response failed: %v", copyErr)
 		}
 
-		observed := observedTokens(body, result.Sample, envelope.Stream || isEventStream(resp.Header))
+		observed := observedTokens(body, result.Sample, upstreamBody.Envelope.Stream || isEventStream(resp.Header))
 		errorType := ""
 		if copyErr != nil {
 			errorType = "response_copy_error"
@@ -329,9 +323,9 @@ func (g *Gateway) requestModelPrice(w http.ResponseWriter, r *http.Request, key 
 	return &price, true
 }
 
-func (g *Gateway) buildUpstreamRequest(r *http.Request, route provider.Route, account *provider.Account, endpointKey string, body []byte) (*http.Request, error) {
+func (g *Gateway) buildUpstreamRequest(r *http.Request, route provider.Route, account *provider.Account, endpointKey string, body preparedProxyBody) (*http.Request, error) {
 	upstreamURL := joinUpstreamURL(route.Provider.BaseURL, route.EndpointPath(endpointKey, r.URL.Path), r.URL.RawQuery)
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, bytes.NewReader(body.Body))
 	if err != nil {
 		return nil, err
 	}
@@ -341,9 +335,12 @@ func (g *Gateway) buildUpstreamRequest(r *http.Request, route provider.Route, ac
 	req.Header.Del("x-api-key")
 	req.Header.Del("x-admin-token")
 	req.Header.Del("Content-Length")
+	if body.ContentType != "" {
+		req.Header.Set("Content-Type", body.ContentType)
+	}
 
 	applyConfiguredUpstreamHeaders(req.Header, route, account)
-	req.ContentLength = int64(len(body))
+	req.ContentLength = int64(len(body.Body))
 	return req, nil
 }
 
@@ -355,22 +352,6 @@ func applyConfiguredUpstreamHeaders(headers http.Header, route provider.Route, a
 		headers.Set(key, value)
 	}
 	account.ApplyAuth(headers, route.Protocol)
-}
-
-func parseRequestEnvelope(body []byte) (requestEnvelope, error) {
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return requestEnvelope{}, fmt.Errorf("invalid json body")
-	}
-	var model string
-	if err := json.Unmarshal(payload["model"], &model); err != nil || strings.TrimSpace(model) == "" {
-		return requestEnvelope{}, fmt.Errorf("model is required")
-	}
-	var stream bool
-	if raw, ok := payload["stream"]; ok {
-		_ = json.Unmarshal(raw, &stream)
-	}
-	return requestEnvelope{Model: model, Stream: stream}, nil
 }
 
 func endpointSupportsRoute(endpointKey string, route provider.Route) bool {
@@ -388,19 +369,6 @@ func endpointSupportsRoute(endpointKey string, route provider.Route) bool {
 	default:
 		return true
 	}
-}
-
-func rewriteModel(body []byte, upstreamModel string) ([]byte, error) {
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("invalid json body")
-	}
-	rawModel, err := json.Marshal(upstreamModel)
-	if err != nil {
-		return nil, err
-	}
-	payload["model"] = rawModel
-	return json.Marshal(payload)
 }
 
 func observedTokens(requestBody, responseSample []byte, stream bool) observedUsage {
