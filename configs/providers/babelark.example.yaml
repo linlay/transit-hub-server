@@ -8,6 +8,28 @@ endpoints:
   openai_embeddings: /v1/embeddings
   openai_image_generations: /v1/images/generations
 models:
+  - public: gpt-5_6-luna
+    upstream: gpt-5.6-luna
+    type: chat
+    pool: primary
+    display_name: gpt-5.6-luna
+  - public: gpt-5_6-terra
+    upstream: gpt-5.6-terra
+    type: chat
+    pool: primary
+    display_name: gpt-5.6-terra
+  - public: gemini-3_1-flash-lite-image
+    upstream: gemini-3.1-flash-lite-image
+    type: chat
+    pool: primary
+    display_name: gemini-3.1-flash-lite-image
+  - public: gpt-image-2
+    upstream: gpt-image-2
+    type: image-generation
+    pool: primary
+    display_name: gpt-image-2
+    image:
+      endpointPath: /v1/images/generations
   - public: gemini-3_1-flash-image-preview
     upstream: gemini-3.1-flash-image-preview
     type: image-generation
