@@ -20,9 +20,11 @@ models:
     display_name: gpt-5.6-terra
   - public: gemini-3_1-flash-lite-image
     upstream: gemini-3.1-flash-lite-image
-    type: chat
+    type: image-generation
     pool: primary
     display_name: gemini-3.1-flash-lite-image
+    image:
+      endpointPath: /v1/images/generations
   - public: gpt-image-2
     upstream: gpt-image-2
     type: image-generation
