@@ -1,0 +1,18 @@
+# Copy to config.yaml; missing configuration leaves only /api/bind-apikey disabled.
+enabled: true
+public_key_path: public.pem
+algorithm: RS256
+issuer: https://identity.example.com
+audience: transit-hub
+subject_claim: sub
+# Optional space-separated scope claim requirement.
+required_scope: ""
+# Environment values are base64-encoded 32-byte AES keys, never JWT keys.
+active_encryption_key: v1
+encryption_key_envs:
+  v1: TRANSIT_BIND_KEY_V1
+allowed_models:
+  - example-chat
+request_quota: 500
+token_quota: 2000000
+api_key_ttl: 720h

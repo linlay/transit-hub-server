@@ -16,26 +16,27 @@ import (
 )
 
 type apiKeyResponse struct {
-	ID            string            `json:"id"`
-	Name          string            `json:"name"`
-	Description   string            `json:"description"`
-	KeyPrefix     string            `json:"key_prefix"`
-	Source        string            `json:"source"`
-	IssuerJTI     string            `json:"issuer_jti,omitempty"`
-	IssuerName    string            `json:"issuer_name,omitempty"`
-	Status        string            `json:"status"`
-	ExpiresAt     *time.Time        `json:"expires_at,omitempty"`
-	ForcedExpired bool              `json:"forced_expired"`
-	RequestQuota  int64             `json:"request_quota"`
-	TokenQuota    int64             `json:"token_quota"`
-	AllowedModels []string          `json:"allowed_models"`
-	RateLimits    []store.RateLimit `json:"rate_limits"`
-	UsedRequests  int64             `json:"used_requests"`
-	UsedTokens    int64             `json:"used_tokens"`
-	LastUsedAt    *time.Time        `json:"last_used_at,omitempty"`
-	DeletedAt     *time.Time        `json:"deleted_at,omitempty"`
-	CreatedAt     time.Time         `json:"created_at"`
-	UpdatedAt     time.Time         `json:"updated_at"`
+	DeviceBinding *store.DeviceBinding `json:"device_binding,omitempty"`
+	ID            string               `json:"id"`
+	Name          string               `json:"name"`
+	Description   string               `json:"description"`
+	KeyPrefix     string               `json:"key_prefix"`
+	Source        string               `json:"source"`
+	IssuerJTI     string               `json:"issuer_jti,omitempty"`
+	IssuerName    string               `json:"issuer_name,omitempty"`
+	Status        string               `json:"status"`
+	ExpiresAt     *time.Time           `json:"expires_at,omitempty"`
+	ForcedExpired bool                 `json:"forced_expired"`
+	RequestQuota  int64                `json:"request_quota"`
+	TokenQuota    int64                `json:"token_quota"`
+	AllowedModels []string             `json:"allowed_models"`
+	RateLimits    []store.RateLimit    `json:"rate_limits"`
+	UsedRequests  int64                `json:"used_requests"`
+	UsedTokens    int64                `json:"used_tokens"`
+	LastUsedAt    *time.Time           `json:"last_used_at,omitempty"`
+	DeletedAt     *time.Time           `json:"deleted_at,omitempty"`
+	CreatedAt     time.Time            `json:"created_at"`
+	UpdatedAt     time.Time            `json:"updated_at"`
 }
 
 type createAPIKeyRequest struct {
@@ -368,6 +369,7 @@ func (g *Gateway) clearRoutePool(w http.ResponseWriter, r *http.Request) {
 
 func toAPIKeyResponse(key store.APIKey) apiKeyResponse {
 	return apiKeyResponse{
+		DeviceBinding: key.DeviceBinding,
 		ID:            key.ID,
 		Name:          key.Name,
 		Description:   key.Description,

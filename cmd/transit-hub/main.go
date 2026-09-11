@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/linlay/transit-hub/internal/accesskey"
 	"github.com/linlay/transit-hub/internal/config"
 	"github.com/linlay/transit-hub/internal/gateway"
 	"github.com/linlay/transit-hub/internal/issuer"
@@ -96,7 +97,12 @@ func main() {
 		logger.Printf("jwt issuer config not found at %s; /api/apply-apikey is disabled", env.IssuerConfigPath)
 	}
 
+	accessKeys, err := accesskey.Load(env.AccessKeyConfigPath)
+	if err != nil {
+		logger.Fatalf("load access key config: %v", err)
+	}
 	app := gateway.New(gateway.Options{
+		AccessKeys:    accessKeys,
 		Env:           env,
 		Store:         db,
 		Usage:         usageManager,

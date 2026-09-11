@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/linlay/transit-hub/internal/accesskey"
 	"github.com/linlay/transit-hub/internal/config"
 	"github.com/linlay/transit-hub/internal/issuer"
 	"github.com/linlay/transit-hub/internal/provider"
@@ -17,6 +18,7 @@ import (
 )
 
 type Gateway struct {
+	accessKeys        *accesskey.Service
 	env               config.Env
 	store             *store.Store
 	usage             *store.UsageManager
@@ -30,6 +32,7 @@ type Gateway struct {
 }
 
 type Options struct {
+	AccessKeys    *accesskey.Service
 	Env           config.Env
 	Store         *store.Store
 	Usage         *store.UsageManager
@@ -64,6 +67,7 @@ func New(options Options) *Gateway {
 		rateLimitLocation = time.UTC
 	}
 	return &Gateway{
+		accessKeys:        options.AccessKeys,
 		env:               options.Env,
 		store:             options.Store,
 		usage:             options.Usage,
@@ -151,6 +155,7 @@ func (g *Gateway) Handler() http.Handler {
 	})
 
 	r.Post("/api/apply-apikey", g.applyAPIKey)
+	r.Post("/api/bind-apikey", g.bindAPIKey)
 	r.Get("/api/me", g.currentAPIKey)
 	r.Get("/api/me/limits", g.currentAPIKeyLimits)
 	r.Get("/api/me/usage", g.currentAPIKeyUsage)

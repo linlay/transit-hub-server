@@ -37,26 +37,33 @@ type Store struct {
 	telemetry *Telemetry
 }
 
+type DeviceBinding struct {
+	Issuer   string `json:"issuer"`
+	Subject  string `json:"subject"`
+	DeviceID string `json:"device_id"`
+}
+
 type APIKey struct {
-	ID            string      `json:"id"`
-	Name          string      `json:"name"`
-	Description   string      `json:"description"`
-	KeyPrefix     string      `json:"key_prefix"`
-	Source        string      `json:"source"`
-	IssuerJTI     string      `json:"issuer_jti,omitempty"`
-	Status        string      `json:"status"`
-	ExpiresAt     *time.Time  `json:"expires_at,omitempty"`
-	ForcedExpired bool        `json:"forced_expired"`
-	RequestQuota  int64       `json:"request_quota"`
-	TokenQuota    int64       `json:"token_quota"`
-	AllowedModels []string    `json:"allowed_models"`
-	RateLimits    []RateLimit `json:"rate_limits"`
-	UsedRequests  int64       `json:"used_requests"`
-	UsedTokens    int64       `json:"used_tokens"`
-	LastUsedAt    *time.Time  `json:"last_used_at,omitempty"`
-	DeletedAt     *time.Time  `json:"deleted_at,omitempty"`
-	CreatedAt     time.Time   `json:"created_at"`
-	UpdatedAt     time.Time   `json:"updated_at"`
+	DeviceBinding *DeviceBinding `json:"device_binding,omitempty"`
+	ID            string         `json:"id"`
+	Name          string         `json:"name"`
+	Description   string         `json:"description"`
+	KeyPrefix     string         `json:"key_prefix"`
+	Source        string         `json:"source"`
+	IssuerJTI     string         `json:"issuer_jti,omitempty"`
+	Status        string         `json:"status"`
+	ExpiresAt     *time.Time     `json:"expires_at,omitempty"`
+	ForcedExpired bool           `json:"forced_expired"`
+	RequestQuota  int64          `json:"request_quota"`
+	TokenQuota    int64          `json:"token_quota"`
+	AllowedModels []string       `json:"allowed_models"`
+	RateLimits    []RateLimit    `json:"rate_limits"`
+	UsedRequests  int64          `json:"used_requests"`
+	UsedTokens    int64          `json:"used_tokens"`
+	LastUsedAt    *time.Time     `json:"last_used_at,omitempty"`
+	DeletedAt     *time.Time     `json:"deleted_at,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
 }
 
 type CreateAPIKeyParams struct {
@@ -172,8 +179,8 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 		return CreatedAPIKey{}, errors.New("quotas must be >= 0")
 	}
 	source := strings.ToLower(strings.TrimSpace(params.Source))
-	if source != "admin" && source != "jwt" {
-		return CreatedAPIKey{}, errors.New("source must be admin or jwt")
+	if source != "admin" && source != "jwt" && source != "access_token" {
+		return CreatedAPIKey{}, errors.New("source must be admin, jwt or access_token")
 	}
 	allowedModels := NormalizeAllowedModels(params.AllowedModels)
 	allowedModelsJSON, err := encodeAllowedModels(allowedModels)
@@ -262,6 +269,13 @@ func (s *Store) GetAPIKey(ctx context.Context, id string) (APIKey, error) {
 		WHERE id = ?
 	`, id)
 	key, err := scanAPIKey(row)
+	if err == nil && key.Source == "access_token" {
+		var binding DeviceBinding
+		err = s.db.QueryRowContext(ctx, `SELECT auth_issuer,auth_subject,device_id FROM device_key_bindings WHERE api_key_id=?`, id).Scan(&binding.Issuer, &binding.Subject, &binding.DeviceID)
+		if err == nil {
+			key.DeviceBinding = &binding
+		}
+	}
 	return s.withUsage(key), err
 }
 
@@ -436,7 +450,17 @@ func (s *Store) migrate(ctx context.Context) error {
 		PRAGMA journal_mode = WAL;
 		PRAGMA busy_timeout = 5000;
 
-		CREATE TABLE IF NOT EXISTS api_keys (
+		CREATE TABLE IF NOT EXISTS device_key_bindings (
+ auth_issuer TEXT NOT NULL,
+ auth_subject TEXT NOT NULL,
+ device_id TEXT NOT NULL,
+ api_key_id TEXT NOT NULL DEFAULT '',
+ encryption_key_id TEXT NOT NULL DEFAULT '',
+ key_ciphertext BLOB,
+ PRIMARY KEY(auth_issuer,auth_subject,device_id)
+ );
+
+ CREATE TABLE IF NOT EXISTS api_keys (
 			id TEXT PRIMARY KEY,
 			key_hash TEXT NOT NULL UNIQUE,
 			key_prefix TEXT NOT NULL DEFAULT '',

@@ -24,6 +24,7 @@ type Env struct {
 	TelemetryRetention      time.Duration
 	ConfigDir               string
 	IssuerConfigPath        string
+	AccessKeyConfigPath     string
 	AdminToken              string
 	AdminUsername           string
 	AdminPassword           string
@@ -172,6 +173,7 @@ func LoadEnv() (Env, error) {
 		TelemetryDBPath:         getEnv("TELEMETRY_DB_PATH", "data/transit-hub-telemetry.db"),
 		TelemetryRetention:      getDurationEnv("TELEMETRY_RETENTION", 720*time.Hour),
 		ConfigDir:               configDir,
+		AccessKeyConfigPath:     getEnv("ACCESS_KEY_CONFIG_PATH", filepath.Join(configDir, "access-key", "config.yaml")),
 		IssuerConfigPath:        getEnv("ISSUER_CONFIG_PATH", filepath.Join(configDir, "issuer", "config.yaml")),
 		AdminToken:              os.Getenv("ADMIN_TOKEN"),
 		AdminUsername:           getEnv("ADMIN_USERNAME", "admin"),

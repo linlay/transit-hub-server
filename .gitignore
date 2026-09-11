@@ -36,3 +36,7 @@ configs/issuer/*
 !configs/issuer/
 !configs/issuer/*.example.yaml
 !configs/issuer/*.example.yml
+
+configs/access-key/*
+!configs/access-key/
+!configs/access-key/*.example.yaml

@@ -347,6 +347,33 @@ curl -sS -X DELETE http://localhost:8080/admin/jwt-grants/jti_xxx \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
+## 使用登录身份与设备绑定 API Key
+
+`POST /api/bind-apikey` 与原有 `/api/apply-apikey` 独立：前者验证外部登录 access token，后者继续验证本服务签发的 Grant JWT。新路径不创建 Grant、不依赖 Grant issuer 的私钥，也不需要 provider-register 登记 JWT。
+
+复制 `configs/access-key/config.example.yaml` 为同目录 `config.yaml`，设置可信登录签发方的 RSA 公钥、issuer、audience、用户标识 claim 和模型发放策略。缺少文件或 `enabled: false` 只禁用新接口（503），不影响旧接口；启用后配置或密钥不合法会让服务启动失败。配置位置可通过 `ACCESS_KEY_CONFIG_PATH` 覆盖。
+
+当前支持 RS256 和至少 2048 位 RSA 公钥（PKIX/PKCS#1 PEM）；算法固定白名单，不接受请求或 JWT header 提供的公钥来源。验证签名、issuer、audience、必填 exp、可选 nbf/iat 和可配置 scope。`subject_claim` 默认为 `sub`，支持如 `user.id` 的对象路径，值必须是稳定非空字符串。身份由验签后 claims 获取，客户端不能提交用户身份或配额。
+
+配置 `encryption_key_envs` 指定的环境变量为随机生成的 32 字节 AES 密钥的标准 Base64 表达。密钥不得与 JWT 密钥混用，不存入数据库；容器通过现有 `.env` 环境注入。数据库备份与加密密钥分别保管；丢失加密密钥就无法再次返回已有 Key。更换 active key id 后，必须继续配置旧 key id，直到对应密文已完成受控迁移；重启不会自动重加密历史绑定。
+
+```bash
+curl -sS -X POST https://your-transit-hub/api/bind-apikey \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"device_id":"desktop-device-id","name":"My Desktop"}'
+```
+
+- `(issuer, 用户 ID, device_id)` 是唯一绑定。首次返回 201，重复返回 200 和同一 Key；换 access token 不改变绑定。
+- 数据库在事务内先取得写锁再检查绑定；响应丢失后可安全重试，不重复创建 Key。
+- Key 来源为 `access_token`，保留正常 `dk_` Key 与哈希鉴权；另在 `device_key_bindings` 保存 AES-256-GCM 密文，以完整账号、设备和 Key ID 作为附加认证数据，防止密文跨绑定替换。
+- 管理详情可查看 `device_binding`，不会返回 Key 明文或密文；只有重新验签并命中绑定的新接口才返回 Key。
+- 重复领取不改变原有名称、模型权限、额度、用量或有效期；新配置仅用于首次创建。
+- Key 已禁用、软删除、强制过期或自然过期时返回 409，不自动补发，也不删除绑定。当前没有自助重置/轮换接口。
+- `device_id` 是客户端提交的标识，不是设备认证凭证；设备数量与跨设备总额度策略未在此接口中实现，当前配额仍按 Key 计算。
+- 公钥离线验证不提供实时登出/封禁检查；access token 到期前仍可能被接受，已发放 Key 使用独立有效期和管理撤销状态。
+- 响应使用 `Cache-Control: no-store`；生产入口必须使用 HTTPS，不记录 Authorization 或响应 Key。
+
 ## 管理网站
 
 前端项目位于 `/Users/linlay/Project/zenmind-around/transit-hub-website`，使用 React + Vite。
