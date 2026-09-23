@@ -222,6 +222,10 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			}
 			observed.ResponseTokens = 0
 		}
+		imageTokenUsageUnavailable := route.Type == "image-generation" && modelPrice != nil && modelPrice.Billing.Mode == "tokens" && observed.Estimated
+		if imageTokenUsageUnavailable {
+			observed = observedUsage{}
+		}
 		imageCount := responseImageCount(result.Sample)
 		imageEstimated := false
 		if modelPrice != nil && modelPrice.Billing.Mode == "image" && imageCount == 0 && copyErr == nil && result.Bytes > responseSampleLimit && resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -256,6 +260,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			CacheMissTokens:  observed.CacheMissTokens,
 			CacheWriteTokens: observed.CacheWriteTokens,
 			ImageCount:       imageCount,
+			UsageUnavailable: imageTokenUsageUnavailable,
 			CostMicro:        imageCost,
 			Estimated:        observed.Estimated,
 			ErrorType:        errorType,
@@ -578,6 +583,11 @@ func (g *Gateway) logCompletedRequest(r *http.Request, key store.APIKey, logEntr
 					logEntry.BillingStatus = "unavailable"
 				}
 			default:
+				if logEntry.UsageUnavailable {
+					logEntry.CostMicro = 0
+					logEntry.BillingStatus = "unavailable"
+					break
+				}
 				logEntry.CostMicro = store.TokenCost(*price, logEntry.RequestTokens, logEntry.ResponseTokens, logEntry.CacheHitTokens, logEntry.CacheWriteTokens)
 				logEntry.BillingStatus = "charged"
 				if logEntry.Estimated {

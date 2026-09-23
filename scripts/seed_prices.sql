@@ -15,9 +15,6 @@ VALUES
   -- high-peak tariff (9:00-12:00 and 14:00-18:00), reviewed 2026-08-18.
   ('price_seed_001', 'openai', 'deepseek-v4-flash',          3000000,  100000,   9000000, 'CNY', '2026-08-18T00:00:00Z', '2026-08-18T00:00:00Z'),
   ('price_seed_002', 'openai', 'deepseek-v4-pro',            9000000,  300000,  27000000, 'CNY', '2026-08-18T00:00:00Z', '2026-08-18T00:00:00Z'),
-  -- Compatibility aliases, deprecated by DeepSeek after 2026-07-24 23:59 Beijing time.
-  ('price_seed_003', 'openai', 'deepseek-chat',              1000000,   20000,   2000000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
-  ('price_seed_004', 'openai', 'deepseek-reasoner',          1000000,   20000,   2000000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
 
   -- MiniMax via Transit Hub
   -- Coding Plan 内部优惠政策：仅 minimax-m3-openai 按官方按量价的 1/10 计价。
@@ -29,14 +26,8 @@ VALUES
   ('price_seed_008', 'openai', 'minimax-m3-long-priority-openai', 6300000,1260000, 25200000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
   ('price_seed_009', 'openai', 'minimax-m2_7-openai',           2100000,  420000,   8400000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
   ('price_seed_010', 'openai', 'minimax-m2_7-highspeed-openai', 4200000,  420000,  16800000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
-  ('price_seed_011', 'openai', 'minimax-m2_5-openai',           2100000,  210000,   8400000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
-  ('price_seed_012', 'openai', 'minimax-m2_5-highspeed-openai', 4200000,  210000,  16800000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
-  ('price_seed_013', 'openai', 'minimax-m2_1-openai',           2100000,  210000,   8400000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
-  ('price_seed_014', 'openai', 'minimax-m2_1-highspeed-openai', 4200000,  210000,  16800000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
-  ('price_seed_015', 'openai', 'minimax-m2-openai',             2100000,  210000,   8400000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
 
   -- XiaoMi Mimo via Transit Hub
-  ('price_seed_016', 'openai', 'mimo-v2_5',                     1000000,   20000,   2000000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
   ('price_seed_017', 'openai', 'mimo-v2_5-pro',                 3000000,   25000,   6000000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
 
   -- MiniMax's Anthropic-compatible route exposes the same M2.7-highspeed tariff.

@@ -153,3 +153,23 @@ func TestCreditsMergeBackPreservesMoneyAndMetadata(t *testing.T) {
 		t.Fatalf("resplit logs %s %v", status, err)
 	}
 }
+
+func TestTokenTierBoundaryAndCache(t *testing.T) {
+	hit := int64(140000)
+	highHit := int64(280000)
+	p := ModelPrice{InputCostMicroPer1MTokens: 1400000, OutputCostMicroPer1MTokens: 8400000, InputCacheHitCostMicroPer1MTokens: &hit, Billing: PriceBilling{Mode: "tokens", TokenTiers: []TokenPriceTier{{AboveInputTokens: 272000, InputCostMicroPer1M: 2800000, OutputCostMicroPer1M: 12600000, CacheHitCostMicroPer1M: &highHit}}}}
+	if got := TokenCost(p, 272000, 1000, 1000, 0); got != 387940 {
+		t.Fatalf("base boundary: %d", got)
+	}
+	if got := TokenCost(p, 272001, 1000, 1000, 0); got != 771683 {
+		t.Fatalf("high tier: %d", got)
+	}
+	params := ModelPriceParams{InputCostMicroPer1MTokens: 1400000}
+	if err := validateBilling(p.Billing, params); err != nil {
+		t.Fatal(err)
+	}
+	p.Billing.TokenTiers = append(p.Billing.TokenTiers, p.Billing.TokenTiers[0])
+	if err := validateBilling(p.Billing, params); err == nil {
+		t.Fatal("duplicate tier accepted")
+	}
+}

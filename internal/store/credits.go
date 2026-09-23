@@ -37,10 +37,19 @@ type ImagePrice struct {
 	CostMicro int64  `json:"cost_micro"`
 }
 
+// TokenPriceTier replaces the entire request tariff once input exceeds the threshold.
+type TokenPriceTier struct {
+	AboveInputTokens       int64  `json:"above_input_tokens"`
+	InputCostMicroPer1M    int64  `json:"input_cost_micro_per_1m_tokens"`
+	OutputCostMicroPer1M   int64  `json:"output_cost_micro_per_1m_tokens"`
+	CacheHitCostMicroPer1M *int64 `json:"input_cache_hit_cost_micro_per_1m_tokens,omitempty"`
+}
+
 type PriceBilling struct {
-	Mode                     string       `json:"mode"` // tokens, image, free
-	CacheWriteCostMicroPer1M *int64       `json:"cache_write_cost_micro_per_1m_tokens,omitempty"`
-	ImagePrices              []ImagePrice `json:"image_prices,omitempty"`
+	TokenTiers               []TokenPriceTier `json:"token_tiers,omitempty"`
+	Mode                     string           `json:"mode"` // tokens, image, free
+	CacheWriteCostMicroPer1M *int64           `json:"cache_write_cost_micro_per_1m_tokens,omitempty"`
+	ImagePrices              []ImagePrice     `json:"image_prices,omitempty"`
 }
 
 func validateBilling(b PriceBilling, p ModelPriceParams) error {
@@ -62,6 +71,17 @@ func validateBilling(b PriceBilling, p ModelPriceParams) error {
 	}
 	if b.Mode == "image" && len(b.ImagePrices) == 0 {
 		return errors.New("image billing requires image_prices")
+	}
+	previous := int64(-1)
+	for _, tier := range b.TokenTiers {
+		if b.Mode != "tokens" || tier.AboveInputTokens < 0 || tier.AboveInputTokens <= previous {
+			return errors.New("token tiers require tokens mode and increasing non-negative thresholds")
+		}
+		params := ModelPriceParams{InputCostMicroPer1MTokens: tier.InputCostMicroPer1M, OutputCostMicroPer1MTokens: tier.OutputCostMicroPer1M, InputCacheHitCostMicroPer1MTokens: tier.CacheHitCostMicroPer1M}
+		if err := validateBilling(PriceBilling{Mode: "tokens"}, params); err != nil {
+			return err
+		}
+		previous = tier.AboveInputTokens
 	}
 	seen := map[string]bool{}
 	for _, rule := range b.ImagePrices {
@@ -121,6 +141,13 @@ func pricedSum(pairs ...int64) int64 {
 func TokenCost(p ModelPrice, input, output, hit, write int64) int64 {
 	if p.Billing.Mode == "free" {
 		return 0
+	}
+	for _, tier := range p.Billing.TokenTiers {
+		if input > tier.AboveInputTokens {
+			p.InputCostMicroPer1MTokens = tier.InputCostMicroPer1M
+			p.OutputCostMicroPer1MTokens = tier.OutputCostMicroPer1M
+			p.InputCacheHitCostMicroPer1MTokens = tier.CacheHitCostMicroPer1M
+		}
 	}
 	hit = max(0, min(hit, input))
 	write = max(0, min(write, input-hit))

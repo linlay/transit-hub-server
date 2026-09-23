@@ -147,7 +147,7 @@ GET/POST `/admin/model-prices`、PATCH `/admin/model-prices/{id}`、GET `/api/me
 
 空选择器是通配符；更具体规则优先。同等具体程度的多条匹配会拒绝请求，避免选错价格。按返回 `data` 数组中的图片数计费，JSON 与 multipart 请求均支持。成功的超大图片响应超出采样上限时按请求 n 估算并标记；不能识别产出数量的响应记为 unavailable，不伪装成精确零消费。
 
-免费必须显式配置 `billing.mode="free"`。无价格的模型在金额受限 Key 下拒绝；未配置金额限制的旧 Key 可继续使用，日志标记 unpriced。旧的全零 token 价格必须改成显式 free。图片不能使用 token 价格。
+免费必须显式配置 `billing.mode="free"`。无价格的模型在金额受限 Key 下拒绝；未配置金额限制的旧 Key 可继续使用，日志标记 unpriced。旧的全零 token 价格必须改成显式 free。图片可使用 tokens 模式，必须读取上游实际 usage；缺失或响应采样截断导致无法解析 usage 时标记 unavailable，不用 Base64 字节数估算，不扣估算费用。
 
 嵌入模型使用 tokens 模式、仅计算输入。多模态及上游特殊计价规则不自动从人民币价格推导；未提供标准用量时是估算消费，不承诺与上游账单完全一致。
 
@@ -185,3 +185,7 @@ GET `/admin/logs`、`/admin/api-keys/{id}/logs`、`/api/me/logs` 新增：
 `MAX_CONCURRENT_PER_KEY` 是进程级统一配置，按 API Key 分别计数；同一 Key 的所有模型与代理接口共享上限，不支持单 Key 覆盖，多实例间不共享计数。默认每个 Key 16 个在途请求。
 
 触发时返回 HTTP 429，保留字符串 `error`，新增 `code: "api_key_concurrency_limit_exceeded"`、`scope: "api_key"` 和 `retryable: true`。调用端应优先识别结构化 code，不应将全部 429 归为额度耗尽；等待在途请求完成后退避重试。
+
+### Token 阶梯价格
+
+`billing.token_tiers` 可配置按总输入 tokens 选择的整请求价格，阈值严格递增；仅在输入数量大于 `above_input_tokens` 时应用。字段为 `input_cost_micro_per_1m_tokens`、`output_cost_micro_per_1m_tokens` 和可选 `input_cache_hit_cost_micro_per_1m_tokens`。不是累进分段计费，缓存输入也计入阈值；缓存单价未设置时回退到该阶梯输入价。管理页展示并在编辑基础价时保留阶梯配置。

@@ -266,3 +266,54 @@ func TestBillingPreservesClientOutputBudget(t *testing.T) {
 		}
 	}
 }
+
+func TestImageTokenBillingAndMissingUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name, usage, status string
+		cost                int64
+	}{
+		{"usage", `,"usage":{"input_tokens":100,"output_tokens":200,"input_tokens_details":{"cached_tokens":20}}`, "charged", 44975},
+		{"missing", "", "unavailable", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"data":[{"b64_json":"AAAA"}]` + tc.usage + `}`))
+			}))
+			defer upstream.Close()
+			provider := openAIProvider(upstream.URL)
+			provider.Models[0].Type = "image-generation"
+			app, db, plain := newTestGateway(t, []config.ProviderConfig{provider})
+			hit := int64(8750000)
+			_, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{Protocol: "openai", PublicModel: "public-model", Currency: "CNY", InputCostMicroPer1MTokens: 35000000, InputCacheHitCostMicroPer1MTokens: &hit, OutputCostMicroPer1MTokens: 210000000, Billing: &store.PriceBilling{Mode: "tokens"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest("POST", "/v1/images/generations", strings.NewReader(`{"model":"public-model","prompt":"pet","size":"1024x1024","n":1}`))
+			req.Header.Set("Authorization", "Bearer "+plain)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			app.Handler().ServeHTTP(rec, req)
+			if rec.Code != 200 {
+				t.Fatalf("response: %d %s", rec.Code, rec.Body)
+			}
+			key, err := db.FindAPIKeyByPlainText(t.Context(), plain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if key.UsedCostMicro != tc.cost {
+				t.Fatalf("cost: %d", key.UsedCostMicro)
+			}
+			if err := app.telemetry.Flush(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			logs, err := db.ListRequestLogs(t.Context(), store.RequestLogQuery{APIKeyID: key.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(logs.Items) != 1 || logs.Items[0].BillingStatus != tc.status {
+				t.Fatalf("billing logs: %+v", logs.Items)
+			}
+		})
+	}
+}

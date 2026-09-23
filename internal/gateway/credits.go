@@ -55,7 +55,7 @@ func prepareBillingRequest(body *parsedProxyBody, price *store.ModelPrice, model
 		return 0, nil
 	}
 	if modelType == "image-generation" {
-		if price.Billing.Mode != "image" && price.Billing.Mode != "free" {
+		if price.Billing.Mode != "image" && price.Billing.Mode != "free" && price.Billing.Mode != "tokens" {
 			return 0, errors.New("image model requires image billing prices")
 		}
 		params := map[string]string{}
@@ -105,6 +105,9 @@ func prepareBillingRequest(body *parsedProxyBody, price *store.ModelPrice, model
 			if err != nil || count < 1 || count > 10 {
 				return 0, errors.New("image n must be between 1 and 10")
 			}
+		}
+		if price.Billing.Mode == "tokens" {
+			return 0, nil
 		}
 		unit, ok := price.ImageUnitCost(params["size"], params["quality"])
 		if !ok {

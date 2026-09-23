@@ -152,6 +152,8 @@ quota:
 
 ### 3. 导入模型价格
 
+本地缺价模型补充（Babelark 图片、GPT 阶梯价及 MiMo V2.6）见 [2026-09-23 价格核对](docs/babelark-pricing-2026-09-23.md)。使用本版本后端升级数据库后，可执行 `sqlite3 data/transit-hub.db < scripts/seed_model_price_supplements.sql`；支持图片 tokens 计费和 `billing.token_tiers` 的代码必须与价格一起更新。
+
 **MiniMax Coding Plan 内部优惠（2026-09-23）**：仅 `openai/minimax-m3-openai`（客户端 `th-minimax-m3` 和 `th-minimax-m3-vl` 共用）采用官方按量价格的 **1/10**。每百万 tokens 的人民币价格为输入 **0.21**、缓存读取 **0.042**、输出 **0.84**；这是内部优惠政策，不是官方按量降价。Long、Priority 和 M2 系列不适用。
 
 新部署的 `scripts/seed_prices.sql` 已包含该优惠。现有部署仅更新此模型时执行 `sqlite3 data/transit-hub.db < scripts/seed_minimax_coding_plan_prices.sql`（自定义 Control 路径需替换）。该脚本使用绝对价格，可重复执行，不会重复打折，保留其他模型及现有 billing 配置；价格按请求读取数据库，无需重启，历史已记账费用不重算。

@@ -94,10 +94,17 @@ func extractFromPayload(payload map[string]any) Tokens {
 			cacheHit = hit
 		}
 	}
+	if details, ok := usageMap["input_tokens_details"].(map[string]any); ok {
+		if hit := number(details["cached_tokens"]); hit > 0 {
+			cacheHit = hit
+		}
+	}
 	request := number(usageMap["prompt_tokens"]) + number(usageMap["input_tokens"])
 	// Anthropic input_tokens excludes cache reads/writes, OpenAI prompt_tokens includes them.
-	if _, ok := usageMap["input_tokens"]; ok {
+	if _, ok := usageMap["cache_read_input_tokens"]; ok {
 		request += cacheHit + cacheWrite
+	} else if _, ok := usageMap["cache_creation_input_tokens"]; ok {
+		request += cacheWrite
 	}
 	response := number(usageMap["completion_tokens"]) + number(usageMap["output_tokens"])
 	total := number(usageMap["total_tokens"])

@@ -104,6 +104,7 @@ type APIKeyPatch struct {
 }
 
 type RequestLog struct {
+	UsageUnavailable bool // Image token billing must never estimate from base64 bytes.
 	BillingStatus    string
 	PriceSnapshot    string
 	StartedAt        time.Time
