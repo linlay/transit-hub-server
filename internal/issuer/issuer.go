@@ -24,13 +24,14 @@ var (
 )
 
 type Service struct {
-	privateKey                *rsa.PrivateKey
-	publicKey                 *rsa.PublicKey
-	issuer                    string
-	audience                  string
-	defaultJWTTTL             time.Duration
-	defaultAPIKeyRequestQuota int64
-	defaultAPIKeyTokenQuota   int64
+	privateKey                  *rsa.PrivateKey
+	publicKey                   *rsa.PublicKey
+	issuer                      string
+	audience                    string
+	defaultJWTTTL               time.Duration
+	defaultAPIKeyRequestQuota   int64
+	defaultAPIKeyTokenQuota     int64
+	defaultAPIKeyCostQuotaMicro int64
 }
 
 type Claims struct {
@@ -56,13 +57,14 @@ func New(cfg config.IssuerConfig) (*Service, error) {
 		return nil, err
 	}
 	return &Service{
-		privateKey:                privateKey,
-		publicKey:                 publicKey,
-		issuer:                    cfg.Issuer,
-		audience:                  cfg.Audience,
-		defaultJWTTTL:             cfg.DefaultJWTTTL,
-		defaultAPIKeyRequestQuota: cfg.DefaultAPIKeyRequestQuota,
-		defaultAPIKeyTokenQuota:   cfg.DefaultAPIKeyTokenQuota,
+		privateKey:                  privateKey,
+		publicKey:                   publicKey,
+		issuer:                      cfg.Issuer,
+		audience:                    cfg.Audience,
+		defaultJWTTTL:               cfg.DefaultJWTTTL,
+		defaultAPIKeyRequestQuota:   cfg.DefaultAPIKeyRequestQuota,
+		defaultAPIKeyTokenQuota:     cfg.DefaultAPIKeyTokenQuota,
+		defaultAPIKeyCostQuotaMicro: cfg.DefaultAPIKeyCostQuotaMicro,
 	}, nil
 }
 
@@ -193,3 +195,5 @@ func loadPublicKey(path string) (*rsa.PublicKey, error) {
 	}
 	return key, nil
 }
+
+func (s *Service) DefaultAPIKeyCostQuotaMicro() int64 { return s.defaultAPIKeyCostQuotaMicro }

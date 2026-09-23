@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -12,18 +13,21 @@ var ErrPriceNotFound = errors.New("model price not found")
 var DefaultCurrency = "CNY"
 
 type ModelPrice struct {
-	ID                                string    `json:"id"`
-	Protocol                          string    `json:"protocol"`
-	PublicModel                       string    `json:"public_model"`
-	InputCostMicroPer1MTokens         int64     `json:"input_cost_micro_per_1m_tokens"`
-	InputCacheHitCostMicroPer1MTokens *int64    `json:"input_cache_hit_cost_micro_per_1m_tokens"`
-	OutputCostMicroPer1MTokens        int64     `json:"output_cost_micro_per_1m_tokens"`
-	Currency                          string    `json:"currency"`
-	CreatedAt                         time.Time `json:"created_at"`
-	UpdatedAt                         time.Time `json:"updated_at"`
+	Billing                           PriceBilling `json:"billing"`
+	ID                                string       `json:"id"`
+	Protocol                          string       `json:"protocol"`
+	PublicModel                       string       `json:"public_model"`
+	InputCostMicroPer1MTokens         int64        `json:"input_cost_micro_per_1m_tokens"`
+	InputCacheHitCostMicroPer1MTokens *int64       `json:"input_cache_hit_cost_micro_per_1m_tokens"`
+	OutputCostMicroPer1MTokens        int64        `json:"output_cost_micro_per_1m_tokens"`
+	Currency                          string       `json:"currency"`
+	CreatedAt                         time.Time    `json:"created_at"`
+	UpdatedAt                         time.Time    `json:"updated_at"`
 }
 
 type ModelPriceParams struct {
+	CacheHitPriceSet                  bool
+	Billing                           *PriceBilling
 	Protocol                          string
 	PublicModel                       string
 	InputCostMicroPer1MTokens         int64
@@ -55,13 +59,15 @@ type APIKeyCounts struct {
 }
 
 type APIKeyRisk struct {
-	ID               string  `json:"id"`
-	Name             string  `json:"name"`
-	KeyPrefix        string  `json:"key_prefix"`
-	RequestRemaining int64   `json:"request_remaining"`
-	TokenRemaining   int64   `json:"token_remaining"`
-	RequestUsedRatio float64 `json:"request_used_ratio"`
-	TokenUsedRatio   float64 `json:"token_used_ratio"`
+	CostRemainingMicro int64   `json:"cost_remaining_micro"`
+	CostUsedRatio      float64 `json:"cost_used_ratio"`
+	ID                 string  `json:"id"`
+	Name               string  `json:"name"`
+	KeyPrefix          string  `json:"key_prefix"`
+	RequestRemaining   int64   `json:"request_remaining"`
+	TokenRemaining     int64   `json:"token_remaining"`
+	RequestUsedRatio   float64 `json:"request_used_ratio"`
+	TokenUsedRatio     float64 `json:"token_used_ratio"`
 }
 
 type TrafficQuery struct {
@@ -105,30 +111,35 @@ type RequestLogQuery struct {
 }
 
 type RequestLogEntry struct {
-	ID               int64     `json:"id"`
-	APIKeyID         string    `json:"api_key_id"`
-	APIKeyName       string    `json:"api_key_name"`
-	Protocol         string    `json:"protocol"`
-	PublicModel      string    `json:"public_model"`
-	UpstreamModel    string    `json:"upstream_model"`
-	Provider         string    `json:"provider"`
-	Pool             string    `json:"pool"`
-	Account          string    `json:"account"`
-	DeviceID         string    `json:"device_id"`
-	Source           string    `json:"source"`
-	StatusCode       int       `json:"status_code"`
-	LatencyMS        int64     `json:"latency_ms"`
-	RequestTokens    int64     `json:"request_tokens"`
-	ResponseTokens   int64     `json:"response_tokens"`
-	TotalTokens      int64     `json:"total_tokens"`
-	CacheHitTokens   int64     `json:"cache_hit_tokens"`
-	CacheMissTokens  int64     `json:"cache_miss_tokens"`
-	CacheTotalTokens int64     `json:"cache_total_tokens"`
-	CacheHitRate     *float64  `json:"cache_hit_rate"`
-	CostMicro        int64     `json:"cost_micro"`
-	Estimated        bool      `json:"estimated"`
-	ErrorType        string    `json:"error_type"`
-	CreatedAt        time.Time `json:"created_at"`
+	BillingStatus    string          `json:"billing_status"`
+	PriceSnapshot    json.RawMessage `json:"price_snapshot"`
+	StartedAt        *time.Time      `json:"started_at"`
+	CacheWriteTokens int64           `json:"cache_write_tokens"`
+	ImageCount       int64           `json:"image_count"`
+	ID               int64           `json:"id"`
+	APIKeyID         string          `json:"api_key_id"`
+	APIKeyName       string          `json:"api_key_name"`
+	Protocol         string          `json:"protocol"`
+	PublicModel      string          `json:"public_model"`
+	UpstreamModel    string          `json:"upstream_model"`
+	Provider         string          `json:"provider"`
+	Pool             string          `json:"pool"`
+	Account          string          `json:"account"`
+	DeviceID         string          `json:"device_id"`
+	Source           string          `json:"source"`
+	StatusCode       int             `json:"status_code"`
+	LatencyMS        int64           `json:"latency_ms"`
+	RequestTokens    int64           `json:"request_tokens"`
+	ResponseTokens   int64           `json:"response_tokens"`
+	TotalTokens      int64           `json:"total_tokens"`
+	CacheHitTokens   int64           `json:"cache_hit_tokens"`
+	CacheMissTokens  int64           `json:"cache_miss_tokens"`
+	CacheTotalTokens int64           `json:"cache_total_tokens"`
+	CacheHitRate     *float64        `json:"cache_hit_rate"`
+	CostMicro        int64           `json:"cost_micro"`
+	Estimated        bool            `json:"estimated"`
+	ErrorType        string          `json:"error_type"`
+	CreatedAt        time.Time       `json:"created_at"`
 }
 
 type RequestLogListResult struct {
@@ -213,21 +224,30 @@ func (s *Store) UpsertModelPrice(ctx context.Context, params ModelPriceParams) (
 	if currency == "" {
 		currency = DefaultCurrency
 	}
+	billing := PriceBilling{Mode: "tokens"}
+	if params.Billing != nil {
+		billing = *params.Billing
+	}
+	if err := validateBilling(billing, params); err != nil {
+		return ModelPrice{}, err
+	}
+	billingJSON, _ := json.Marshal(billing)
 	now := time.Now().UTC()
 	id := newID("price")
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO model_prices (
 			id, protocol, public_model, input_cost_micro_per_1m,
 			input_cache_hit_cost_micro_per_1m, output_cost_micro_per_1m,
-			currency, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			currency, billing, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(protocol, public_model) DO UPDATE SET
 			input_cost_micro_per_1m = excluded.input_cost_micro_per_1m,
 			input_cache_hit_cost_micro_per_1m = excluded.input_cache_hit_cost_micro_per_1m,
 			output_cost_micro_per_1m = excluded.output_cost_micro_per_1m,
 			currency = excluded.currency,
+ billing = excluded.billing,
 			updated_at = excluded.updated_at
-	`, id, protocol, publicModel, params.InputCostMicroPer1MTokens, nullableInt64(params.InputCacheHitCostMicroPer1MTokens), params.OutputCostMicroPer1MTokens, currency, formatTime(now), formatTime(now))
+	`, id, protocol, publicModel, params.InputCostMicroPer1MTokens, nullableInt64(params.InputCacheHitCostMicroPer1MTokens), params.OutputCostMicroPer1MTokens, currency, string(billingJSON), formatTime(now), formatTime(now))
 	if err != nil {
 		return ModelPrice{}, err
 	}
@@ -256,17 +276,25 @@ func (s *Store) UpdateModelPrice(ctx context.Context, id string, params ModelPri
 		return ModelPrice{}, errors.New("cost values must be >= 0")
 	}
 	inputCacheHitCost := current.InputCacheHitCostMicroPer1MTokens
-	if params.InputCacheHitCostMicroPer1MTokens != nil {
+	if params.InputCacheHitCostMicroPer1MTokens != nil || params.CacheHitPriceSet {
 		inputCacheHitCost = params.InputCacheHitCostMicroPer1MTokens
 	}
+	billing := current.Billing
+	if params.Billing != nil {
+		billing = *params.Billing
+	}
+	if err := validateBilling(billing, params); err != nil {
+		return ModelPrice{}, err
+	}
+	billingJSON, _ := json.Marshal(billing)
 	now := time.Now().UTC()
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE model_prices
 		SET protocol = ?, public_model = ?, input_cost_micro_per_1m = ?,
 		    input_cache_hit_cost_micro_per_1m = ?, output_cost_micro_per_1m = ?,
-		    currency = ?, updated_at = ?
+		    currency = ?, billing = ?, updated_at = ?
 		WHERE id = ?
-	`, protocol, publicModel, params.InputCostMicroPer1MTokens, nullableInt64(inputCacheHitCost), params.OutputCostMicroPer1MTokens, currency, formatTime(now), id)
+	`, protocol, publicModel, params.InputCostMicroPer1MTokens, nullableInt64(inputCacheHitCost), params.OutputCostMicroPer1MTokens, currency, string(billingJSON), formatTime(now), id)
 	if err != nil {
 		return ModelPrice{}, err
 	}
@@ -288,7 +316,7 @@ func (s *Store) ListModelPrices(ctx context.Context) ([]ModelPrice, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, protocol, public_model, input_cost_micro_per_1m,
 		       input_cache_hit_cost_micro_per_1m, output_cost_micro_per_1m,
-		       currency, created_at, updated_at
+		       currency, billing, created_at, updated_at
 		FROM model_prices
 		ORDER BY protocol ASC, public_model ASC
 	`)
@@ -311,7 +339,7 @@ func (s *Store) GetModelPrice(ctx context.Context, protocol, publicModel string)
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, protocol, public_model, input_cost_micro_per_1m,
 		       input_cache_hit_cost_micro_per_1m, output_cost_micro_per_1m,
-		       currency, created_at, updated_at
+		       currency, billing, created_at, updated_at
 		FROM model_prices
 		WHERE protocol = ? AND public_model = ?
 	`, strings.ToLower(strings.TrimSpace(protocol)), strings.TrimSpace(publicModel))
@@ -326,7 +354,7 @@ func (s *Store) GetModelPriceByID(ctx context.Context, id string) (ModelPrice, e
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, protocol, public_model, input_cost_micro_per_1m,
 		       input_cache_hit_cost_micro_per_1m, output_cost_micro_per_1m,
-		       currency, created_at, updated_at
+		       currency, billing, created_at, updated_at
 		FROM model_prices
 		WHERE id = ?
 	`, id)
@@ -342,14 +370,7 @@ func (s *Store) EstimateCost(ctx context.Context, protocol, publicModel string, 
 }
 
 func EstimateCostWithPrice(price ModelPrice, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens int64) int64 {
-	if price.InputCacheHitCostMicroPer1MTokens != nil && cacheHitTokens+cacheMissTokens > 0 {
-		normalInputTokens := cacheMissTokens
-		if remainder := requestTokens - cacheHitTokens - cacheMissTokens; remainder > 0 {
-			normalInputTokens += remainder
-		}
-		return (cacheHitTokens*(*price.InputCacheHitCostMicroPer1MTokens) + normalInputTokens*price.InputCostMicroPer1MTokens + responseTokens*price.OutputCostMicroPer1MTokens) / 1_000_000
-	}
-	return (requestTokens*price.InputCostMicroPer1MTokens + responseTokens*price.OutputCostMicroPer1MTokens) / 1_000_000
+	return TokenCost(price, requestTokens, responseTokens, cacheHitTokens, 0)
 }
 
 func (s *Store) Overview(ctx context.Context, activeWindow time.Duration, from, to *time.Time) (Overview, error) {
@@ -520,6 +541,11 @@ func (s *Store) quotaRiskKeys(ctx context.Context) ([]APIKeyRisk, error) {
 			risk.TokenUsedRatio = float64(key.UsedTokens) / float64(key.TokenQuota)
 			highRisk = highRisk || risk.TokenUsedRatio >= 0.8
 		}
+		if key.CostQuotaMicro > 0 {
+			risk.CostRemainingMicro = CostRemaining(key.CostQuotaMicro, key.UsedCostMicro)
+			risk.CostUsedRatio = float64(key.UsedCostMicro) / float64(key.CostQuotaMicro)
+			highRisk = highRisk || risk.CostUsedRatio >= 0.8
+		}
 		if highRisk {
 			risks = append(risks, risk)
 		}
@@ -585,6 +611,7 @@ type modelPriceScanner interface {
 func scanModelPrice(scanner modelPriceScanner) (ModelPrice, error) {
 	var price ModelPrice
 	var inputCacheHitCost sql.NullInt64
+	var billingJSON string
 	var createdAt, updatedAt string
 	err := scanner.Scan(
 		&price.ID,
@@ -594,6 +621,7 @@ func scanModelPrice(scanner modelPriceScanner) (ModelPrice, error) {
 		&inputCacheHitCost,
 		&price.OutputCostMicroPer1MTokens,
 		&price.Currency,
+		&billingJSON,
 		&createdAt,
 		&updatedAt,
 	)
@@ -602,6 +630,12 @@ func scanModelPrice(scanner modelPriceScanner) (ModelPrice, error) {
 	}
 	if err != nil {
 		return ModelPrice{}, err
+	}
+	if err := json.Unmarshal([]byte(billingJSON), &price.Billing); err != nil {
+		return ModelPrice{}, err
+	}
+	if price.Billing.Mode == "" {
+		price.Billing.Mode = "tokens"
 	}
 	if inputCacheHitCost.Valid {
 		price.InputCacheHitCostMicroPer1MTokens = &inputCacheHitCost.Int64

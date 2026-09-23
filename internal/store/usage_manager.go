@@ -24,9 +24,10 @@ var supportedRateLimitWindows = []string{
 }
 
 type UsageTotal struct {
-	UsedRequests int64
-	UsedTokens   int64
-	LastUsedAt   *time.Time
+	UsedCostMicro int64
+	UsedRequests  int64
+	UsedTokens    int64
+	LastUsedAt    *time.Time
 }
 
 type usageBucketKey struct {
@@ -43,6 +44,7 @@ type usageBucketValue struct {
 }
 
 type usageTotalDelta struct {
+	CostMicro  int64
 	Requests   int64
 	Tokens     int64
 	LastUsedAt time.Time
@@ -55,6 +57,7 @@ type UsageManager struct {
 	path string
 	loc  *time.Location
 
+	flushMu       sync.Mutex
 	connectMu     sync.Mutex
 	mu            sync.RWMutex
 	db            *sql.DB
@@ -135,12 +138,16 @@ func (u *UsageManager) Record(apiKeyID string, requestTokens, responseTokens, co
 	total := u.totals[apiKeyID]
 	total.UsedRequests++
 	total.UsedTokens += tokenDelta
-	total.LastUsedAt = timePtr(at)
+	total.UsedCostMicro = addCost(total.UsedCostMicro, costMicro)
+	if total.LastUsedAt == nil || at.After(*total.LastUsedAt) {
+		total.LastUsedAt = timePtr(at)
+	}
 	u.totals[apiKeyID] = total
 
 	totalDelta := u.dirtyTotals[apiKeyID]
 	totalDelta.Requests++
 	totalDelta.Tokens += tokenDelta
+	totalDelta.CostMicro = addCost(totalDelta.CostMicro, costMicro)
 	if totalDelta.LastUsedAt.IsZero() || at.After(totalDelta.LastUsedAt) {
 		totalDelta.LastUsedAt = at
 	}
@@ -155,14 +162,14 @@ func (u *UsageManager) Record(apiKeyID string, requestTokens, responseTokens, co
 		value := u.buckets[key]
 		value.Requests++
 		value.Tokens += tokenDelta
-		value.CostMicro += costMicro
+		value.CostMicro = addCost(value.CostMicro, costMicro)
 		value.UpdatedAt = at
 		u.buckets[key] = value
 
 		dirty := u.dirtyBuckets[key]
 		dirty.Requests++
 		dirty.Tokens += tokenDelta
-		dirty.CostMicro += costMicro
+		dirty.CostMicro = addCost(dirty.CostMicro, costMicro)
 		dirty.UpdatedAt = at
 		u.dirtyBuckets[key] = dirty
 	}
@@ -180,6 +187,7 @@ func (u *UsageManager) Overlay(key APIKey) APIKey {
 	}
 	key.UsedRequests = total.UsedRequests
 	key.UsedTokens = total.UsedTokens
+	key.UsedCostMicro = total.UsedCostMicro
 	key.LastUsedAt = total.LastUsedAt
 	return key
 }
@@ -224,7 +232,7 @@ func (u *UsageManager) RateLimitStatuses(apiKeyID string, limits []RateLimit, no
 		}
 		status.RequestRemaining = remaining(status.RequestQuota, status.Requests)
 		status.TokenRemaining = remaining(status.TokenQuota, status.Tokens)
-		status.CostRemainingMicro = remaining(status.CostQuotaMicro, status.CostMicro)
+		status.CostRemainingMicro = CostRemaining(status.CostQuotaMicro, status.CostMicro)
 		statuses = append(statuses, status)
 	}
 	return statuses, nil
@@ -241,14 +249,15 @@ func (u *UsageManager) Degraded() bool {
 }
 
 func (u *UsageManager) Flush(ctx context.Context) error {
+	u.flushMu.Lock()
+	defer u.flushMu.Unlock()
+	if err := u.ensureConnected(); err != nil {
+		u.degraded.Store(true)
+		return err
+	}
 	totals, buckets, pending := u.takeDirty()
 	if pending == 0 {
 		return nil
-	}
-	if err := u.ensureConnected(); err != nil {
-		u.restoreDirty(totals, buckets, pending)
-		u.degraded.Store(true)
-		return err
 	}
 
 	u.mu.RLock()
@@ -268,18 +277,19 @@ func (u *UsageManager) Flush(ctx context.Context) error {
 			lastUsed = formatTime(delta.LastUsedAt)
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO usage_totals (api_key_id, used_requests, used_tokens, last_used_at, updated_at)
-			VALUES (?, ?, ?, ?, ?)
+			INSERT INTO usage_totals (api_key_id, used_requests, used_tokens, used_cost_micro, last_used_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
 			ON CONFLICT(api_key_id) DO UPDATE SET
 				used_requests = usage_totals.used_requests + excluded.used_requests,
 				used_tokens = usage_totals.used_tokens + excluded.used_tokens,
+				used_cost_micro = CASE WHEN usage_totals.used_cost_micro > 9223372036854775807 - excluded.used_cost_micro THEN 9223372036854775807 ELSE usage_totals.used_cost_micro + excluded.used_cost_micro END,
 				last_used_at = CASE
 					WHEN excluded.last_used_at IS NULL THEN usage_totals.last_used_at
 					WHEN usage_totals.last_used_at IS NULL OR excluded.last_used_at > usage_totals.last_used_at THEN excluded.last_used_at
 					ELSE usage_totals.last_used_at
 				END,
 				updated_at = excluded.updated_at
-		`, apiKeyID, delta.Requests, delta.Tokens, lastUsed, formatTime(time.Now().UTC())); err != nil {
+		`, apiKeyID, delta.Requests, delta.Tokens, delta.CostMicro, lastUsed, formatTime(time.Now().UTC())); err != nil {
 			u.restoreDirty(totals, buckets, pending)
 			u.degraded.Store(true)
 			return err
@@ -293,7 +303,7 @@ func (u *UsageManager) Flush(ctx context.Context) error {
 			ON CONFLICT(api_key_id, window, window_start) DO UPDATE SET
 				requests = usage_buckets.requests + excluded.requests,
 				tokens = usage_buckets.tokens + excluded.tokens,
-				cost_micro = usage_buckets.cost_micro + excluded.cost_micro,
+				cost_micro = CASE WHEN usage_buckets.cost_micro > 9223372036854775807 - excluded.cost_micro THEN 9223372036854775807 ELSE usage_buckets.cost_micro + excluded.cost_micro END,
 				updated_at = excluded.updated_at
 		`, key.APIKeyID, key.Window, key.WindowStart, delta.Requests, delta.Tokens, delta.CostMicro, formatTime(delta.UpdatedAt)); err != nil {
 			u.restoreDirty(totals, buckets, pending)
@@ -394,6 +404,7 @@ func (u *UsageManager) connect() error {
 		dirty := u.dirtyTotals[id]
 		persisted.UsedRequests += dirty.Requests
 		persisted.UsedTokens += dirty.Tokens
+		persisted.UsedCostMicro = addCost(persisted.UsedCostMicro, dirty.CostMicro)
 		if !dirty.LastUsedAt.IsZero() && (persisted.LastUsedAt == nil || dirty.LastUsedAt.After(*persisted.LastUsedAt)) {
 			persisted.LastUsedAt = timePtr(dirty.LastUsedAt)
 		}
@@ -403,7 +414,7 @@ func (u *UsageManager) connect() error {
 		dirty := u.dirtyBuckets[key]
 		persisted.Requests += dirty.Requests
 		persisted.Tokens += dirty.Tokens
-		persisted.CostMicro += dirty.CostMicro
+		persisted.CostMicro = addCost(persisted.CostMicro, dirty.CostMicro)
 		if dirty.UpdatedAt.After(persisted.UpdatedAt) {
 			persisted.UpdatedAt = dirty.UpdatedAt
 		}
@@ -442,6 +453,7 @@ func (u *UsageManager) restoreDirty(totals map[string]usageTotalDelta, buckets m
 		current := u.dirtyTotals[id]
 		current.Requests += delta.Requests
 		current.Tokens += delta.Tokens
+		current.CostMicro = addCost(current.CostMicro, delta.CostMicro)
 		if delta.LastUsedAt.After(current.LastUsedAt) {
 			current.LastUsedAt = delta.LastUsedAt
 		}
@@ -451,7 +463,7 @@ func (u *UsageManager) restoreDirty(totals map[string]usageTotalDelta, buckets m
 		current := u.dirtyBuckets[key]
 		current.Requests += delta.Requests
 		current.Tokens += delta.Tokens
-		current.CostMicro += delta.CostMicro
+		current.CostMicro = addCost(current.CostMicro, delta.CostMicro)
 		if delta.UpdatedAt.After(current.UpdatedAt) {
 			current.UpdatedAt = delta.UpdatedAt
 		}
@@ -496,12 +508,20 @@ func migrateUsage(db *sql.DB) error {
 			applied_at TEXT NOT NULL
 		);
 	`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE usage_totals ADD COLUMN used_cost_micro INTEGER NOT NULL DEFAULT 0`)
+	if err != nil && !isDuplicateColumnError(err) {
+		return err
+	}
+	_, err = db.Exec(`INSERT OR IGNORE INTO schema_migrations(name, applied_at) VALUES ('credits_v1', ?)`, formatTime(time.Now().UTC()))
 	return err
 }
 
 func loadUsage(db *sql.DB, loc *time.Location, now time.Time) (map[string]UsageTotal, map[usageBucketKey]usageBucketValue, error) {
 	totals := map[string]UsageTotal{}
-	rows, err := db.Query(`SELECT api_key_id, used_requests, used_tokens, last_used_at FROM usage_totals`)
+	rows, err := db.Query(`SELECT api_key_id, used_requests, used_tokens, used_cost_micro, last_used_at FROM usage_totals`)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -509,7 +529,7 @@ func loadUsage(db *sql.DB, loc *time.Location, now time.Time) (map[string]UsageT
 		var id string
 		var total UsageTotal
 		var last sql.NullString
-		if err := rows.Scan(&id, &total.UsedRequests, &total.UsedTokens, &last); err != nil {
+		if err := rows.Scan(&id, &total.UsedRequests, &total.UsedTokens, &total.UsedCostMicro, &last); err != nil {
 			_ = rows.Close()
 			return nil, nil, err
 		}

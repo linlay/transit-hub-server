@@ -25,7 +25,16 @@ import (
 
 var ErrToken = errors.New("invalid access token")
 
+type RateLimit struct {
+	Window         string `yaml:"window" json:"window"`
+	RequestQuota   int64  `yaml:"request_quota" json:"request_quota"`
+	TokenQuota     int64  `yaml:"token_quota" json:"token_quota"`
+	CostQuotaMicro int64  `yaml:"cost_quota_micro" json:"cost_quota_micro"`
+}
+
 type Config struct {
+	CostQuotaMicro      int64             `yaml:"cost_quota_micro"`
+	RateLimits          []RateLimit       `yaml:"rate_limits"`
 	Enabled             bool              `yaml:"enabled"`
 	PublicKeyPath       string            `yaml:"public_key_path"`
 	Algorithm           string            `yaml:"algorithm"`
@@ -80,7 +89,7 @@ func New(cfg Config) (*Service, error) {
 	if cfg.SubjectClaim == "" {
 		cfg.SubjectClaim = "sub"
 	}
-	if len(cfg.AllowedModels) == 0 || cfg.RequestQuota < 0 || cfg.TokenQuota < 0 {
+	if len(cfg.AllowedModels) == 0 || cfg.RequestQuota < 0 || cfg.TokenQuota < 0 || cfg.CostQuotaMicro < 0 {
 		return nil, errors.New("bind-apikey requires allowed_models and nonnegative quotas")
 	}
 	ttl, err := time.ParseDuration(cfg.APIKeyTTL)

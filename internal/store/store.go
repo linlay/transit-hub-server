@@ -44,39 +44,42 @@ type DeviceBinding struct {
 }
 
 type APIKey struct {
-	DeviceBinding *DeviceBinding `json:"device_binding,omitempty"`
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	Description   string         `json:"description"`
-	KeyPrefix     string         `json:"key_prefix"`
-	Source        string         `json:"source"`
-	IssuerJTI     string         `json:"issuer_jti,omitempty"`
-	Status        string         `json:"status"`
-	ExpiresAt     *time.Time     `json:"expires_at,omitempty"`
-	ForcedExpired bool           `json:"forced_expired"`
-	RequestQuota  int64          `json:"request_quota"`
-	TokenQuota    int64          `json:"token_quota"`
-	AllowedModels []string       `json:"allowed_models"`
-	RateLimits    []RateLimit    `json:"rate_limits"`
-	UsedRequests  int64          `json:"used_requests"`
-	UsedTokens    int64          `json:"used_tokens"`
-	LastUsedAt    *time.Time     `json:"last_used_at,omitempty"`
-	DeletedAt     *time.Time     `json:"deleted_at,omitempty"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
+	UsedCostMicro  int64          `json:"used_cost_micro"`
+	DeviceBinding  *DeviceBinding `json:"device_binding,omitempty"`
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Description    string         `json:"description"`
+	KeyPrefix      string         `json:"key_prefix"`
+	Source         string         `json:"source"`
+	IssuerJTI      string         `json:"issuer_jti,omitempty"`
+	Status         string         `json:"status"`
+	ExpiresAt      *time.Time     `json:"expires_at,omitempty"`
+	ForcedExpired  bool           `json:"forced_expired"`
+	RequestQuota   int64          `json:"request_quota"`
+	TokenQuota     int64          `json:"token_quota"`
+	CostQuotaMicro int64          `json:"cost_quota_micro"`
+	AllowedModels  []string       `json:"allowed_models"`
+	RateLimits     []RateLimit    `json:"rate_limits"`
+	UsedRequests   int64          `json:"used_requests"`
+	UsedTokens     int64          `json:"used_tokens"`
+	LastUsedAt     *time.Time     `json:"last_used_at,omitempty"`
+	DeletedAt      *time.Time     `json:"deleted_at,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
 type CreateAPIKeyParams struct {
-	Name          string
-	Description   string
-	Prefix        string
-	Source        string
-	IssuerJTI     string
-	ExpiresAt     *time.Time
-	RequestQuota  int64
-	TokenQuota    int64
-	AllowedModels []string
-	RateLimits    []RateLimit
+	Name           string
+	Description    string
+	Prefix         string
+	Source         string
+	IssuerJTI      string
+	ExpiresAt      *time.Time
+	RequestQuota   int64
+	TokenQuota     int64
+	CostQuotaMicro int64
+	AllowedModels  []string
+	RateLimits     []RateLimit
 }
 
 type CreatedAPIKey struct {
@@ -93,6 +96,7 @@ type APIKeyPatch struct {
 	ForcedExpired    *bool
 	RequestQuota     *int64
 	TokenQuota       *int64
+	CostQuotaMicro   *int64
 	AllowedModelsSet bool
 	AllowedModels    []string
 	RateLimitsSet    bool
@@ -100,28 +104,33 @@ type APIKeyPatch struct {
 }
 
 type RequestLog struct {
-	APIKeyID        string
-	APIKeyName      string
-	KeyPrefix       string
-	Protocol        string
-	PublicModel     string
-	UpstreamModel   string
-	Provider        string
-	Pool            string
-	Account         string
-	DeviceID        string
-	Source          string
-	StatusCode      int
-	Latency         time.Duration
-	RequestTokens   int64
-	ResponseTokens  int64
-	CacheHitTokens  int64
-	CacheMissTokens int64
-	CostMicro       int64
-	Estimated       bool
-	ErrorType       string
-	CreatedAt       time.Time
-	ModelPrice      *ModelPrice
+	BillingStatus    string
+	PriceSnapshot    string
+	StartedAt        time.Time
+	CacheWriteTokens int64
+	ImageCount       int64
+	APIKeyID         string
+	APIKeyName       string
+	KeyPrefix        string
+	Protocol         string
+	PublicModel      string
+	UpstreamModel    string
+	Provider         string
+	Pool             string
+	Account          string
+	DeviceID         string
+	Source           string
+	StatusCode       int
+	Latency          time.Duration
+	RequestTokens    int64
+	ResponseTokens   int64
+	CacheHitTokens   int64
+	CacheMissTokens  int64
+	CostMicro        int64
+	Estimated        bool
+	ErrorType        string
+	CreatedAt        time.Time
+	ModelPrice       *ModelPrice
 }
 
 func Open(path string) (*Store, error) {
@@ -175,7 +184,7 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 	if strings.TrimSpace(params.Source) == "" {
 		params.Source = "admin"
 	}
-	if params.RequestQuota < 0 || params.TokenQuota < 0 {
+	if params.RequestQuota < 0 || params.TokenQuota < 0 || params.CostQuotaMicro < 0 {
 		return CreatedAPIKey{}, errors.New("quotas must be >= 0")
 	}
 	source := strings.ToLower(strings.TrimSpace(params.Source))
@@ -202,21 +211,22 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 	}
 	now := time.Now().UTC()
 	key := APIKey{
-		ID:            newID("key"),
-		Name:          strings.TrimSpace(params.Name),
-		Description:   strings.TrimSpace(params.Description),
-		KeyPrefix:     keyPrefix(plain),
-		Source:        source,
-		IssuerJTI:     strings.TrimSpace(params.IssuerJTI),
-		Status:        "active",
-		ExpiresAt:     params.ExpiresAt,
-		ForcedExpired: false,
-		RequestQuota:  params.RequestQuota,
-		TokenQuota:    params.TokenQuota,
-		AllowedModels: allowedModels,
-		RateLimits:    rateLimits,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:             newID("key"),
+		Name:           strings.TrimSpace(params.Name),
+		Description:    strings.TrimSpace(params.Description),
+		KeyPrefix:      keyPrefix(plain),
+		Source:         source,
+		IssuerJTI:      strings.TrimSpace(params.IssuerJTI),
+		Status:         "active",
+		ExpiresAt:      params.ExpiresAt,
+		ForcedExpired:  false,
+		RequestQuota:   params.RequestQuota,
+		TokenQuota:     params.TokenQuota,
+		CostQuotaMicro: params.CostQuotaMicro,
+		AllowedModels:  allowedModels,
+		RateLimits:     rateLimits,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 
 	exec := func(query string, args ...any) (sql.Result, error) {
@@ -228,9 +238,9 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 	_, err = exec(`
 		INSERT INTO api_keys (
 			id, key_hash, key_prefix, name, description, source, issuer_jti, status, expires_at, forced_expired,
-			request_quota, token_quota, allowed_models, rate_limits, used_requests, used_tokens, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
-	`, key.ID, HashKey(plain), key.KeyPrefix, key.Name, key.Description, key.Source, key.IssuerJTI, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, allowedModelsJSON, rateLimitsJSON, formatTime(key.CreatedAt), formatTime(key.UpdatedAt))
+			request_quota, token_quota, cost_quota_micro, allowed_models, rate_limits, used_requests, used_tokens, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+	`, key.ID, HashKey(plain), key.KeyPrefix, key.Name, key.Description, key.Source, key.IssuerJTI, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, key.CostQuotaMicro, allowedModelsJSON, rateLimitsJSON, formatTime(key.CreatedAt), formatTime(key.UpdatedAt))
 	if err != nil {
 		return CreatedAPIKey{}, err
 	}
@@ -239,7 +249,7 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 
 func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota,
+		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota, cost_quota_micro,
 		       allowed_models, rate_limits, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE deleted_at IS NULL
@@ -263,7 +273,7 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 
 func (s *Store) GetAPIKey(ctx context.Context, id string) (APIKey, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota,
+		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota, cost_quota_micro,
 		       allowed_models, rate_limits, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE id = ?
@@ -281,7 +291,7 @@ func (s *Store) GetAPIKey(ctx context.Context, id string) (APIKey, error) {
 
 func (s *Store) FindAPIKeyByPlainText(ctx context.Context, plain string) (APIKey, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota,
+		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota, cost_quota_micro,
 		       allowed_models, rate_limits, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE key_hash = ? AND deleted_at IS NULL
@@ -333,6 +343,12 @@ func (s *Store) UpdateAPIKey(ctx context.Context, id string, patch APIKeyPatch) 
 		}
 		key.TokenQuota = *patch.TokenQuota
 	}
+	if patch.CostQuotaMicro != nil {
+		if *patch.CostQuotaMicro < 0 {
+			return APIKey{}, errors.New("cost_quota_micro must be >= 0")
+		}
+		key.CostQuotaMicro = *patch.CostQuotaMicro
+	}
 	if patch.AllowedModelsSet {
 		key.AllowedModels = NormalizeAllowedModels(patch.AllowedModels)
 	}
@@ -356,9 +372,9 @@ func (s *Store) UpdateAPIKey(ctx context.Context, id string, patch APIKeyPatch) 
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE api_keys
 		SET name = ?, description = ?, status = ?, expires_at = ?, forced_expired = ?,
-		    request_quota = ?, token_quota = ?, allowed_models = ?, rate_limits = ?, updated_at = ?
+		    request_quota = ?, token_quota = ?, cost_quota_micro = ?, allowed_models = ?, rate_limits = ?, updated_at = ?
 		WHERE id = ?
-	`, key.Name, key.Description, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, allowedModelsJSON, rateLimitsJSON, formatTime(key.UpdatedAt), key.ID)
+	`, key.Name, key.Description, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, key.CostQuotaMicro, allowedModelsJSON, rateLimitsJSON, formatTime(key.UpdatedAt), key.ID)
 	if err != nil {
 		return APIKey{}, err
 	}
@@ -373,6 +389,9 @@ func ValidateUsableKey(key APIKey, now time.Time) error {
 		return ErrKeyExpired
 	}
 	if key.RequestQuota > 0 && key.UsedRequests >= key.RequestQuota {
+		return ErrQuotaExhausted
+	}
+	if key.CostQuotaMicro > 0 && key.UsedCostMicro >= key.CostQuotaMicro {
 		return ErrQuotaExhausted
 	}
 	if key.TokenQuota > 0 && key.UsedTokens >= key.TokenQuota {
@@ -512,6 +531,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	for _, stmt := range []string{
+		`ALTER TABLE api_keys ADD COLUMN cost_quota_micro INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE jwt_grants ADD COLUMN cost_quota_micro INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE api_keys ADD COLUMN key_prefix TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE api_keys ADD COLUMN description TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE api_keys ADD COLUMN source TEXT NOT NULL DEFAULT 'admin'`,
@@ -572,6 +593,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			ON jwt_grants(status, expires_at);
 	`)
 	if err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE model_prices ADD COLUMN billing TEXT NOT NULL DEFAULT '{"mode":"tokens"}'`); err != nil && !isDuplicateColumnError(err) {
 		return err
 	}
 	return s.migrateMicroColumns(ctx, []microColumnMigration{
@@ -702,6 +726,7 @@ func scanAPIKey(scanner apiKeyScanner) (APIKey, error) {
 		&forcedExpired,
 		&key.RequestQuota,
 		&key.TokenQuota,
+		&key.CostQuotaMicro,
 		&allowedModels,
 		&rateLimits,
 		&key.UsedRequests,

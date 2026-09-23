@@ -332,6 +332,19 @@ func openMigrationDatabases(options SplitMigrationOptions) (*sql.DB, *sql.DB, *s
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("open control database: %w", err)
 	}
+	if _, err := control.Exec(`ALTER TABLE api_keys ADD COLUMN used_cost_micro INTEGER NOT NULL DEFAULT 0`); err != nil && !isDuplicateColumnError(err) {
+		control.Close()
+		return nil, nil, nil, err
+	}
+	if exists, err := tableExists(context.Background(), control, "request_logs"); err != nil {
+		control.Close()
+		return nil, nil, nil, err
+	} else if exists {
+		if err := ensureLegacyTelemetrySchema(control); err != nil {
+			control.Close()
+			return nil, nil, nil, err
+		}
+	}
 	usage, err := openSQLite(options.UsagePath, 5*time.Second)
 	if err != nil {
 		_ = control.Close()
@@ -359,7 +372,7 @@ func openMigrationDatabases(options SplitMigrationOptions) (*sql.DB, *sql.DB, *s
 
 func copyLegacyUsageTotals(ctx context.Context, control, usage *sql.DB) (int64, error) {
 	rows, err := control.QueryContext(ctx, `
-		SELECT id, used_requests, used_tokens, last_used_at, updated_at FROM api_keys
+		SELECT id, used_requests, used_tokens, used_cost_micro, last_used_at, updated_at FROM api_keys
 	`)
 	if err != nil {
 		return 0, err
@@ -373,20 +386,21 @@ func copyLegacyUsageTotals(ctx context.Context, control, usage *sql.DB) (int64, 
 	var count int64
 	for rows.Next() {
 		var id, updatedAt string
-		var requests, tokens int64
+		var requests, tokens, cost int64
 		var lastUsedAt sql.NullString
-		if err := rows.Scan(&id, &requests, &tokens, &lastUsedAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &requests, &tokens, &cost, &lastUsedAt, &updatedAt); err != nil {
 			return 0, err
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO usage_totals (api_key_id, used_requests, used_tokens, last_used_at, updated_at)
-			VALUES (?, ?, ?, ?, ?)
+			INSERT INTO usage_totals (api_key_id, used_requests, used_tokens, used_cost_micro, last_used_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)
 			ON CONFLICT(api_key_id) DO UPDATE SET
 				used_requests = excluded.used_requests,
 				used_tokens = excluded.used_tokens,
+				used_cost_micro = MAX(usage_totals.used_cost_micro, excluded.used_cost_micro),
 				last_used_at = excluded.last_used_at,
 				updated_at = excluded.updated_at
-		`, id, requests, tokens, nullableString(lastUsedAt), updatedAt); err != nil {
+		`, id, requests, tokens, cost, nullableString(lastUsedAt), updatedAt); err != nil {
 			return 0, err
 		}
 		count++
@@ -430,7 +444,7 @@ func loadLegacyUsageBuckets(ctx context.Context, control *sql.DB, options SplitM
 	}
 	cutoff := formatTime(options.Now.Add(-options.Retention))
 	rows, err := control.QueryContext(ctx, `
-		SELECT api_key_id, request_tokens, response_tokens, cost_micro, created_at
+		SELECT api_key_id, request_tokens, response_tokens, cost_micro, COALESCE(started_at, created_at)
 		FROM request_logs
 		WHERE created_at >= ?
 		ORDER BY created_at ASC
@@ -492,7 +506,7 @@ func copyLegacyRequestLogs(ctx context.Context, control, telemetry *sql.DB, opti
 		       l.protocol, l.public_model, l.upstream_model, l.provider, l.pool, l.account,
 		       l.device_id, l.source, l.status_code, l.latency_ms, l.request_tokens,
 		       l.response_tokens, l.cache_hit_tokens, l.cache_miss_tokens, l.cost_micro,
-		       l.estimated, l.error_type, l.created_at
+		       l.estimated, l.error_type, l.created_at, l.billing_status, l.price_snapshot, l.started_at, l.cache_write_tokens, l.image_count
 		FROM request_logs l
 		LEFT JOIN api_keys k ON k.id = l.api_key_id
 		WHERE l.created_at >= ?
@@ -509,7 +523,7 @@ func copyLegacyRequestLogs(ctx context.Context, control, telemetry *sql.DB, opti
 	defer func() { _ = tx.Rollback() }()
 	var count int64
 	for rows.Next() {
-		values := make([]any, 22)
+		values := make([]any, 27)
 		targets := make([]any, len(values))
 		for index := range values {
 			targets[index] = &values[index]
@@ -522,8 +536,8 @@ func copyLegacyRequestLogs(ctx context.Context, control, telemetry *sql.DB, opti
 				id, api_key_id, api_key_name, key_prefix, protocol, public_model,
 				upstream_model, provider, pool, account, device_id, source, status_code,
 				latency_ms, request_tokens, response_tokens, cache_hit_tokens,
-				cache_miss_tokens, cost_micro, estimated, error_type, created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				cache_miss_tokens, cost_micro, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				api_key_id = excluded.api_key_id,
 				api_key_name = excluded.api_key_name,
@@ -545,6 +559,11 @@ func copyLegacyRequestLogs(ctx context.Context, control, telemetry *sql.DB, opti
 				cost_micro = excluded.cost_micro,
 				estimated = excluded.estimated,
 				error_type = excluded.error_type,
+				billing_status = excluded.billing_status,
+				price_snapshot = excluded.price_snapshot,
+				started_at = excluded.started_at,
+				cache_write_tokens = excluded.cache_write_tokens,
+				image_count = excluded.image_count,
 				created_at = excluded.created_at
 		`, values...); err != nil {
 			return 0, err
@@ -731,7 +750,7 @@ func mergeTelemetryLogsBack(ctx context.Context, telemetry, control *sql.DB) (in
 		SELECT id, api_key_id, protocol, public_model, upstream_model, provider, pool,
 		       account, device_id, source, status_code, latency_ms, request_tokens,
 		       response_tokens, cache_hit_tokens, cache_miss_tokens, cost_micro,
-		       estimated, error_type, created_at
+		       estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count
 		FROM request_logs ORDER BY id ASC
 	`)
 	if err != nil {
@@ -745,7 +764,7 @@ func mergeTelemetryLogsBack(ctx context.Context, telemetry, control *sql.DB) (in
 	defer func() { _ = tx.Rollback() }()
 	var count int64
 	for rows.Next() {
-		values := make([]any, 20)
+		values := make([]any, 25)
 		targets := make([]any, len(values))
 		for index := range values {
 			targets[index] = &values[index]
@@ -758,8 +777,8 @@ func mergeTelemetryLogsBack(ctx context.Context, telemetry, control *sql.DB) (in
 				id, api_key_id, protocol, public_model, upstream_model, provider, pool,
 				account, device_id, source, status_code, latency_ms, request_tokens,
 				response_tokens, cache_hit_tokens, cache_miss_tokens, cost_micro,
-				estimated, error_type, created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, values...)
 		if err != nil {
 			return 0, err
@@ -822,7 +841,7 @@ func mergeTelemetrySessionsBack(ctx context.Context, telemetry, control *sql.DB)
 
 func mergeUsageTotalsBack(ctx context.Context, usage, control *sql.DB) (int64, error) {
 	rows, err := usage.QueryContext(ctx, `
-		SELECT api_key_id, used_requests, used_tokens, last_used_at, updated_at FROM usage_totals
+		SELECT api_key_id, used_requests, used_tokens, used_cost_micro, last_used_at, updated_at FROM usage_totals
 	`)
 	if err != nil {
 		return 0, err
@@ -836,16 +855,16 @@ func mergeUsageTotalsBack(ctx context.Context, usage, control *sql.DB) (int64, e
 	var count int64
 	for rows.Next() {
 		var id, updatedAt string
-		var requests, tokens int64
+		var requests, tokens, cost int64
 		var lastUsedAt sql.NullString
-		if err := rows.Scan(&id, &requests, &tokens, &lastUsedAt, &updatedAt); err != nil {
+		if err := rows.Scan(&id, &requests, &tokens, &cost, &lastUsedAt, &updatedAt); err != nil {
 			return 0, err
 		}
 		result, err := tx.ExecContext(ctx, `
 			UPDATE api_keys
-			SET used_requests = ?, used_tokens = ?, last_used_at = ?, updated_at = MAX(updated_at, ?)
+			SET used_requests = ?, used_tokens = ?, used_cost_micro = ?, last_used_at = ?, updated_at = MAX(updated_at, ?)
 			WHERE id = ?
-		`, requests, tokens, nullableString(lastUsedAt), updatedAt, id)
+		`, requests, tokens, cost, nullableString(lastUsedAt), updatedAt, id)
 		if err != nil {
 			return 0, err
 		}
@@ -896,7 +915,15 @@ func ensureLegacyTelemetrySchema(db *sql.DB) error {
 			FOREIGN KEY(api_key_id) REFERENCES api_keys(id)
 		);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	for _, column := range []string{"billing_status TEXT NOT NULL DEFAULT 'legacy'", "price_snapshot TEXT NOT NULL DEFAULT 'null'", "started_at TEXT", "cache_write_tokens INTEGER NOT NULL DEFAULT 0", "image_count INTEGER NOT NULL DEFAULT 0"} {
+		if _, err = db.Exec("ALTER TABLE request_logs ADD COLUMN " + column); err != nil && !isDuplicateColumnError(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrationApplied(ctx context.Context, db *sql.DB, name string) (bool, error) {

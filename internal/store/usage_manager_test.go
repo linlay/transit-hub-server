@@ -48,7 +48,7 @@ func TestUsageManagerConcurrentRecordFlushAndReload(t *testing.T) {
 	})
 	total := reloaded.Total("key-1")
 	wantRequests := int64(workers * eventsPerWorker)
-	if total.UsedRequests != wantRequests || total.UsedTokens != wantRequests*5 {
+	if total.UsedRequests != wantRequests || total.UsedTokens != wantRequests*5 || total.UsedCostMicro != wantRequests*7 {
 		t.Fatalf("unexpected persisted total: %#v", total)
 	}
 	statuses, err := reloaded.RateLimitStatuses("key-1", []RateLimit{{

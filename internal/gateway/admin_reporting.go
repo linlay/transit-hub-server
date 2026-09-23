@@ -13,12 +13,13 @@ import (
 )
 
 type modelPriceRequest struct {
-	Protocol                          string `json:"protocol"`
-	PublicModel                       string `json:"public_model"`
-	InputCostMicroPer1MTokens         int64  `json:"input_cost_micro_per_1m_tokens"`
-	InputCacheHitCostMicroPer1MTokens *int64 `json:"input_cache_hit_cost_micro_per_1m_tokens"`
-	OutputCostMicroPer1MTokens        int64  `json:"output_cost_micro_per_1m_tokens"`
-	Currency                          string `json:"currency"`
+	Billing                           *store.PriceBilling `json:"billing"`
+	Protocol                          string              `json:"protocol"`
+	PublicModel                       string              `json:"public_model"`
+	InputCostMicroPer1MTokens         int64               `json:"input_cost_micro_per_1m_tokens"`
+	InputCacheHitCostMicroPer1MTokens *int64              `json:"input_cache_hit_cost_micro_per_1m_tokens"`
+	OutputCostMicroPer1MTokens        int64               `json:"output_cost_micro_per_1m_tokens"`
+	Currency                          string              `json:"currency"`
 }
 
 func (g *Gateway) overview(w http.ResponseWriter, r *http.Request) {
@@ -93,6 +94,9 @@ func (g *Gateway) apiKeyUsage(w http.ResponseWriter, r *http.Request) {
 		g.writeDegradedAPIKeyUsage(w, r, apiKeyID)
 		return
 	}
+	if key, ok := usage["key"].(store.APIKey); ok {
+		usage["lifetime"] = selfLifetimeFromKey(key)
+	}
 	usage["degraded_components"] = g.degradedComponents()
 	writeJSON(w, http.StatusOK, usage)
 }
@@ -115,6 +119,7 @@ func (g *Gateway) writeDegradedAPIKeyUsage(w http.ResponseWriter, r *http.Reques
 	components := withDegradedComponent(g.degradedComponents(), "telemetry")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"key":                 key,
+		"lifetime":            selfLifetimeFromKey(key),
 		"summary":             store.TrafficBucket{},
 		"recent_traffic":      []store.TrafficBucket{},
 		"active_devices":      int64(0),
@@ -274,6 +279,8 @@ func (g *Gateway) createModelPrice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	price, err := g.store.UpsertModelPrice(r.Context(), store.ModelPriceParams{
+		CacheHitPriceSet:                  true,
+		Billing:                           req.Billing,
 		Protocol:                          req.Protocol,
 		PublicModel:                       req.PublicModel,
 		InputCostMicroPer1MTokens:         req.InputCostMicroPer1MTokens,
@@ -289,7 +296,16 @@ func (g *Gateway) createModelPrice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) patchModelPrice(w http.ResponseWriter, r *http.Request) {
-	var req modelPriceRequest
+	current, err := g.store.GetModelPriceByID(r.Context(), chi.URLParam(r, "id"))
+	if errors.Is(err, store.ErrPriceNotFound) {
+		writeError(w, http.StatusNotFound, "model price not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	req := modelPriceRequest{Protocol: current.Protocol, PublicModel: current.PublicModel, Currency: current.Currency, Billing: &current.Billing, InputCostMicroPer1MTokens: current.InputCostMicroPer1MTokens, InputCacheHitCostMicroPer1MTokens: current.InputCacheHitCostMicroPer1MTokens, OutputCostMicroPer1MTokens: current.OutputCostMicroPer1MTokens}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
@@ -299,6 +315,8 @@ func (g *Gateway) patchModelPrice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	price, err := g.store.UpdateModelPrice(r.Context(), chi.URLParam(r, "id"), store.ModelPriceParams{
+		CacheHitPriceSet:                  true,
+		Billing:                           req.Billing,
 		Protocol:                          req.Protocol,
 		PublicModel:                       req.PublicModel,
 		InputCostMicroPer1MTokens:         req.InputCostMicroPer1MTokens,

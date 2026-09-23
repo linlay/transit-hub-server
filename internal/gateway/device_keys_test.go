@@ -62,6 +62,8 @@ func deviceKeyFixture(t *testing.T) (*accesskey.Service, func(map[string]any) st
 
 func TestDeviceKeyBindingValidationRecoveryAndIsolation(t *testing.T) {
 	svc, sign := deviceKeyFixture(t)
+	svc.Config.CostQuotaMicro = 1_000_000
+	svc.Config.RateLimits = []accesskey.RateLimit{{Window: "1h", CostQuotaMicro: 100_000}}
 	app, db, _ := newTestGateway(t, nil)
 	app.accessKeys = svc
 	// Bind directly to exercise SQLite persistence without depending on provider routing fixtures.
@@ -73,7 +75,7 @@ func TestDeviceKeyBindingValidationRecoveryAndIsolation(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("first binding: %v %v", created, err)
 	}
-	if first.Source != "access_token" || first.IssuerJTI != "" || first.RequestQuota != 50 {
+	if first.Source != "access_token" || first.IssuerJTI != "" || first.RequestQuota != 50 || first.CostQuotaMicro != 1_000_000 || len(first.RateLimits) != 1 || first.RateLimits[0].CostQuotaMicro != 100_000 {
 		t.Fatalf("wrong policy: %+v", first.APIKey)
 	}
 	second, created, err := db.BindAPIKey(t.Context(), svc, identity, "desktop-a", "Renamed", time.Now().UTC())

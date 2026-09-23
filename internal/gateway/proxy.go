@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -31,21 +32,24 @@ var hopByHopHeaders = map[string]struct{}{
 }
 
 type copyResult struct {
+	Usage  usage.Tokens
 	Sample []byte
 	Bytes  int64
 }
 
 type observedUsage struct {
-	RequestTokens   int64
-	ResponseTokens  int64
-	CacheHitTokens  int64
-	CacheMissTokens int64
-	Estimated       bool
+	CacheWriteTokens int64
+	RequestTokens    int64
+	ResponseTokens   int64
+	CacheHitTokens   int64
+	CacheMissTokens  int64
+	Estimated        bool
 }
 
 func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
+		r = withBillingContext(r, started)
 		key, ok := g.authenticatePublicKey(w, r)
 		if !ok {
 			return
@@ -126,6 +130,16 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			return
 		}
 
+		if !g.beginKeyRequest(key.ID) {
+			writeError(w, http.StatusTooManyRequests, "api key concurrent request limit exhausted")
+			return
+		}
+		defer g.endKeyRequest(key.ID)
+		imageUnit, err := prepareBillingRequest(&parsedBody, modelPrice, route.Type, protocol)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		account, err := route.PickAccount()
 		if err != nil {
 			g.logCompletedRequest(r, key, store.RequestLog{
@@ -190,6 +204,32 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		}
 
 		observed := observedTokens(body, result.Sample, upstreamBody.Envelope.Stream || isEventStream(resp.Header))
+		if result.Usage.OK {
+			observed = observedUsage{RequestTokens: result.Usage.Request, ResponseTokens: result.Usage.Response, CacheHitTokens: result.Usage.CacheHit, CacheMissTokens: result.Usage.CacheMiss, CacheWriteTokens: result.Usage.CacheWrite}
+		}
+		if copyErr != nil && observed.ResponseTokens == 0 && result.Bytes > 0 {
+			observed.ResponseTokens = usage.EstimateTokens(result.Sample)
+			observed.Estimated = true
+		}
+		if route.Type == config.ModelTypeEmbedding {
+			if observed.RequestTokens == 0 {
+				observed.RequestTokens = observed.ResponseTokens
+			}
+			observed.ResponseTokens = 0
+		}
+		imageCount := responseImageCount(result.Sample)
+		imageEstimated := false
+		if modelPrice != nil && modelPrice.Billing.Mode == "image" && imageCount == 0 && copyErr == nil && result.Bytes > responseSampleLimit && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			imageCount = billingRequestedImageCount(parsedBody)
+			imageEstimated = true
+		}
+		imageCost := int64(0)
+		if modelPrice != nil && modelPrice.Billing.Mode == "image" {
+			imageCost = store.ImageCost(imageCount, imageUnit)
+		}
+		if modelPrice != nil && modelPrice.Billing.Mode == "image" {
+			observed = observedUsage{Estimated: imageEstimated}
+		}
 		errorType := ""
 		if copyErr != nil {
 			errorType = "response_copy_error"
@@ -197,21 +237,24 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			errorType = "upstream_status"
 		}
 		g.logCompletedRequest(r, key, store.RequestLog{
-			Protocol:        protocol,
-			PublicModel:     route.PublicModel,
-			UpstreamModel:   route.UpstreamModel,
-			Provider:        route.ProviderName,
-			Pool:            route.PoolName,
-			Account:         account.Name,
-			StatusCode:      resp.StatusCode,
-			Latency:         time.Since(started),
-			RequestTokens:   observed.RequestTokens,
-			ResponseTokens:  observed.ResponseTokens,
-			CacheHitTokens:  observed.CacheHitTokens,
-			CacheMissTokens: observed.CacheMissTokens,
-			Estimated:       observed.Estimated,
-			ErrorType:       errorType,
-			ModelPrice:      modelPrice,
+			Protocol:         protocol,
+			PublicModel:      route.PublicModel,
+			UpstreamModel:    route.UpstreamModel,
+			Provider:         route.ProviderName,
+			Pool:             route.PoolName,
+			Account:          account.Name,
+			StatusCode:       resp.StatusCode,
+			Latency:          time.Since(started),
+			RequestTokens:    observed.RequestTokens,
+			ResponseTokens:   observed.ResponseTokens,
+			CacheHitTokens:   observed.CacheHitTokens,
+			CacheMissTokens:  observed.CacheMissTokens,
+			CacheWriteTokens: observed.CacheWriteTokens,
+			ImageCount:       imageCount,
+			CostMicro:        imageCost,
+			Estimated:        observed.Estimated,
+			ErrorType:        errorType,
+			ModelPrice:       modelPrice,
 		})
 	}
 }
@@ -308,13 +351,17 @@ func (g *Gateway) requestModelPrice(w http.ResponseWriter, r *http.Request, key 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return nil, false
 	}
-	needsCost := store.RateLimitsNeedCost(key.RateLimits)
+	needsCost := key.CostQuotaMicro > 0 || store.RateLimitsNeedCost(key.RateLimits)
 	if needsCost && !found {
 		writeError(w, http.StatusTooManyRequests, "cost rate limit requires a model price for "+publicModel)
 		return nil, false
 	}
-	if needsCost && !strings.EqualFold(price.Currency, g.configuredCurrency()) {
+	if found && (!strings.EqualFold(price.Currency, g.configuredCurrency()) || !strings.EqualFold(price.Currency, "CNY")) {
 		writeError(w, http.StatusTooManyRequests, "model price currency does not match configured currency")
+		return nil, false
+	}
+	if found && price.Billing.Mode == "tokens" && price.InputCostMicroPer1MTokens == 0 && price.OutputCostMicroPer1MTokens == 0 && (price.InputCacheHitCostMicroPer1MTokens == nil || *price.InputCacheHitCostMicroPer1MTokens == 0) && (price.Billing.CacheWriteCostMicroPer1M == nil || *price.Billing.CacheWriteCostMicroPer1M == 0) {
+		writeError(w, http.StatusServiceUnavailable, "zero-priced model requires explicit free billing")
 		return nil, false
 	}
 	if !found {
@@ -380,11 +427,12 @@ func observedTokens(requestBody, responseSample []byte, stream bool) observedUsa
 	}
 	if observed.OK {
 		return observedUsage{
-			RequestTokens:   observed.Request,
-			ResponseTokens:  observed.Response,
-			CacheHitTokens:  observed.CacheHit,
-			CacheMissTokens: observed.CacheMiss,
-			Estimated:       false,
+			RequestTokens:    observed.Request,
+			ResponseTokens:   observed.Response,
+			CacheHitTokens:   observed.CacheHit,
+			CacheMissTokens:  observed.CacheMiss,
+			CacheWriteTokens: observed.CacheWrite,
+			Estimated:        false,
 		}
 	}
 	return observedUsage{
@@ -396,6 +444,7 @@ func observedTokens(requestBody, responseSample []byte, stream bool) observedUsa
 
 func copyResponse(w http.ResponseWriter, body io.Reader, flush bool) (copyResult, error) {
 	var sample bytes.Buffer
+	var collector usage.StreamCollector
 	buffer := make([]byte, 32*1024)
 	var written int64
 	flusher, canFlush := w.(http.Flusher)
@@ -404,6 +453,9 @@ func copyResponse(w http.ResponseWriter, body io.Reader, flush bool) (copyResult
 		n, readErr := body.Read(buffer)
 		if n > 0 {
 			chunk := buffer[:n]
+			if flush {
+				collector.Write(chunk)
+			}
 			if sample.Len() < responseSampleLimit {
 				remaining := responseSampleLimit - sample.Len()
 				if len(chunk) > remaining {
@@ -412,7 +464,7 @@ func copyResponse(w http.ResponseWriter, body io.Reader, flush bool) (copyResult
 				_, _ = sample.Write(chunk)
 			}
 			if _, err := w.Write(buffer[:n]); err != nil {
-				return copyResult{Sample: sample.Bytes(), Bytes: written}, err
+				return copyResult{Sample: sample.Bytes(), Bytes: written, Usage: collector.Finish()}, err
 			}
 			written += int64(n)
 			if flush && canFlush {
@@ -420,10 +472,10 @@ func copyResponse(w http.ResponseWriter, body io.Reader, flush bool) (copyResult
 			}
 		}
 		if readErr == io.EOF {
-			return copyResult{Sample: sample.Bytes(), Bytes: written}, nil
+			return copyResult{Sample: sample.Bytes(), Bytes: written, Usage: collector.Finish()}, nil
 		}
 		if readErr != nil {
-			return copyResult{Sample: sample.Bytes(), Bytes: written}, readErr
+			return copyResult{Sample: sample.Bytes(), Bytes: written, Usage: collector.Finish()}, readErr
 		}
 	}
 }
@@ -499,17 +551,42 @@ func (g *Gateway) logCompletedRequest(r *http.Request, key store.APIKey, logEntr
 	logEntry.KeyPrefix = key.KeyPrefix
 	logEntry.CreatedAt = time.Now().UTC()
 	logEntry.DeviceID, logEntry.Source = sessionHeaders(r)
-	if logEntry.CostMicro == 0 && logEntry.ModelPrice != nil {
-		logEntry.CostMicro = store.EstimateCostWithPrice(
-			*logEntry.ModelPrice,
-			logEntry.RequestTokens,
-			logEntry.ResponseTokens,
-			logEntry.CacheHitTokens,
-			logEntry.CacheMissTokens,
-		)
+	logEntry.StartedAt = billingStartedAt(r)
+	logEntry.BillingStatus = "not_charged"
+	if price := logEntry.ModelPrice; price != nil {
+		snapshot, _ := json.Marshal(price)
+		logEntry.PriceSnapshot = string(snapshot)
+		// Locally rejected requests and explicit upstream failures never incur
+		// estimated charges. Successful partial streams use the observed sample.
+		if logEntry.StatusCode >= 200 && logEntry.StatusCode < 300 {
+			switch price.Billing.Mode {
+			case "free":
+				logEntry.CostMicro = 0
+				logEntry.BillingStatus = "free"
+			case "image":
+				if logEntry.ImageCount > 0 {
+					logEntry.BillingStatus = "charged"
+					if logEntry.Estimated {
+						logEntry.BillingStatus = "estimated"
+					}
+				} else {
+					logEntry.BillingStatus = "unavailable"
+				}
+			default:
+				logEntry.CostMicro = store.TokenCost(*price, logEntry.RequestTokens, logEntry.ResponseTokens, logEntry.CacheHitTokens, logEntry.CacheWriteTokens)
+				logEntry.BillingStatus = "charged"
+				if logEntry.Estimated {
+					logEntry.BillingStatus = "estimated"
+				}
+			}
+		} else {
+			logEntry.CostMicro = 0
+		}
+	} else if logEntry.StatusCode >= 200 && logEntry.StatusCode < 300 {
+		logEntry.BillingStatus = "unpriced"
 	}
 	if g.usage != nil {
-		g.usage.Record(key.ID, logEntry.RequestTokens, logEntry.ResponseTokens, logEntry.CostMicro, logEntry.CreatedAt)
+		g.usage.Record(key.ID, logEntry.RequestTokens, logEntry.ResponseTokens, logEntry.CostMicro, logEntry.StartedAt)
 	}
 	if g.telemetry != nil {
 		if !g.telemetry.Enqueue(logEntry) {

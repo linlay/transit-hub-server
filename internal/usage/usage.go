@@ -9,11 +9,12 @@ import (
 )
 
 type Tokens struct {
-	Request   int64
-	Response  int64
-	CacheHit  int64
-	CacheMiss int64
-	OK        bool
+	Request    int64
+	Response   int64
+	CacheHit   int64
+	CacheMiss  int64
+	CacheWrite int64
+	OK         bool
 }
 
 func EstimateTokens(data []byte) int64 {
@@ -54,13 +55,25 @@ func ExtractFromSSE(data []byte) Tokens {
 			continue
 		}
 		if tokens := extractFromPayload(payload); tokens.OK {
-			latest = tokens
+			if tokens.Request > 0 {
+				latest.Request = tokens.Request
+				latest.CacheHit = tokens.CacheHit
+				latest.CacheMiss = tokens.CacheMiss
+				latest.CacheWrite = tokens.CacheWrite
+			}
+			if tokens.Response > 0 {
+				latest.Response = tokens.Response
+			}
+			latest.OK = true
 		}
 	}
 	return latest
 }
 
 func extractFromPayload(payload map[string]any) Tokens {
+	if message, ok := payload["message"].(map[string]any); ok {
+		return extractFromPayload(message)
+	}
 	usageValue, ok := payload["usage"]
 	if !ok || usageValue == nil {
 		return Tokens{}
@@ -72,7 +85,20 @@ func extractFromPayload(payload map[string]any) Tokens {
 
 	cacheHit := number(usageMap["prompt_cache_hit_tokens"])
 	cacheMiss := number(usageMap["prompt_cache_miss_tokens"])
+	cacheWrite := number(usageMap["cache_creation_input_tokens"])
+	if hit := number(usageMap["cache_read_input_tokens"]); hit > 0 {
+		cacheHit = hit
+	}
+	if details, ok := usageMap["prompt_tokens_details"].(map[string]any); ok {
+		if hit := number(details["cached_tokens"]); hit > 0 {
+			cacheHit = hit
+		}
+	}
 	request := number(usageMap["prompt_tokens"]) + number(usageMap["input_tokens"])
+	// Anthropic input_tokens excludes cache reads/writes, OpenAI prompt_tokens includes them.
+	if _, ok := usageMap["input_tokens"]; ok {
+		request += cacheHit + cacheWrite
+	}
 	response := number(usageMap["completion_tokens"]) + number(usageMap["output_tokens"])
 	total := number(usageMap["total_tokens"])
 
@@ -86,24 +112,85 @@ func extractFromPayload(payload map[string]any) Tokens {
 		response = total
 	}
 	return Tokens{
-		Request:   request,
-		Response:  response,
-		CacheHit:  cacheHit,
-		CacheMiss: cacheMiss,
-		OK:        true,
+		Request:    request,
+		Response:   response,
+		CacheHit:   cacheHit,
+		CacheMiss:  cacheMiss,
+		CacheWrite: cacheWrite,
+		OK:         true,
 	}
 }
 
 func number(value any) int64 {
 	switch typed := value.(type) {
 	case float64:
+		if typed < 0 || typed > 1e12 {
+			return 0
+		}
 		return int64(typed)
 	case int64:
-		return typed
+		return max(0, min(typed, 1_000_000_000_000))
 	case json.Number:
 		n, _ := typed.Int64()
 		return n
 	default:
 		return 0
 	}
+}
+
+// StreamCollector observes every SSE event, including usage after the response
+// log sample has reached its size limit. Individual oversized events are skipped.
+type StreamCollector struct {
+	pending  []byte
+	dropping bool
+	Tokens   Tokens
+}
+
+func (c *StreamCollector) Write(data []byte) {
+	for len(data) > 0 {
+		end := bytes.IndexByte(data, '\n')
+		complete := end >= 0
+		if !complete {
+			end = len(data)
+		}
+		if !c.dropping {
+			if len(c.pending)+end > 8*1024*1024 {
+				c.pending = nil
+				c.dropping = true
+			} else {
+				c.pending = append(c.pending, data[:end]...)
+			}
+		}
+		if !complete {
+			return
+		}
+		if !c.dropping {
+			c.Tokens = mergeTokens(c.Tokens, ExtractFromSSE(c.pending))
+		}
+		c.pending = c.pending[:0]
+		c.dropping = false
+		data = data[end+1:]
+	}
+}
+func (c *StreamCollector) Finish() Tokens {
+	if !c.dropping {
+		c.Tokens = mergeTokens(c.Tokens, ExtractFromSSE(c.pending))
+	}
+	return c.Tokens
+}
+func mergeTokens(a, b Tokens) Tokens {
+	if !b.OK {
+		return a
+	}
+	if b.Request > 0 {
+		a.Request = b.Request
+		a.CacheHit = b.CacheHit
+		a.CacheMiss = b.CacheMiss
+		a.CacheWrite = b.CacheWrite
+	}
+	if b.Response > 0 {
+		a.Response = b.Response
+	}
+	a.OK = true
+	return a
 }

@@ -39,3 +39,17 @@ data: [DONE]
 		t.Fatalf("cache tokens = hit %d miss %d", tokens.CacheHit, tokens.CacheMiss)
 	}
 }
+
+func TestAnthropicCacheUsageAndSplitSSE(t *testing.T) {
+	var collector StreamCollector
+	for _, part := range []string{
+		"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":20,\"cache_creation_input_tokens\":30,\"output_tokens\":0}}}\n",
+		"data: {\"type\":\"message_delta\",\"usage\":{\"output_", "tokens\":40}}\n\n",
+	} {
+		collector.Write([]byte(part))
+	}
+	got := collector.Finish()
+	if !got.OK || got.Request != 60 || got.CacheHit != 20 || got.CacheWrite != 30 || got.Response != 40 {
+		t.Fatalf("usage %+v", got)
+	}
+}

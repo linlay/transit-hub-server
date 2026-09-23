@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -18,6 +19,8 @@ import (
 )
 
 type Gateway struct {
+	concurrentMu      sync.Mutex
+	concurrent        map[string]int
 	accessKeys        *accesskey.Service
 	env               config.Env
 	store             *store.Store

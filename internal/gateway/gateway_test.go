@@ -1810,7 +1810,7 @@ func TestProxyRecordsSessionAndEstimatedCost(t *testing.T) {
 		PublicModel:                "public-model",
 		InputCostMicroPer1MTokens:  2_000_000,
 		OutputCostMicroPer1MTokens: 4_000_000,
-		Currency:                   "USD",
+		Currency:                   "CNY",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1865,7 +1865,7 @@ func TestProxyRecordsDeepSeekCacheAndProviderUsage(t *testing.T) {
 		InputCostMicroPer1MTokens:         2_000_000,
 		InputCacheHitCostMicroPer1MTokens: &inputCacheHitCost,
 		OutputCostMicroPer1MTokens:        4_000_000,
-		Currency:                          "USD",
+		Currency:                          "CNY",
 	}); err != nil {
 		t.Fatal(err)
 	}
