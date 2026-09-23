@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,6 +18,8 @@ import (
 	"github.com/linlay/transit-hub/internal/store"
 	"github.com/linlay/transit-hub/internal/usage"
 )
+
+type usageWindowsContextKey struct{}
 
 const responseSampleLimit = 8 * 1024 * 1024
 
@@ -175,6 +178,25 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			return
 		}
 
+		if g.usage != nil {
+			admittedAt := time.Now().UTC()
+			bindings, err := g.usage.Admit(r.Context(), key, admittedAt)
+			if err != nil {
+				var violation store.RateLimitViolation
+				if errors.As(err, &violation) {
+					retryAfter := max(1, int(time.Until(violation.ResetsAt).Seconds()))
+					w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+					writeError(w, http.StatusTooManyRequests, err.Error())
+				} else if errors.Is(err, store.ErrQuotaExhausted) || errors.Is(err, store.ErrKeyInactive) || errors.Is(err, store.ErrKeyExpired) {
+					writePublicKeyValidationError(w, err)
+				} else {
+					writeError(w, http.StatusServiceUnavailable, "usage admission unavailable")
+				}
+				return
+			}
+			r = withBillingContext(r, admittedAt)
+			r = r.WithContext(context.WithValue(r.Context(), usageWindowsContextKey{}, bindings))
+		}
 		resp, err := g.client.Do(upstreamReq)
 		if err != nil {
 			account.Breaker.Record(false)
@@ -601,7 +623,8 @@ func (g *Gateway) logCompletedRequest(r *http.Request, key store.APIKey, logEntr
 		logEntry.BillingStatus = "unpriced"
 	}
 	if g.usage != nil {
-		g.usage.Record(key.ID, logEntry.RequestTokens, logEntry.ResponseTokens, logEntry.CostMicro, logEntry.StartedAt)
+		bindings, _ := r.Context().Value(usageWindowsContextKey{}).(store.WindowBindings)
+		g.usage.Record(key.ID, logEntry.RequestTokens, logEntry.ResponseTokens, logEntry.CostMicro, logEntry.StartedAt, bindings)
 	}
 	if g.telemetry != nil {
 		if !g.telemetry.Enqueue(logEntry) {

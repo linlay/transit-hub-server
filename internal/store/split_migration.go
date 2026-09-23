@@ -412,6 +412,13 @@ func copyLegacyUsageTotals(ctx context.Context, control, usage *sql.DB) (int64, 
 }
 
 func aggregateLegacyUsageBuckets(ctx context.Context, control, usage *sql.DB, options SplitMigrationOptions) (int64, error) {
+	var windows int
+	if err := usage.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_windows`).Scan(&windows); err != nil {
+		return 0, err
+	}
+	if windows > 0 {
+		return 0, fmt.Errorf("cannot rebuild legacy usage over active independent windows")
+	}
 	buckets, err := loadLegacyUsageBuckets(ctx, control, options)
 	if err != nil {
 		return 0, err
@@ -696,6 +703,11 @@ func verifyOpenDatabases(ctx context.Context, control, usage, telemetry *sql.DB,
 		return report, err
 	}
 	for key, expected := range legacyBuckets {
+		// Independent windows deliberately do not inherit legacy aligned usage.
+		// Their counts cannot be compared with calendar buckets rebuilt from logs.
+		if independentDuration(key.Window) > 0 {
+			continue
+		}
 		var requests, tokens, costMicro int64
 		if err := usage.QueryRowContext(ctx, `
 			SELECT requests, tokens, cost_micro

@@ -36,6 +36,7 @@ type RateLimit struct {
 }
 
 type RateLimitStatus struct {
+	State              string    `json:"state,omitempty"`
 	Window             string    `json:"window"`
 	StartsAt           time.Time `json:"starts_at"`
 	ResetsAt           time.Time `json:"resets_at"`

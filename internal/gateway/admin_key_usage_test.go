@@ -23,7 +23,11 @@ func TestListAPIKeysIncludesWindowUsage(t *testing.T) {
 	now := time.Now().UTC()
 	// Old consumption belongs only to the lifetime counter.
 	app.usage.Record(key.ID, 100, 200, 9000, now.Add(-8*24*time.Hour))
-	app.usage.Record(key.ID, 3, 4, 250, now)
+	bindings, err := app.usage.Admit(t.Context(), key.APIKey, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.usage.Record(key.ID, 3, 4, 250, now, bindings)
 	req := httptest.NewRequest(http.MethodGet, "/admin/api-keys", nil)
 	req.Header.Set("Authorization", "Bearer admin")
 	rec := httptest.NewRecorder()

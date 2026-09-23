@@ -37,7 +37,7 @@ ADMIN_TOKEN=replace-with-a-long-random-token
 | `ADDR` | `:8080` | 服务监听地址 |
 | `DB_PATH` | `data/transit-hub.db` | `CONTROL_DB_PATH` 的兼容别名 |
 | `CONTROL_DB_PATH` | `DB_PATH` 的值 | 鉴权、管理员、配置和价格等核心 SQLite 路径；无法打开时服务启动失败 |
-| `USAGE_DB_PATH` | `data/transit-hub-usage.db` | 累计用量和五种固定窗口计数 SQLite 路径；无法写入时以内存计数继续服务 |
+| `USAGE_DB_PATH` | `data/transit-hub-usage.db` | 累计用量和周期计数 SQLite 路径；5h/7d 新窗口必须持久化成功后才能接纳请求 |
 | `TELEMETRY_DB_PATH` | `data/transit-hub-telemetry.db` | 请求日志、设备会话和报表 SQLite 路径；无法写入时丢弃日志但继续服务 |
 | `TELEMETRY_RETENTION` | `720h` | 请求日志和设备会话保留时间 |
 | `CONFIG_DIR` | `configs` | 配置根目录；provider 配置位于 `$CONFIG_DIR/providers` |
@@ -273,7 +273,7 @@ curl -sS -X POST http://localhost:8080/admin/api-keys \
 
 响应里的 `key` 只会返回这一次，请妥善保存。配额字段为 `0` 表示不限额。`allowed_models` 是该 key 可调用的公开模型名白名单，创建和修改时必须至少包含一个公开模型名；已有空白名单 key 不允许调用任何模型。
 
-`rate_limits` 可选，支持 `1h`、`5h`、`1d`、`7d`、`30d` 固定窗口。每个窗口可分别限制 `request_quota`、`token_quota` 和 `cost_quota_micro`；金额以 micro currency 存储，`100000000` 表示 100 个 `CURRENCY` 单位。配置了金额限流的 key 必须先为对应模型配置价格。
+`rate_limits` 可选，支持 `1h`、`5h`、`1d`、`7d`、`30d`。5h/7d 按各 Key 首次接纳请求起算，持续 5/168 小时，到期后下次使用再开窗；其他周期保持原固定窗口规则。旧 5h/7d 周期用量不迁移，累计用量保留。每个窗口可分别限制 `request_quota`、`token_quota` 和 `cost_quota_micro`；金额以 micro currency 存储，`100000000` 表示 100 个 `CURRENCY` 单位。配置了金额限流的 key 必须先为对应模型配置价格。
 
 常用管理命令：
 

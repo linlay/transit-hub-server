@@ -17,7 +17,11 @@
 
 `cost_quota_micro=0` 表示不限。负配额拒绝。PATCH 省略字段不修改，传 `0` 取消限制。
 
-窗口继续使用 `RATE_LIMIT_TIMEZONE`（默认 Asia/Shanghai）：1h 为自然小时，1d 为自然日，7d 为自然周；5h/30d 沿用固定持续时间窗口，不是滑动窗口。跨窗口请求按开始时间归属；日志 `created_at` 仍是完成时间，报表按完成时间统计，与限流窗口的时间口径不同。
+5h 和 7d 为每个 Key 独立的首次使用窗口：请求通过鉴权、权限、价格、并发和额度检查，准备发送上游时启动，分别持续 5 小时和 168 小时。到期后等待下一次接纳请求重新开启，空闲不续期。两个周期独立检查，任一耗尽则拒绝；拒绝请求不启动窗口，上游失败不撤销窗口。额度仍为完成后记账的软额度，不预占。
+
+Usage 库新增 `usage_windows(api_key_id, window, window_start, window_end, updated_at)`，主键为 `(api_key_id, window)`；开窗同步事务持久化，失败时新请求返回 503，避免重启后凭空恢复额度。计数继续异步写入 `usage_buckets`，累计用量保存在 `usage_totals`。请求接纳时绑定窗口起点，长请求完成后仍归原窗口。当前架构为单实例，不支持多个进程共享用量库进行额度协调。
+
+上线不继承旧 5h/7d 周期用量，旧桶保留但不参与新窗口统计，累计用量不清空。未开窗时 API 返回 `state: idle`，到期未续期时返回 `state: expired`，两者当前周期用量均为 0；活动窗口返回 `state: active`。idle 的起止时间为 Go 零值，客户端必须按 state 展示“首次使用后开始”。7d 不再按自然周计算。1h、1d、30d 保持原规则，使用 `RATE_LIMIT_TIMEZONE`（默认 Asia/Shanghai）。日志 `created_at` 仍是完成时间；`started_at` 为已接纳请求的接纳时间。
 
 `MAX_CONCURRENT_PER_KEY` 默认 16，必须为正整数；仅限制同时在途请求，不预占金额。计费不补充、修改或限制客户端输出额度；未指定时由上游处理，指定时原样透传。旧价格 JSON 中的 `default_max_output_tokens` 和 `max_output_tokens` 已废弃并忽略，无需迁移数据库。图片 `n` 为 1–10。超额没有固定金额保证，取决于单次费用与并发数。
 

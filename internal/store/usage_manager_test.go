@@ -117,11 +117,16 @@ func TestUsageManagerUpdatesAllFiveWindows(t *testing.T) {
 		}
 	})
 	at := time.Date(2026, 7, 27, 23, 59, 59, 0, time.FixedZone("UTC+8", 8*60*60))
-	manager.Record("key-all-windows", 1, 2, 3, at)
+
 	limits := make([]RateLimit, 0, len(supportedRateLimitWindows))
 	for _, window := range supportedRateLimitWindows {
 		limits = append(limits, RateLimit{Window: window})
 	}
+	bindings, err := manager.Admit(t.Context(), APIKey{ID: "key-all-windows", Status: "active", RateLimits: limits}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.Record("key-all-windows", 1, 2, 3, at, bindings)
 	statuses, err := manager.RateLimitStatuses("key-all-windows", limits, at)
 	if err != nil {
 		t.Fatal(err)

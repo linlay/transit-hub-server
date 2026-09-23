@@ -52,7 +52,7 @@ type usageTotalDelta struct {
 
 // UsageManager keeps the authoritative counters for the running single
 // instance in memory and asynchronously checkpoints deltas to its own SQLite
-// database. Database failures never block request admission.
+// database. Independent window creation is persisted synchronously before admission.
 type UsageManager struct {
 	path string
 	loc  *time.Location
@@ -63,6 +63,7 @@ type UsageManager struct {
 	db            *sql.DB
 	totals        map[string]UsageTotal
 	buckets       map[usageBucketKey]usageBucketValue
+	windows       map[windowKey]usageWindow
 	dirtyTotals   map[string]usageTotalDelta
 	dirtyBuckets  map[usageBucketKey]usageBucketValue
 	pendingEvents int64
@@ -83,6 +84,7 @@ func NewUsageManager(path string, loc *time.Location) (*UsageManager, error) {
 		loc:          loc,
 		totals:       map[string]UsageTotal{},
 		buckets:      map[usageBucketKey]usageBucketValue{},
+		windows:      map[windowKey]usageWindow{},
 		dirtyTotals:  map[string]usageTotalDelta{},
 		dirtyBuckets: map[usageBucketKey]usageBucketValue{},
 		wake:         make(chan struct{}, 1),
@@ -123,7 +125,7 @@ func (u *UsageManager) Bootstrap(keys []APIKey) {
 	u.signalIfNeededLocked()
 }
 
-func (u *UsageManager) Record(apiKeyID string, requestTokens, responseTokens, costMicro int64, at time.Time) {
+func (u *UsageManager) Record(apiKeyID string, requestTokens, responseTokens, costMicro int64, at time.Time, bindings ...WindowBindings) {
 	if apiKeyID == "" {
 		return
 	}
@@ -157,6 +159,16 @@ func (u *UsageManager) Record(apiKeyID string, requestTokens, responseTokens, co
 		start, _, err := rateLimitWindowBounds(window, at, u.loc)
 		if err != nil {
 			continue
+		}
+		if independentDuration(window) > 0 {
+			if len(bindings) == 0 {
+				continue
+			}
+			var ok bool
+			start, ok = bindings[0][window]
+			if !ok {
+				continue
+			}
 		}
 		key := usageBucketKey{APIKeyID: apiKeyID, Window: window, WindowStart: formatTime(start)}
 		value := u.buckets[key]
@@ -206,11 +218,15 @@ func (u *UsageManager) RateLimitStatuses(apiKeyID string, limits []RateLimit, no
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	statuses := make([]RateLimitStatus, 0, len(normalized))
 	u.mu.RLock()
 	defer u.mu.RUnlock()
+	return u.rateLimitStatusesLocked(apiKeyID, normalized, now)
+}
+
+func (u *UsageManager) rateLimitStatusesLocked(apiKeyID string, normalized []RateLimit, now time.Time) ([]RateLimitStatus, error) {
+	statuses := make([]RateLimitStatus, 0, len(normalized))
 	for _, limit := range normalized {
-		start, end, err := rateLimitWindowBounds(limit.Window, now, u.loc)
+		start, end, state, err := u.windowBoundsLocked(apiKeyID, limit.Window, now)
 		if err != nil {
 			return nil, err
 		}
@@ -219,7 +235,11 @@ func (u *UsageManager) RateLimitStatuses(apiKeyID string, limits []RateLimit, no
 			Window:      limit.Window,
 			WindowStart: formatTime(start),
 		}]
+		if state == "idle" || state == "expired" {
+			value = usageBucketValue{}
+		}
 		status := RateLimitStatus{
+			State:          state,
 			Window:         limit.Window,
 			StartsAt:       start,
 			ResetsAt:       end,
@@ -398,8 +418,14 @@ func (u *UsageManager) connect() error {
 		return err
 	}
 
+	persistedWindows, err := loadWindows(db)
+	if err != nil {
+		_ = db.Close()
+		return err
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	u.windows = persistedWindows
 	for id, persisted := range persistedTotals {
 		dirty := u.dirtyTotals[id]
 		persisted.UsedRequests += dirty.Requests
@@ -484,7 +510,21 @@ func (u *UsageManager) signalIfNeededLocked() {
 
 func migrateUsage(db *sql.DB) error {
 	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS usage_totals (
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            name TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS usage_windows (
+            api_key_id TEXT NOT NULL,
+            window TEXT NOT NULL,
+            window_start TEXT NOT NULL,
+            window_end TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (api_key_id, window)
+        );
+        INSERT OR IGNORE INTO schema_migrations(name, applied_at)
+            VALUES ('independent_windows_v1', strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+        CREATE TABLE IF NOT EXISTS usage_totals (
 			api_key_id TEXT PRIMARY KEY,
 			used_requests INTEGER NOT NULL DEFAULT 0,
 			used_tokens INTEGER NOT NULL DEFAULT 0,
@@ -503,10 +543,6 @@ func migrateUsage(db *sql.DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_usage_buckets_window_start
 			ON usage_buckets(window, window_start);
-		CREATE TABLE IF NOT EXISTS schema_migrations (
-			name TEXT PRIMARY KEY,
-			applied_at TEXT NOT NULL
-		);
 	`)
 	if err != nil {
 		return err
@@ -561,8 +597,12 @@ func loadUsage(db *sql.DB, loc *time.Location, now time.Time) (map[string]UsageT
 	}
 	rows, err = db.Query(`
 		SELECT api_key_id, window, window_start, requests, tokens, cost_micro, updated_at
-		FROM usage_buckets
-	`)
+		FROM usage_buckets b
+        WHERE b.window NOT IN ('5h', '7d') OR EXISTS (
+            SELECT 1 FROM usage_windows w
+            WHERE w.api_key_id = b.api_key_id AND w.window = b.window AND w.window_start = b.window_start
+        )
+    `)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -578,7 +618,7 @@ func loadUsage(db *sql.DB, loc *time.Location, now time.Time) (map[string]UsageT
 		if err != nil {
 			return nil, nil, err
 		}
-		if currentStarts[key.Window] != key.WindowStart {
+		if independentDuration(key.Window) == 0 && currentStarts[key.Window] != key.WindowStart {
 			continue
 		}
 		buckets[key] = value
