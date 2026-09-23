@@ -26,10 +26,24 @@ models:
     image:
       endpointPath: /v1/images/generations
   - public: gpt-image-2
-    upstream: gpt-image-2
+    upstream: gpt-image-2-t
     type: image-generation
     pool: primary
     display_name: gpt-image-2
+    image:
+      endpointPath: /v1/images/generations
+  - public: gpt-image-2_5-flare
+    upstream: gpt-image-2.5-flare
+    type: image-generation
+    pool: primary
+    display_name: GPT Image 2.5 Flare
+    image:
+      endpointPath: /v1/images/generations
+  - public: gpt-image-2_5-sunburst
+    upstream: gpt-image-2.5-sunburst
+    type: image-generation
+    pool: primary
+    display_name: GPT Image 2.5 Sunburst
     image:
       endpointPath: /v1/images/generations
   - public: gemini-3_1-flash-image-preview

@@ -4,8 +4,8 @@
 --   DeepSeek: https://api-docs.deepseek.com/zh-cn/quick_start/pricing
 --   MiniMax: https://platform.minimaxi.com/docs/guides/pricing-paygo
 --   Xiaomi MiMo: https://mimo.mi.com/docs/zh-CN/price/pay-as-you-go
--- Default: provider public pay-as-you-go prices. Exception: minimax-m3-openai
--- uses Coding Plan internal preferential pricing at 1/10 (2026-09-23).
+-- These are the provider's public pay-as-you-go list prices. A Token Plan changes
+-- settlement, not the cost-estimation basis used by Transit Hub.
 -- Review provider billing pages before production import; upstream prices can change.
 -- Each provider section records its own review timestamp. Prices can change upstream.
 
@@ -20,10 +20,7 @@ VALUES
   ('price_seed_004', 'openai', 'deepseek-reasoner',          1000000,   20000,   2000000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
 
   -- MiniMax via Transit Hub
-  -- Coding Plan 内部优惠政策：仅 minimax-m3-openai 按官方按量价的 1/10 计价。
-  -- 对应 th-minimax-m3 / th-minimax-m3-vl；非官方降价，Long/Priority/M2 不适用。
-  -- CNY/百万 tokens：输入 2.1 -> 0.21，缓存读取 0.42 -> 0.042，输出 8.4 -> 0.84。
-  ('price_seed_005', 'openai', 'minimax-m3-openai',              210000,   42000,    840000, 'CNY', '2026-07-20T00:00:00Z', '2026-09-23T00:00:00Z'),
+  ('price_seed_005', 'openai', 'minimax-m3-openai',             2100000,  420000,   8400000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
   ('price_seed_006', 'openai', 'minimax-m3-long-openai',        4200000,  840000,  16800000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
   ('price_seed_007', 'openai', 'minimax-m3-priority-openai',    3150000,  630000,  12600000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),
   ('price_seed_008', 'openai', 'minimax-m3-long-priority-openai', 6300000,1260000, 25200000, 'CNY', '2026-07-20T00:00:00Z', '2026-07-20T00:00:00Z'),

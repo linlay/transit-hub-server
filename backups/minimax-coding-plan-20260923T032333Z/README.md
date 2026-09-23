@@ -152,10 +152,6 @@ quota:
 
 ### 3. 导入模型价格
 
-**MiniMax Coding Plan 内部优惠（2026-09-23）**：仅 `openai/minimax-m3-openai`（客户端 `th-minimax-m3` 和 `th-minimax-m3-vl` 共用）采用官方按量价格的 **1/10**。每百万 tokens 的人民币价格为输入 **0.21**、缓存读取 **0.042**、输出 **0.84**；这是内部优惠政策，不是官方按量降价。Long、Priority 和 M2 系列不适用。
-
-新部署的 `scripts/seed_prices.sql` 已包含该优惠。现有部署仅更新此模型时执行 `sqlite3 data/transit-hub.db < scripts/seed_minimax_coding_plan_prices.sql`（自定义 Control 路径需替换）。该脚本使用绝对价格，可重复执行，不会重复打折，保留其他模型及现有 billing 配置；价格按请求读取数据库，无需重启，历史已记账费用不重算。
-
 管理站 `/pricing` 读取 SQLite 中的 `model_prices`，不会从 provider YAML 自动生成。需要为每个对外暴露的 `models[].public` 配置价格；否则成本估算会为 `0`，金额固定窗口限流也无法对该模型生效。
 
 仓库提供了常用模型的初始价格脚本：
@@ -626,4 +622,4 @@ make tidy
 
 支持 `1 元 = 100 Credits`，内部金额使用整数微元（1 Credit = 10,000 micro）。管理员可配置 Key 生命周期总额度和自然小时等固定窗口额度；请求完成后扣费，允许在途请求造成少量超额，不预占余额。
 
-完整模型价格、三个 SQLite 数据库升级、失败计费规则及 Desktop 接入字段见 [Credits 与 Desktop API 契约](docs/credits-api.md)。运行时要求 `CURRENCY=CNY`；`MAX_CONCURRENT_PER_KEY` 默认 16。模型价格支持 token、缓存读写、按张图片规则和显式免费。
+完整模型价格、三个 SQLite 数据库升级、失败计费规则及 Desktop 接入字段见 [Credits 与 Desktop API 契约](docs/credits-api.md)。运行时要求 `CURRENCY=CNY`；`MAX_CONCURRENT_PER_KEY` 默认 4。模型价格支持 token、缓存读写、按张图片规则和显式免费。

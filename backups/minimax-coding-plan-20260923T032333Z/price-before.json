@@ -1,0 +1,13 @@
+[
+  {
+    "id": "price_seed_005",
+    "protocol": "openai",
+    "public_model": "minimax-m3-openai",
+    "input_cost_micro_per_1m": 2100000,
+    "output_cost_micro_per_1m": 8400000,
+    "currency": "CNY",
+    "created_at": "2026-07-20T00:00:00Z",
+    "updated_at": "2026-07-20T00:00:00Z",
+    "input_cache_hit_cost_micro_per_1m": 420000
+  }
+]
