@@ -121,6 +121,7 @@ func (g *Gateway) Handler() http.Handler {
 		r.Post("/auth/logout", g.logout)
 		r.Get("/overview", g.overview)
 		r.Get("/traffic", g.traffic)
+		r.Get("/traffic/analytics", g.trafficAnalytics)
 		r.Get("/logs", g.requestLogs)
 		r.Get("/sessions", g.sessions)
 		r.Post("/api-keys", g.createAPIKey)

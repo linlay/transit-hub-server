@@ -71,12 +71,14 @@ type APIKeyRisk struct {
 }
 
 type TrafficQuery struct {
-	APIKeyID string
-	From     *time.Time
-	To       *time.Time
-	Bucket   string
-	Limit    int
-	Offset   int
+	Filters        TrafficFilters
+	TimezoneOffset int
+	APIKeyID       string
+	From           *time.Time
+	To             *time.Time
+	Bucket         string
+	Limit          int
+	Offset         int
 }
 
 type TrafficBucket struct {
@@ -103,6 +105,7 @@ type TrafficModelUsage struct {
 }
 
 type RequestLogQuery struct {
+	Filters  TrafficFilters
 	APIKeyID string
 	From     *time.Time
 	To       *time.Time

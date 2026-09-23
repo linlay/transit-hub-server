@@ -328,7 +328,10 @@ func (t *Telemetry) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficB
 	case "month":
 		bucketExpr = `substr(created_at, 1, 7)`
 	}
-	where, args := requestLogWhere(query.APIKeyID, query.From, query.To)
+	if query.TimezoneOffset != 0 {
+		bucketExpr = strings.ReplaceAll(bucketExpr, "created_at", fmt.Sprintf("strftime('%%Y-%%m-%%dT%%H:%%M:%%S', created_at, '%+d minutes')", query.TimezoneOffset))
+	}
+	where, args := filteredRequestLogWhere(query.APIKeyID, query.From, query.To, query.Filters)
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT %s AS bucket,
 		       COUNT(*), COUNT(DISTINCT NULLIF(api_key_id, '')),
@@ -441,7 +444,7 @@ func (t *Telemetry) ListRequestLogs(ctx context.Context, query RequestLogQuery) 
 	if offset < 0 {
 		offset = 0
 	}
-	where, args := requestLogWhere(query.APIKeyID, query.From, query.To)
+	where, args := filteredRequestLogWhere(query.APIKeyID, query.From, query.To, query.Filters)
 	var total int64
 	if err := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM request_logs %s`, where), args...).Scan(&total); err != nil {
 		t.markQueryFailure(err)

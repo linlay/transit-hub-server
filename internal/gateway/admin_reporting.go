@@ -155,7 +155,7 @@ func (g *Gateway) apiKeyLogs(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) requestLogs(w http.ResponseWriter, r *http.Request) {
 	limit, offset := pagination(r, 100, 500)
-	from, to, err := parseTimeRange(r)
+	query, err := trafficQueryFromRequest(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -166,8 +166,9 @@ func (g *Gateway) requestLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := g.store.ListRequestLogs(r.Context(), store.RequestLogQuery{
 		APIKeyID: r.URL.Query().Get("api_key_id"),
-		From:     from,
-		To:       to,
+		From:     query.From,
+		To:       query.To,
+		Filters:  query.Filters,
 		Limit:    limit,
 		Offset:   offset,
 	})
@@ -360,12 +361,18 @@ func trafficQueryFromRequest(r *http.Request) (store.TrafficQuery, error) {
 	if err != nil {
 		return store.TrafficQuery{}, err
 	}
-	return store.TrafficQuery{
-		APIKeyID: r.URL.Query().Get("api_key_id"),
-		From:     from,
-		To:       to,
-		Bucket:   r.URL.Query().Get("bucket"),
-	}, nil
+	if from != nil && to != nil && !from.Before(*to) {
+		return store.TrafficQuery{}, errors.New("from must be before to")
+	}
+	filters, offset, err := parseTrafficFilters(r)
+	if err != nil {
+		return store.TrafficQuery{}, err
+	}
+	bucket := r.URL.Query().Get("bucket")
+	if bucket != "" && bucket != "hour" && bucket != "day" && bucket != "month" {
+		return store.TrafficQuery{}, errors.New("invalid bucket")
+	}
+	return store.TrafficQuery{APIKeyID: r.URL.Query().Get("api_key_id"), From: from, To: to, Bucket: bucket, Filters: filters, TimezoneOffset: offset}, nil
 }
 
 func parseTimeRange(r *http.Request) (*time.Time, *time.Time, error) {
