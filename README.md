@@ -622,4 +622,4 @@ make tidy
 
 支持 `1 元 = 100 Credits`，内部金额使用整数微元（1 Credit = 10,000 micro）。管理员可配置 Key 生命周期总额度和自然小时等固定窗口额度；请求完成后扣费，允许在途请求造成少量超额，不预占余额。
 
-完整模型价格、三个 SQLite 数据库升级、失败计费规则及 Desktop 接入字段见 [Credits 与 Desktop API 契约](docs/credits-api.md)。运行时要求 `CURRENCY=CNY`；`MAX_CONCURRENT_PER_KEY` 默认 4。模型价格支持 token、缓存读写、按张图片规则和显式免费。
+完整模型价格、三个 SQLite 数据库升级、失败计费规则及 Desktop 接入字段见 [Credits 与 Desktop API 契约](docs/credits-api.md)。运行时要求 `CURRENCY=CNY`；`MAX_CONCURRENT_PER_KEY` 默认 16。模型价格支持 token、缓存读写、按张图片规则和显式免费。

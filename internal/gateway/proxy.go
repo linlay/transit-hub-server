@@ -131,7 +131,12 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		}
 
 		if !g.beginKeyRequest(key.ID) {
-			writeError(w, http.StatusTooManyRequests, "api key concurrent request limit exhausted")
+			writeJSON(w, http.StatusTooManyRequests, concurrencyLimitErrorResponse{
+				Error:     "api key concurrent request limit exceeded; retry after an active request completes",
+				Code:      "api_key_concurrency_limit_exceeded",
+				Scope:     "api_key",
+				Retryable: true,
+			})
 			return
 		}
 		defer g.endKeyRequest(key.ID)

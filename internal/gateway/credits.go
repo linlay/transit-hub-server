@@ -33,7 +33,7 @@ func (g *Gateway) beginKeyRequest(id string) bool {
 	}
 	limit := g.env.MaxConcurrentPerKey
 	if limit <= 0 {
-		limit = 4
+		limit = 16
 	}
 	if g.concurrent[id] >= limit {
 		return false

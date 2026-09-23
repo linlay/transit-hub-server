@@ -189,7 +189,7 @@ func LoadEnv() (Env, error) {
 		UpstreamTimeout:         getDurationEnv("UPSTREAM_TIMEOUT", 5*time.Minute),
 		CircuitFailureThreshold: getIntEnv("CIRCUIT_FAILURE_THRESHOLD", 3),
 		CircuitCooldown:         getDurationEnv("CIRCUIT_COOLDOWN", 30*time.Second),
-		MaxConcurrentPerKey:     getIntEnv("MAX_CONCURRENT_PER_KEY", 4),
+		MaxConcurrentPerKey:     getIntEnv("MAX_CONCURRENT_PER_KEY", 16),
 		Currency:                getEnv("CURRENCY", "CNY"),
 		RateLimitTimezone:       getEnv("RATE_LIMIT_TIMEZONE", "Asia/Shanghai"),
 	}

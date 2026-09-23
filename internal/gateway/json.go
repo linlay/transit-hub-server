@@ -9,6 +9,13 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
+type concurrencyLimitErrorResponse struct {
+	Error     string `json:"error"`
+	Code      string `json:"code"`
+	Scope     string `json:"scope"`
+	Retryable bool   `json:"retryable"`
+}
+
 type componentErrorResponse struct {
 	Error     string `json:"error"`
 	Component string `json:"component"`

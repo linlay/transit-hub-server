@@ -19,7 +19,7 @@
 
 窗口继续使用 `RATE_LIMIT_TIMEZONE`（默认 Asia/Shanghai）：1h 为自然小时，1d 为自然日，7d 为自然周；5h/30d 沿用固定持续时间窗口，不是滑动窗口。跨窗口请求按开始时间归属；日志 `created_at` 仍是完成时间，报表按完成时间统计，与限流窗口的时间口径不同。
 
-`MAX_CONCURRENT_PER_KEY` 默认 4，必须为正整数；仅限制同时在途请求，不预占金额。计费不补充、修改或限制客户端输出额度；未指定时由上游处理，指定时原样透传。旧价格 JSON 中的 `default_max_output_tokens` 和 `max_output_tokens` 已废弃并忽略，无需迁移数据库。图片 `n` 为 1–10。超额没有固定金额保证，取决于单次费用与并发数。
+`MAX_CONCURRENT_PER_KEY` 默认 16，必须为正整数；仅限制同时在途请求，不预占金额。计费不补充、修改或限制客户端输出额度；未指定时由上游处理，指定时原样透传。旧价格 JSON 中的 `default_max_output_tokens` 和 `max_output_tokens` 已废弃并忽略，无需迁移数据库。图片 `n` 为 1–10。超额没有固定金额保证，取决于单次费用与并发数。
 
 用量库异常时维持单实例内存计数并在恢复后补写；异常退出可能丢失尚未落盘用量。禁止多个独立实例共同执行同一 Key 的预算。日志为尽力记录，可丢弃、定期清理，不能用日志 SUM 重建权威余额。
 
@@ -179,3 +179,9 @@ GET `/admin/logs`、`/admin/api-keys/{id}/logs`、`/api/me/logs` 新增：
 拆分/回迁工具保留新日志字段和累计金额。回迁工具在旧控制库 api_keys 写入 used_cost_micro 快照供再次拆分使用，运行时不维护该副本；运行时权威金额仍在 usage 库。
 
 升级前备份三个数据库。先发布 Server，再发布 Website，Desktop 后续按本契约接入。检查 CNY 价格、显式免费和图片计费配置后再开放预算 Key。旧客户端可继续访问原路径，但旧 Desktop 的窗口余额相加算法仍需自行升级。
+
+### 并发限制错误
+
+`MAX_CONCURRENT_PER_KEY` 是进程级统一配置，按 API Key 分别计数；同一 Key 的所有模型与代理接口共享上限，不支持单 Key 覆盖，多实例间不共享计数。默认每个 Key 16 个在途请求。
+
+触发时返回 HTTP 429，保留字符串 `error`，新增 `code: "api_key_concurrency_limit_exceeded"`、`scope: "api_key"` 和 `retryable: true`。调用端应优先识别结构化 code，不应将全部 429 归为额度耗尽；等待在途请求完成后退避重试。

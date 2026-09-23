@@ -54,6 +54,13 @@ func TestCreditsConcurrentOverageAndBalanceWithoutTelemetry(t *testing.T) {
 	if rec.Code != 429 {
 		t.Errorf("concurrency: %d", rec.Code)
 	}
+	var concurrencyError concurrencyLimitErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &concurrencyError); err != nil {
+		t.Error(err)
+	}
+	if concurrencyError.Code != "api_key_concurrency_limit_exceeded" || !concurrencyError.Retryable || concurrencyError.Scope != "api_key" || strings.Contains(concurrencyError.Error, "exhausted") {
+		t.Errorf("unexpected concurrency error: %+v", concurrencyError)
+	}
 	close(release)
 	wg.Wait()
 	key, err := db.FindAPIKeyByPlainText(t.Context(), plain)
@@ -185,6 +192,25 @@ func TestSSEUsageAfterSampleLimit(t *testing.T) {
 	result, err := copyResponse(httptest.NewRecorder(), strings.NewReader(body), true)
 	if err != nil || len(result.Sample) != responseSampleLimit || result.Usage.Request != 123 || result.Usage.Response != 456 {
 		t.Fatalf("late SSE usage sample=%d usage=%+v err=%v", len(result.Sample), result.Usage, err)
+	}
+}
+
+func TestDefaultConcurrencyLimitPerKey(t *testing.T) {
+	app := &Gateway{}
+	for i := 0; i < 16; i++ {
+		if !app.beginKeyRequest("a") {
+			t.Fatalf("request %d rejected", i+1)
+		}
+	}
+	if app.beginKeyRequest("a") {
+		t.Fatal("17th request accepted")
+	}
+	if !app.beginKeyRequest("b") {
+		t.Fatal("independent key rejected")
+	}
+	app.endKeyRequest("a")
+	if !app.beginKeyRequest("a") {
+		t.Fatal("released slot unavailable")
 	}
 }
 
