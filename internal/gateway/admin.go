@@ -16,31 +16,33 @@ import (
 )
 
 type apiKeyResponse struct {
-	DeviceBinding      *store.DeviceBinding `json:"device_binding,omitempty"`
-	ID                 string               `json:"id"`
-	Name               string               `json:"name"`
-	Description        string               `json:"description"`
-	KeyPrefix          string               `json:"key_prefix"`
-	Source             string               `json:"source"`
-	IssuerJTI          string               `json:"issuer_jti,omitempty"`
-	IssuerName         string               `json:"issuer_name,omitempty"`
-	Status             string               `json:"status"`
-	ExpiresAt          *time.Time           `json:"expires_at,omitempty"`
-	ForcedExpired      bool                 `json:"forced_expired"`
-	RequestQuota       int64                `json:"request_quota"`
-	TokenQuota         int64                `json:"token_quota"`
-	CostQuotaMicro     int64                `json:"cost_quota_micro"`
-	AllowedModels      []string             `json:"allowed_models"`
-	RateLimits         []store.RateLimit    `json:"rate_limits"`
-	UsedRequests       int64                `json:"used_requests"`
-	UsedTokens         int64                `json:"used_tokens"`
-	UsedCostMicro      int64                `json:"used_cost_micro"`
-	CostRemainingMicro int64                `json:"cost_remaining_micro"`
-	CostUnlimited      bool                 `json:"cost_unlimited"`
-	LastUsedAt         *time.Time           `json:"last_used_at,omitempty"`
-	DeletedAt          *time.Time           `json:"deleted_at,omitempty"`
-	CreatedAt          time.Time            `json:"created_at"`
-	UpdatedAt          time.Time            `json:"updated_at"`
+	DeviceBinding             *store.DeviceBinding    `json:"device_binding,omitempty"`
+	ID                        string                  `json:"id"`
+	Name                      string                  `json:"name"`
+	Description               string                  `json:"description"`
+	KeyPrefix                 string                  `json:"key_prefix"`
+	Source                    string                  `json:"source"`
+	IssuerJTI                 string                  `json:"issuer_jti,omitempty"`
+	IssuerName                string                  `json:"issuer_name,omitempty"`
+	Status                    string                  `json:"status"`
+	ExpiresAt                 *time.Time              `json:"expires_at,omitempty"`
+	ForcedExpired             bool                    `json:"forced_expired"`
+	RequestQuota              int64                   `json:"request_quota"`
+	TokenQuota                int64                   `json:"token_quota"`
+	CostQuotaMicro            int64                   `json:"cost_quota_micro"`
+	AllowedModels             []string                `json:"allowed_models"`
+	RateLimits                []store.RateLimit       `json:"rate_limits"`
+	RateLimitUsage            []store.RateLimitStatus `json:"rate_limit_usage,omitempty"`
+	RateLimitUsageUnavailable bool                    `json:"rate_limit_usage_unavailable,omitempty"`
+	UsedRequests              int64                   `json:"used_requests"`
+	UsedTokens                int64                   `json:"used_tokens"`
+	UsedCostMicro             int64                   `json:"used_cost_micro"`
+	CostRemainingMicro        int64                   `json:"cost_remaining_micro"`
+	CostUnlimited             bool                    `json:"cost_unlimited"`
+	LastUsedAt                *time.Time              `json:"last_used_at,omitempty"`
+	DeletedAt                 *time.Time              `json:"deleted_at,omitempty"`
+	CreatedAt                 time.Time               `json:"created_at"`
+	UpdatedAt                 time.Time               `json:"updated_at"`
 }
 
 type createAPIKeyRequest struct {
@@ -206,8 +208,19 @@ func (g *Gateway) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := make([]apiKeyResponse, 0, len(result.Items))
+	now := time.Now().UTC()
 	for _, key := range result.Items {
 		resp := toAPIKeyResponse(key)
+		if len(key.RateLimits) > 0 {
+			statuses, err := g.store.RateLimitStatuses(r.Context(), key.ID, key.RateLimits, now, g.rateLimitLocation)
+			if err != nil {
+				// Keep key management available when usage cannot be read. Missing
+				// usage is displayed as unknown, never as zero consumption.
+				resp.RateLimitUsageUnavailable = true
+			} else {
+				resp.RateLimitUsage = statuses
+			}
+		}
 		if name, ok := issuerNames[key.IssuerJTI]; ok {
 			resp.IssuerName = name
 		}
