@@ -122,31 +122,7 @@ func prepareBillingRequest(body *parsedProxyBody, price *store.ModelPrice, model
 	if err := json.Unmarshal(body.Body, &raw); err != nil {
 		return 0, err
 	}
-	maximum := price.Billing.MaxOutputTokens
-	if maximum == 0 {
-		maximum = 8192
-	}
-	fallback := price.Billing.DefaultMaxOutputTokens
-	if fallback == 0 {
-		fallback = min(int64(4096), maximum)
-	}
-	found := false
-	for _, name := range []string{"max_tokens", "max_completion_tokens"} {
-		if value, ok := raw[name]; ok {
-			var count int64
-			if json.Unmarshal(value, &count) != nil || count < 1 || count > maximum {
-				return 0, errors.New("output token limit exceeds model maximum or is invalid")
-			}
-			found = true
-		}
-	}
-	if !found {
-		name := "max_tokens"
-		if protocol == "openai" {
-			name = "max_completion_tokens"
-		}
-		raw[name], _ = json.Marshal(fallback)
-	}
+	// Output budgets belong to the client and upstream, not billing.
 	// Ask compatible OpenAI streams for authoritative usage in the final chunk.
 	if protocol == "openai" && body.Envelope.Stream {
 		opts := map[string]json.RawMessage{}

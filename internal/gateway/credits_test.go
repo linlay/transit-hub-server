@@ -163,7 +163,7 @@ func TestCreditsAdminContractAndPricePatch(t *testing.T) {
 	}
 }
 
-func TestImageBillingAndOutputConstraints(t *testing.T) {
+func TestImageBilling(t *testing.T) {
 	price := store.ModelPrice{Billing: store.PriceBilling{Mode: "image", ImagePrices: []store.ImagePrice{{CostMicro: 2000}, {Size: "1024x1024", Quality: "hd", CostMicro: 5000}}}}
 	body, err := parseProxyBody("openai_image_generations", "application/json", []byte(`{"model":"image","size":"1024x1024","quality":"hd","n":2}`))
 	if err != nil {
@@ -176,20 +176,7 @@ func TestImageBillingAndOutputConstraints(t *testing.T) {
 	if cost := imageResponseCost(&price, unit, []byte(`{"data":[{"url":"a"},{"url":"b"}]}`), 200); cost != 10000 {
 		t.Fatalf("image cost=%d", cost)
 	}
-	price.Billing = store.PriceBilling{Mode: "tokens", MaxOutputTokens: 100}
-	body, _ = parseProxyBody("openai_chat_completions", "application/json", []byte(`{"model":"chat","max_tokens":101}`))
-	if _, err := prepareBillingRequest(&body, &price, "chat", "openai"); err == nil {
-		t.Fatal("output cap bypassed")
-	}
-	body, _ = parseProxyBody("openai_chat_completions", "application/json", []byte(`{"model":"chat","stream":true}`))
-	if _, err := prepareBillingRequest(&body, &price, "chat", "openai"); err != nil {
-		t.Fatal(err)
-	}
-	var raw map[string]any
-	json.Unmarshal(body.Body, &raw)
-	if raw["max_completion_tokens"] != float64(100) {
-		t.Fatalf("default limit %s", body.Body)
-	}
+
 }
 
 func TestSSEUsageAfterSampleLimit(t *testing.T) {
@@ -198,5 +185,58 @@ func TestSSEUsageAfterSampleLimit(t *testing.T) {
 	result, err := copyResponse(httptest.NewRecorder(), strings.NewReader(body), true)
 	if err != nil || len(result.Sample) != responseSampleLimit || result.Usage.Request != 123 || result.Usage.Response != 456 {
 		t.Fatalf("late SSE usage sample=%d usage=%+v err=%v", len(result.Sample), result.Usage, err)
+	}
+}
+
+func TestBillingPreservesClientOutputBudget(t *testing.T) {
+	for _, protocol := range []string{"openai", "anthropic"} {
+		for _, billing := range []string{`{"mode":"tokens"}`, `{"mode":"free"}`, `{"mode":"tokens","default_max_output_tokens":4096,"max_output_tokens":8192}`} {
+			for _, budget := range []string{"", `,"max_tokens":65536`, `,"max_completion_tokens":65536`} {
+				for _, stream := range []bool{false, true} {
+					request := `{"model":"chat"` + budget
+					if stream {
+						request += `,"stream":true`
+					}
+					request += `}`
+					t.Run(protocol+"/"+billing+"/"+request, func(t *testing.T) {
+						var price store.ModelPrice
+						if err := json.Unmarshal([]byte(billing), &price.Billing); err != nil {
+							t.Fatal(err)
+						}
+						endpoint := "openai_chat_completions"
+						if protocol == "anthropic" {
+							endpoint = "anthropic_messages"
+						}
+						body, err := parseProxyBody(endpoint, "application/json", []byte(request))
+						if err != nil {
+							t.Fatal(err)
+						}
+						if _, err := prepareBillingRequest(&body, &price, "chat", protocol); err != nil {
+							t.Fatal(err)
+						}
+						var before, after map[string]json.RawMessage
+						if err := json.Unmarshal([]byte(request), &before); err != nil {
+							t.Fatal(err)
+						}
+						if err := json.Unmarshal(body.Body, &after); err != nil {
+							t.Fatal(err)
+						}
+						for _, name := range []string{"max_tokens", "max_completion_tokens"} {
+							if string(before[name]) != string(after[name]) {
+								t.Fatalf("%s changed: %s", name, body.Body)
+							}
+						}
+						if protocol == "openai" && stream {
+							var opts struct {
+								IncludeUsage bool `json:"include_usage"`
+							}
+							if err := json.Unmarshal(after["stream_options"], &opts); err != nil || !opts.IncludeUsage {
+								t.Fatalf("missing stream usage: %s", body.Body)
+							}
+						}
+					})
+				}
+			}
+		}
 	}
 }

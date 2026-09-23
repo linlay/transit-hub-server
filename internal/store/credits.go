@@ -41,23 +41,11 @@ type PriceBilling struct {
 	Mode                     string       `json:"mode"` // tokens, image, free
 	CacheWriteCostMicroPer1M *int64       `json:"cache_write_cost_micro_per_1m_tokens,omitempty"`
 	ImagePrices              []ImagePrice `json:"image_prices,omitempty"`
-	DefaultMaxOutputTokens   int64        `json:"default_max_output_tokens,omitempty"`
-	MaxOutputTokens          int64        `json:"max_output_tokens,omitempty"`
 }
 
 func validateBilling(b PriceBilling, p ModelPriceParams) error {
 	if b.Mode != "tokens" && b.Mode != "image" && b.Mode != "free" {
 		return errors.New("billing.mode must be tokens, image or free")
-	}
-	maximum := b.MaxOutputTokens
-	if maximum == 0 {
-		maximum = 8192
-	}
-	if b.DefaultMaxOutputTokens > maximum {
-		return errors.New("default output tokens exceed maximum")
-	}
-	if b.DefaultMaxOutputTokens > 1_000_000 || b.MaxOutputTokens > 1_000_000 || b.DefaultMaxOutputTokens < 0 || b.MaxOutputTokens < 0 || (b.MaxOutputTokens > 0 && b.DefaultMaxOutputTokens > b.MaxOutputTokens) {
-		return errors.New("invalid output token limits")
 	}
 	for _, cost := range []int64{p.InputCostMicroPer1MTokens, p.OutputCostMicroPer1MTokens} {
 		if cost < 0 || cost > 9_000_000_000_000_000 {
