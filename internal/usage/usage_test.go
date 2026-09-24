@@ -1,6 +1,27 @@
 package usage
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestResponsesStreamUsageSnapshots(t *testing.T) {
+	for _, terminal := range []string{"response.completed", "response.incomplete"} {
+		t.Run(terminal, func(t *testing.T) {
+			event := "event: " + terminal + "\ndata: {\"type\":\"" + terminal + "\",\"response\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":20,\"input_tokens_details\":{\"cached_tokens\":40},\"output_tokens_details\":{\"reasoning_tokens\":10}}}}\n\n"
+			data := "data: {\"type\":\"response.created\",\"response\":{\"usage\":null}}\n\n" + strings.Repeat(event, 2)
+			var c StreamCollector
+			// Deliberately split event names, JSON fields and line delimiters.
+			for start := 0; start < len(data); start += 7 {
+				c.Write([]byte(data[start:min(start+7, len(data))]))
+			}
+			got := c.Finish()
+			if !got.OK || got.Request != 100 || got.Response != 20 || got.CacheHit != 40 {
+				t.Fatalf("usage: %+v", got)
+			}
+		})
+	}
+}
 
 func TestExtractFromJSONIncludesDeepSeekCacheTokens(t *testing.T) {
 	tokens := ExtractFromJSON([]byte(`{

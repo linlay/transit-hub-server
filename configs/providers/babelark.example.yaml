@@ -5,6 +5,7 @@ default_pool: primary
 headers: {}
 endpoints:
   openai_chat_completions: /v1/chat/completions
+  openai_responses: /v1/responses
   openai_embeddings: /v1/embeddings
   openai_image_generations: /v1/images/generations
 models:

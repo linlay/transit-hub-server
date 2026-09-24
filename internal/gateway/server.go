@@ -171,6 +171,7 @@ func (g *Gateway) Handler() http.Handler {
 	r.Get("/v1/models/{model_id}", g.retrieveOpenAIModel)
 	r.Get("/anthropic/v1/models", g.listAnthropicModels)
 	r.Get("/anthropic/v1/models/{model_id}", g.retrieveAnthropicModel)
+	r.Post("/v1/responses", g.proxy("openai", "openai_responses"))
 	r.Post("/v1/chat/completions", g.proxy("openai", "openai_chat_completions"))
 	r.Post("/v1/embeddings", g.proxy("openai", "openai_embeddings"))
 	r.Post("/v1/images/generations", g.proxy("openai", "openai_image_generations"))

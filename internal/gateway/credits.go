@@ -50,7 +50,7 @@ func (g *Gateway) endKeyRequest(id string) {
 	}
 }
 
-func prepareBillingRequest(body *parsedProxyBody, price *store.ModelPrice, modelType, protocol string) (int64, error) {
+func prepareBillingRequest(body *parsedProxyBody, price *store.ModelPrice, modelType, endpointKey string) (int64, error) {
 	if price == nil {
 		return 0, nil
 	}
@@ -127,7 +127,7 @@ func prepareBillingRequest(body *parsedProxyBody, price *store.ModelPrice, model
 	}
 	// Output budgets belong to the client and upstream, not billing.
 	// Ask compatible OpenAI streams for authoritative usage in the final chunk.
-	if protocol == "openai" && body.Envelope.Stream {
+	if endpointKey == "openai_chat_completions" && body.Envelope.Stream {
 		opts := map[string]json.RawMessage{}
 		if value, ok := raw["stream_options"]; ok {
 			if json.Unmarshal(value, &opts) != nil {

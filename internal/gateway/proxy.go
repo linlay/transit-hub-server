@@ -143,7 +143,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			return
 		}
 		defer g.endKeyRequest(key.ID)
-		imageUnit, err := prepareBillingRequest(&parsedBody, modelPrice, route.Type, protocol)
+		imageUnit, err := prepareBillingRequest(&parsedBody, modelPrice, route.Type, endpointKey)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -234,7 +234,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		if result.Usage.OK {
 			observed = observedUsage{RequestTokens: result.Usage.Request, ResponseTokens: result.Usage.Response, CacheHitTokens: result.Usage.CacheHit, CacheMissTokens: result.Usage.CacheMiss, CacheWriteTokens: result.Usage.CacheWrite}
 		}
-		if copyErr != nil && observed.ResponseTokens == 0 && result.Bytes > 0 {
+		if copyErr != nil && observed.ResponseTokens == 0 && result.Bytes > 0 && endpointKey != "openai_responses" {
 			observed.ResponseTokens = usage.EstimateTokens(result.Sample)
 			observed.Estimated = true
 		}
@@ -245,7 +245,10 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			observed.ResponseTokens = 0
 		}
 		imageTokenUsageUnavailable := route.Type == "image-generation" && modelPrice != nil && modelPrice.Billing.Mode == "tokens" && observed.Estimated
-		if imageTokenUsageUnavailable {
+		// Responses may contain encrypted reasoning and repeated output snapshots.
+		// Byte estimates cannot represent their token usage.
+		usageUnavailable := imageTokenUsageUnavailable || (endpointKey == "openai_responses" && observed.Estimated)
+		if usageUnavailable {
 			observed = observedUsage{}
 		}
 		imageCount := responseImageCount(result.Sample)
@@ -282,7 +285,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			CacheMissTokens:  observed.CacheMissTokens,
 			CacheWriteTokens: observed.CacheWriteTokens,
 			ImageCount:       imageCount,
-			UsageUnavailable: imageTokenUsageUnavailable,
+			UsageUnavailable: usageUnavailable,
 			CostMicro:        imageCost,
 			Estimated:        observed.Estimated,
 			ErrorType:        errorType,
@@ -439,7 +442,7 @@ func endpointSupportsRoute(endpointKey string, route provider.Route) bool {
 		modelType = config.ModelTypeChat
 	}
 	switch endpointKey {
-	case "openai_chat_completions", "anthropic_messages":
+	case "openai_chat_completions", "openai_responses", "anthropic_messages":
 		return modelType == config.ModelTypeChat
 	case "openai_embeddings":
 		return modelType == config.ModelTypeEmbedding

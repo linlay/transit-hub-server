@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-Transit Hub 是一个 Go 编写的 LLM API 中转网关。它对外提供 OpenAI 兼容的 `POST /v1/chat/completions`、`POST /v1/embeddings`、`POST /v1/images/generations`、`POST /v1/images/edits`、`POST /v1/images/variations` 和 Anthropic 兼容的 `POST /v1/messages`，对内根据配置文件把公开模型名路由到上游 provider、模型、账号池和账号。
+Transit Hub 是一个 Go 编写的 LLM API 中转网关。它对外提供 OpenAI 兼容的 `POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/embeddings`、`POST /v1/images/generations`、`POST /v1/images/edits`、`POST /v1/images/variations` 和 Anthropic 兼容的 `POST /v1/messages`，对内根据配置文件把公开模型名路由到上游 provider、模型、账号池和账号。
 
 项目核心目标：
 
@@ -77,7 +77,7 @@ configs/
 - `base_url`：上游基础 URL，必须包含 scheme 和 host。
 - `default_pool`：默认账号池；为空时使用第一个 pool。
 - `headers`：provider 级固定请求头。
-- `endpoints`：可选路径覆盖，例如 `openai_chat_completions: /v1/chat/completions`、`openai_embeddings: /v1/embeddings`、`openai_image_generations: /v1/images/generations`、`openai_image_edits: /v1/images/edits`、`openai_image_variations: /v1/images/variations`。
+- `endpoints`：可选路径覆盖，例如 `openai_chat_completions: /v1/chat/completions`、`openai_responses: /v1/responses`、`openai_embeddings: /v1/embeddings`、`openai_image_generations: /v1/images/generations`、`openai_image_edits: /v1/images/edits`、`openai_image_variations: /v1/images/variations`。
 - `models`：公开模型到上游模型的映射；`models[].type` 支持 `chat`、`embedding`、`image-generation`，为空时默认为 `chat`。
 - `models[].image.endpointPath`：仅用于 `/v1/images/generations` 的模型侧路径覆盖，优先级高于 provider 级 `endpoints.openai_image_generations`；不覆盖 edits 或 variations。
 - `pools`：账号池列表，每个 pool 至少一个 account。
@@ -98,7 +98,7 @@ configs/
 - `request_quota = 0` 表示请求数不限。
 - `token_quota = 0` 表示 token 不限。
 - `rate_limits` 支持 `1h`、`5h`、`1d`、`7d`、`30d` 固定窗口，窗口内的请求数、token 和金额额度为 `0` 时表示不限。
-- token 优先读取上游响应里的 `usage`；缺失时按请求和响应字节数粗略估算。
+- token 优先读取上游响应里的 `usage`；一般缺失时按请求和响应字节数粗略估算。Responses 从 JSON 顶层 `usage` 或 SSE 的 `response.usage` 读取；缺失或超过采样上限时不估算、不扣估算金额，token 价格请求标记 unavailable，请求数仍累计。
 
 ## 注意事项
 
@@ -112,6 +112,8 @@ configs/
 - 上游返回 `429` 或 `5xx` 会记为不健康，可能触发账号熔断；冷却后进入 half-open 再试。
 - 添加公开接口或协议时，要同步更新 `internal/gateway/server.go` 路由、`provider.EndpointPath` 的 endpoint key 约定、README 操作示例和相关测试。
 - 修改配置校验或路由逻辑时，至少运行 `go test ./...`。
+
+- `/v1/responses` 复用 openai/chat 模型路由，仅做 POST JSON/SSE 原生透传，不维护会话；不得注入 Chat Completions 的 `stream_options.include_usage`，不得改写加密推理和工具条目。上游错误原样返回。
 
 ## 开发约定
 

@@ -176,7 +176,7 @@ func TestImageBilling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unit, err := prepareBillingRequest(&body, &price, "image-generation", "openai")
+	unit, err := prepareBillingRequest(&body, &price, "image-generation", "openai_image_generations")
 	if err != nil || unit != 5000 {
 		t.Fatalf("unit=%d %v", unit, err)
 	}
@@ -237,7 +237,7 @@ func TestBillingPreservesClientOutputBudget(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						if _, err := prepareBillingRequest(&body, &price, "chat", protocol); err != nil {
+						if _, err := prepareBillingRequest(&body, &price, "chat", endpoint); err != nil {
 							t.Fatal(err)
 						}
 						var before, after map[string]json.RawMessage

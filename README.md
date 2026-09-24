@@ -4,7 +4,7 @@ Transit Hub 是一个 Go 1.26 LLM API 中转网关。它对外提供 OpenAI 兼�
 
 ## 功能
 
-- OpenAI 兼容接口：`POST /v1/chat/completions`、`POST /v1/embeddings`
+- OpenAI 兼容接口：`POST /v1/chat/completions`、`POST /v1/responses`、`POST /v1/embeddings`
 - OpenAI 图片接口：`POST /v1/images/generations`、`POST /v1/images/edits`、`POST /v1/images/variations`
 - Anthropic 兼容接口：`POST /v1/messages`
 - 客户端 API Key 创建、禁用、过期、配额和用量累计
@@ -94,7 +94,7 @@ pools:
 - 真实配置里会包含上游密钥，已被 `.gitignore` 忽略。
 - 账号也可使用 `api_key_env` 从运行环境读取密钥；当 `api_key` 为空时，服务会读取该环境变量。推荐以此方式配置 Token Plan 等不应写入文件的密钥。
 - `protocol` 只能是 `openai` 或 `anthropic`。
-- `endpoints.openai_chat_completions`、`endpoints.openai_embeddings`、`endpoints.openai_image_generations`、`endpoints.openai_image_edits`、`endpoints.openai_image_variations` 和 `endpoints.anthropic_messages` 可用于覆盖上游路径。
+- `endpoints.openai_chat_completions`、`endpoints.openai_responses`、`endpoints.openai_embeddings`、`endpoints.openai_image_generations`、`endpoints.openai_image_edits`、`endpoints.openai_image_variations` 和 `endpoints.anthropic_messages` 可用于覆盖上游路径。
 - `models[].type` 可选，支持 `chat`、`embedding`、`image-generation`，为空时默认为 `chat`。
 - `models[].image.endpointPath` 仅为 `/v1/images/generations` 覆盖上游路径；未配置时使用 provider 级 `openai_image_generations`，再未配置时使用请求路径。edits 和 variations 只使用各自的 provider 级 endpoint 或请求路径。
 - `models[].owned_by`、`models[].display_name`、`models[].created_at` 可选，用于公开模型查询接口；未配置时分别使用 provider 名、公开模型名和 `1970-01-01T00:00:00Z`。
@@ -438,6 +438,28 @@ curl -sS http://localhost:8080/v1/chat/completions \
     ]
   }'
 ```
+
+OpenAI Responses 原生透传（上游必须支持 Responses，模型仍使用 `protocol: openai`、`type: chat`）：
+
+```bash
+curl -sS -N http://localhost:8080/v1/responses \
+  -H "Authorization: Bearer $CLIENT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "example-chat",
+    "input": [{"role":"user","content":"hello"}],
+    "store": false,
+    "stream": true,
+    "include": ["reasoning.encrypted_content"]
+  }'
+```
+
+- `stream:false` 返回上游 JSON；`stream:true` 原样转发 SSE 并 flush。仅改写顶层 `model`、替换上游鉴权，不转换工具、推理或事件格式，不注入 Chat Completions 的 `stream_options.include_usage`。
+- 上游路径默认 `/v1/responses`，可通过 `endpoints.openai_responses` 覆盖。复用现有模型价格、Key 权限、账号池和配额，无需新增协议或数据库迁移。
+- agent-platform 使用本地完整历史和 `store:false`；网关不存储会话，不提供 Responses 查询/删除/取消或 WebSocket 接口，也不执行托管工具。参数按原值转发，不替客户端强制设置 `store`。
+- 账号池仍按权重选号。加密推理在不同上游部署/账号间的兼容性需自行确认，首次接入可固定单账号；上游错误状态及错误体原样返回。
+- JSON 从顶层 `usage`、SSE 从 `response.usage` 提取 token 和缓存用量。缺失或无法解析时不按密文和事件字节数估算 token，不扣估算 Credits；有 token 价格的请求标记 `billing_status: unavailable`，请求数仍计入额度。单条 SSE 数据行超过 8 MiB 或非流式 JSON 超过 8 MiB 采样上限时也可能无法计量，响应仍完整转发。详见 [Credits 契约](docs/credits-api.md)。
+- 管理后台连通性测试和 Playground 仍走 Chat Completions，不能用于判断 Responses 是否可用。
 
 OpenAI 兼容 Embeddings 请求：
 

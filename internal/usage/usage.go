@@ -71,6 +71,9 @@ func ExtractFromSSE(data []byte) Tokens {
 }
 
 func extractFromPayload(payload map[string]any) Tokens {
+	if response, ok := payload["response"].(map[string]any); ok {
+		return extractFromPayload(response)
+	}
 	if message, ok := payload["message"].(map[string]any); ok {
 		return extractFromPayload(message)
 	}
@@ -112,7 +115,10 @@ func extractFromPayload(payload map[string]any) Tokens {
 	if request == 0 && cacheHit+cacheMiss > 0 {
 		request = cacheHit + cacheMiss
 	}
-	if request == 0 && response == 0 && total == 0 && cacheHit == 0 && cacheMiss == 0 {
+	// Explicit zero Responses usage is authoritative, unlike missing usage.
+	_, hasInput := usageMap["input_tokens"].(float64)
+	_, hasOutput := usageMap["output_tokens"].(float64)
+	if request == 0 && response == 0 && total == 0 && cacheHit == 0 && cacheMiss == 0 && !(hasInput && hasOutput) {
 		return Tokens{}
 	}
 	if total > 0 && request == 0 && response == 0 {

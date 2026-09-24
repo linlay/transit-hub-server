@@ -166,6 +166,10 @@ GET `/admin/logs`、`/admin/api-keys/{id}/logs`、`/api/me/logs` 新增：
 
 本地拒绝、连接失败、上游非 2xx 响应不扣 Credits；成功请求按 usage 优先，缺失时按字节粗估。成功流式响应中断时按已观察用量或估算扣费，不因断开全额退款。价格修改不改变已开始请求和历史消费。
 
+Responses `/v1/responses` 复用 openai 模型价格：非流式读取顶层 `usage`，流式读取 `response.usage`，按累计快照更新而非逐事件相加。`input_tokens_details.cached_tokens` 使用缓存价，`output_tokens` 已包含推理 token，不重复加算。显式零输入/输出用量视为已计量。
+
+Responses 缺少可解析用量（含断流、单条 SSE 数据行超过 8 MiB、非流式 JSON 超过 8 MiB 采样上限）时，不按请求密文或重复输出快照的字节数估算：token 和费用记为 0，token 价格的 2xx 请求记录 `billing_status: unavailable`；free 模式保持 free。请求数仍累计，不做后续用量补结算。有权威用量时按已观察用量结算；HTTP 非 2xx 仍不扣 Credits。SSE 的失败/未完成事件原样透传，HTTP 状态保持上游值，网关不把业务失败事件改写为 HTTP 错误。
+
 公共 `/v1/...` 成功响应协议保持兼容。总额度耗尽、窗口耗尽、并发上限为 429；窗口耗尽含 `Retry-After`，总额度耗尽不提供重置时间。价格缺失沿用已有 429 错误；配置全零非 free 为 503；图片规则不合法为 400。不要依赖错误文案解析余额，应查询上述元数据接口。
 
 ## SQLite 与升级
