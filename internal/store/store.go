@@ -44,42 +44,42 @@ type DeviceBinding struct {
 }
 
 type APIKey struct {
-	UsedCostMicro  int64          `json:"used_cost_micro"`
-	DeviceBinding  *DeviceBinding `json:"device_binding,omitempty"`
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	Description    string         `json:"description"`
-	KeyPrefix      string         `json:"key_prefix"`
-	Source         string         `json:"source"`
-	IssuerJTI      string         `json:"issuer_jti,omitempty"`
-	Status         string         `json:"status"`
-	ExpiresAt      *time.Time     `json:"expires_at,omitempty"`
-	ForcedExpired  bool           `json:"forced_expired"`
-	RequestQuota   int64          `json:"request_quota"`
-	TokenQuota     int64          `json:"token_quota"`
-	CostQuotaMicro int64          `json:"cost_quota_micro"`
-	AllowedModels  []string       `json:"allowed_models"`
-	RateLimits     []RateLimit    `json:"rate_limits"`
-	UsedRequests   int64          `json:"used_requests"`
-	UsedTokens     int64          `json:"used_tokens"`
-	LastUsedAt     *time.Time     `json:"last_used_at,omitempty"`
-	DeletedAt      *time.Time     `json:"deleted_at,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	UsedMicrocredits  int64          `json:"used_microcredits,string"`
+	DeviceBinding     *DeviceBinding `json:"device_binding,omitempty"`
+	ID                string         `json:"id"`
+	Name              string         `json:"name"`
+	Description       string         `json:"description"`
+	KeyPrefix         string         `json:"key_prefix"`
+	Source            string         `json:"source"`
+	IssuerJTI         string         `json:"issuer_jti,omitempty"`
+	Status            string         `json:"status"`
+	ExpiresAt         *time.Time     `json:"expires_at,omitempty"`
+	ForcedExpired     bool           `json:"forced_expired"`
+	RequestQuota      int64          `json:"request_quota"`
+	TokenQuota        int64          `json:"token_quota"`
+	QuotaMicrocredits int64          `json:"quota_microcredits,string"`
+	AllowedModels     []string       `json:"allowed_models"`
+	RateLimits        []RateLimit    `json:"rate_limits"`
+	UsedRequests      int64          `json:"used_requests"`
+	UsedTokens        int64          `json:"used_tokens"`
+	LastUsedAt        *time.Time     `json:"last_used_at,omitempty"`
+	DeletedAt         *time.Time     `json:"deleted_at,omitempty"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
 }
 
 type CreateAPIKeyParams struct {
-	Name           string
-	Description    string
-	Prefix         string
-	Source         string
-	IssuerJTI      string
-	ExpiresAt      *time.Time
-	RequestQuota   int64
-	TokenQuota     int64
-	CostQuotaMicro int64
-	AllowedModels  []string
-	RateLimits     []RateLimit
+	Name              string
+	Description       string
+	Prefix            string
+	Source            string
+	IssuerJTI         string
+	ExpiresAt         *time.Time
+	RequestQuota      int64
+	TokenQuota        int64
+	QuotaMicrocredits int64
+	AllowedModels     []string
+	RateLimits        []RateLimit
 }
 
 type CreatedAPIKey struct {
@@ -88,50 +88,50 @@ type CreatedAPIKey struct {
 }
 
 type APIKeyPatch struct {
-	Name             *string
-	Description      *string
-	Status           *string
-	ExpiresAtSet     bool
-	ExpiresAt        *time.Time
-	ForcedExpired    *bool
-	RequestQuota     *int64
-	TokenQuota       *int64
-	CostQuotaMicro   *int64
-	AllowedModelsSet bool
-	AllowedModels    []string
-	RateLimitsSet    bool
-	RateLimits       []RateLimit
+	Name              *string
+	Description       *string
+	Status            *string
+	ExpiresAtSet      bool
+	ExpiresAt         *time.Time
+	ForcedExpired     *bool
+	RequestQuota      *int64
+	TokenQuota        *int64
+	QuotaMicrocredits *int64
+	AllowedModelsSet  bool
+	AllowedModels     []string
+	RateLimitsSet     bool
+	RateLimits        []RateLimit
 }
 
 type RequestLog struct {
-	UsageUnavailable bool // Image token billing must never estimate from base64 bytes.
-	BillingStatus    string
-	PriceSnapshot    string
-	StartedAt        time.Time
-	CacheWriteTokens int64
-	ImageCount       int64
-	APIKeyID         string
-	APIKeyName       string
-	KeyPrefix        string
-	Protocol         string
-	PublicModel      string
-	UpstreamModel    string
-	Provider         string
-	Pool             string
-	Account          string
-	DeviceID         string
-	Source           string
-	StatusCode       int
-	Latency          time.Duration
-	RequestTokens    int64
-	ResponseTokens   int64
-	CacheHitTokens   int64
-	CacheMissTokens  int64
-	CostMicro        int64
-	Estimated        bool
-	ErrorType        string
-	CreatedAt        time.Time
-	ModelPrice       *ModelPrice
+	UsageUnavailable    bool // Image token billing must never estimate from base64 bytes.
+	BillingStatus       string
+	PriceSnapshot       string
+	StartedAt           time.Time
+	CacheWriteTokens    int64
+	ImageCount          int64
+	APIKeyID            string
+	APIKeyName          string
+	KeyPrefix           string
+	Protocol            string
+	PublicModel         string
+	UpstreamModel       string
+	Provider            string
+	Pool                string
+	Account             string
+	DeviceID            string
+	Source              string
+	StatusCode          int
+	Latency             time.Duration
+	RequestTokens       int64
+	ResponseTokens      int64
+	CacheHitTokens      int64
+	CacheMissTokens     int64
+	ChargedMicrocredits int64
+	Estimated           bool
+	ErrorType           string
+	CreatedAt           time.Time
+	ModelPrice          *ModelPrice
 }
 
 func Open(path string) (*Store, error) {
@@ -185,7 +185,7 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 	if strings.TrimSpace(params.Source) == "" {
 		params.Source = "admin"
 	}
-	if params.RequestQuota < 0 || params.TokenQuota < 0 || params.CostQuotaMicro < 0 {
+	if params.RequestQuota < 0 || params.TokenQuota < 0 || params.QuotaMicrocredits < 0 {
 		return CreatedAPIKey{}, errors.New("quotas must be >= 0")
 	}
 	source := strings.ToLower(strings.TrimSpace(params.Source))
@@ -212,22 +212,22 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 	}
 	now := time.Now().UTC()
 	key := APIKey{
-		ID:             newID("key"),
-		Name:           strings.TrimSpace(params.Name),
-		Description:    strings.TrimSpace(params.Description),
-		KeyPrefix:      keyPrefix(plain),
-		Source:         source,
-		IssuerJTI:      strings.TrimSpace(params.IssuerJTI),
-		Status:         "active",
-		ExpiresAt:      params.ExpiresAt,
-		ForcedExpired:  false,
-		RequestQuota:   params.RequestQuota,
-		TokenQuota:     params.TokenQuota,
-		CostQuotaMicro: params.CostQuotaMicro,
-		AllowedModels:  allowedModels,
-		RateLimits:     rateLimits,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                newID("key"),
+		Name:              strings.TrimSpace(params.Name),
+		Description:       strings.TrimSpace(params.Description),
+		KeyPrefix:         keyPrefix(plain),
+		Source:            source,
+		IssuerJTI:         strings.TrimSpace(params.IssuerJTI),
+		Status:            "active",
+		ExpiresAt:         params.ExpiresAt,
+		ForcedExpired:     false,
+		RequestQuota:      params.RequestQuota,
+		TokenQuota:        params.TokenQuota,
+		QuotaMicrocredits: params.QuotaMicrocredits,
+		AllowedModels:     allowedModels,
+		RateLimits:        rateLimits,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 
 	exec := func(query string, args ...any) (sql.Result, error) {
@@ -239,9 +239,9 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 	_, err = exec(`
 		INSERT INTO api_keys (
 			id, key_hash, key_prefix, name, description, source, issuer_jti, status, expires_at, forced_expired,
-			request_quota, token_quota, cost_quota_micro, allowed_models, rate_limits, used_requests, used_tokens, created_at, updated_at
+			request_quota, token_quota, quota_microcredits, allowed_models, rate_limits, used_requests, used_tokens, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
-	`, key.ID, HashKey(plain), key.KeyPrefix, key.Name, key.Description, key.Source, key.IssuerJTI, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, key.CostQuotaMicro, allowedModelsJSON, rateLimitsJSON, formatTime(key.CreatedAt), formatTime(key.UpdatedAt))
+	`, key.ID, HashKey(plain), key.KeyPrefix, key.Name, key.Description, key.Source, key.IssuerJTI, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, key.QuotaMicrocredits, allowedModelsJSON, rateLimitsJSON, formatTime(key.CreatedAt), formatTime(key.UpdatedAt))
 	if err != nil {
 		return CreatedAPIKey{}, err
 	}
@@ -250,7 +250,7 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 
 func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota, cost_quota_micro,
+		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota, quota_microcredits,
 		       allowed_models, rate_limits, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE deleted_at IS NULL
@@ -274,7 +274,7 @@ func (s *Store) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 
 func (s *Store) GetAPIKey(ctx context.Context, id string) (APIKey, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota, cost_quota_micro,
+		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota, quota_microcredits,
 		       allowed_models, rate_limits, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE id = ?
@@ -292,7 +292,7 @@ func (s *Store) GetAPIKey(ctx context.Context, id string) (APIKey, error) {
 
 func (s *Store) FindAPIKeyByPlainText(ctx context.Context, plain string) (APIKey, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota, cost_quota_micro,
+		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota, quota_microcredits,
 		       allowed_models, rate_limits, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
 		WHERE key_hash = ? AND deleted_at IS NULL
@@ -344,11 +344,11 @@ func (s *Store) UpdateAPIKey(ctx context.Context, id string, patch APIKeyPatch) 
 		}
 		key.TokenQuota = *patch.TokenQuota
 	}
-	if patch.CostQuotaMicro != nil {
-		if *patch.CostQuotaMicro < 0 {
-			return APIKey{}, errors.New("cost_quota_micro must be >= 0")
+	if patch.QuotaMicrocredits != nil {
+		if *patch.QuotaMicrocredits < 0 {
+			return APIKey{}, errors.New("quota_microcredits must be >= 0")
 		}
-		key.CostQuotaMicro = *patch.CostQuotaMicro
+		key.QuotaMicrocredits = *patch.QuotaMicrocredits
 	}
 	if patch.AllowedModelsSet {
 		key.AllowedModels = NormalizeAllowedModels(patch.AllowedModels)
@@ -373,9 +373,9 @@ func (s *Store) UpdateAPIKey(ctx context.Context, id string, patch APIKeyPatch) 
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE api_keys
 		SET name = ?, description = ?, status = ?, expires_at = ?, forced_expired = ?,
-		    request_quota = ?, token_quota = ?, cost_quota_micro = ?, allowed_models = ?, rate_limits = ?, updated_at = ?
+		    request_quota = ?, token_quota = ?, quota_microcredits = ?, allowed_models = ?, rate_limits = ?, updated_at = ?
 		WHERE id = ?
-	`, key.Name, key.Description, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, key.CostQuotaMicro, allowedModelsJSON, rateLimitsJSON, formatTime(key.UpdatedAt), key.ID)
+	`, key.Name, key.Description, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, key.QuotaMicrocredits, allowedModelsJSON, rateLimitsJSON, formatTime(key.UpdatedAt), key.ID)
 	if err != nil {
 		return APIKey{}, err
 	}
@@ -392,7 +392,7 @@ func ValidateUsableKey(key APIKey, now time.Time) error {
 	if key.RequestQuota > 0 && key.UsedRequests >= key.RequestQuota {
 		return ErrQuotaExhausted
 	}
-	if key.CostQuotaMicro > 0 && key.UsedCostMicro >= key.CostQuotaMicro {
+	if key.QuotaMicrocredits > 0 && key.UsedMicrocredits >= key.QuotaMicrocredits {
 		return ErrQuotaExhausted
 	}
 	if key.TokenQuota > 0 && key.UsedTokens >= key.TokenQuota {
@@ -465,6 +465,9 @@ func HashKey(raw string) string {
 }
 
 func (s *Store) migrate(ctx context.Context) error {
+	if err := requireNativeCredits(s.db); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `
 		PRAGMA foreign_keys = ON;
 		PRAGMA journal_mode = WAL;
@@ -532,8 +535,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	for _, stmt := range []string{
-		`ALTER TABLE api_keys ADD COLUMN cost_quota_micro INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE jwt_grants ADD COLUMN cost_quota_micro INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE api_keys ADD COLUMN quota_microcredits INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE jwt_grants ADD COLUMN quota_microcredits INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE api_keys ADD COLUMN key_prefix TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE api_keys ADD COLUMN description TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE api_keys ADD COLUMN source TEXT NOT NULL DEFAULT 'admin'`,
@@ -577,10 +580,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			id TEXT PRIMARY KEY,
 			protocol TEXT NOT NULL,
 			public_model TEXT NOT NULL,
-			input_cost_micro_per_1m INTEGER NOT NULL DEFAULT 0,
-			input_cache_hit_cost_micro_per_1m INTEGER,
-			output_cost_micro_per_1m INTEGER NOT NULL DEFAULT 0,
-			currency TEXT NOT NULL DEFAULT 'CNY',
+			input_microcredits_per_1m INTEGER NOT NULL DEFAULT 0,
+			input_cache_hit_microcredits_per_1m INTEGER,
+			output_microcredits_per_1m INTEGER NOT NULL DEFAULT 0,
+			unit TEXT NOT NULL DEFAULT 'CREDITS' CHECK(unit = 'CREDITS'),
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			UNIQUE(protocol, public_model)
@@ -599,81 +602,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `ALTER TABLE model_prices ADD COLUMN billing TEXT NOT NULL DEFAULT '{"mode":"tokens"}'`); err != nil && !isDuplicateColumnError(err) {
 		return err
 	}
-	return s.migrateMicroColumns(ctx, []microColumnMigration{
-		{
-			Table:      "model_prices",
-			OldName:    "input_cost_microusd_per_1m",
-			NewName:    "input_cost_micro_per_1m",
-			Definition: "INTEGER NOT NULL DEFAULT 0",
-		},
-		{
-			Table:      "model_prices",
-			OldName:    "input_cache_hit_cost_microusd_per_1m",
-			NewName:    "input_cache_hit_cost_micro_per_1m",
-			Definition: "INTEGER",
-		},
-		{
-			Table:      "model_prices",
-			OldName:    "output_cost_microusd_per_1m",
-			NewName:    "output_cost_micro_per_1m",
-			Definition: "INTEGER NOT NULL DEFAULT 0",
-		},
-	})
-}
-
-type microColumnMigration struct {
-	Table      string
-	OldName    string
-	NewName    string
-	Definition string
-}
-
-func (s *Store) migrateMicroColumns(ctx context.Context, migrations []microColumnMigration) error {
-	for _, migration := range migrations {
-		if err := s.migrateMicroColumn(ctx, migration); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Store) migrateMicroColumn(ctx context.Context, migration microColumnMigration) error {
-	columns, err := s.tableColumns(ctx, migration.Table)
-	if err != nil {
-		return err
-	}
-	_, hasOld := columns[migration.OldName]
-	_, hasNew := columns[migration.NewName]
-	switch {
-	case hasOld && hasNew:
-		_, err = s.db.ExecContext(ctx, fmt.Sprintf(
-			`UPDATE %s SET %s = COALESCE(NULLIF(%s, 0), %s, %s)`,
-			sqliteIdentifier(migration.Table),
-			sqliteIdentifier(migration.NewName),
-			sqliteIdentifier(migration.NewName),
-			sqliteIdentifier(migration.OldName),
-			sqliteIdentifier(migration.NewName),
-		))
-		return err
-	case hasOld:
-		_, err = s.db.ExecContext(ctx, fmt.Sprintf(
-			`ALTER TABLE %s RENAME COLUMN %s TO %s`,
-			sqliteIdentifier(migration.Table),
-			sqliteIdentifier(migration.OldName),
-			sqliteIdentifier(migration.NewName),
-		))
-		return err
-	case !hasNew:
-		_, err = s.db.ExecContext(ctx, fmt.Sprintf(
-			`ALTER TABLE %s ADD COLUMN %s %s`,
-			sqliteIdentifier(migration.Table),
-			sqliteIdentifier(migration.NewName),
-			migration.Definition,
-		))
-		return err
-	default:
-		return nil
-	}
+	return markNativeCredits(s.db)
 }
 
 func (s *Store) tableColumns(ctx context.Context, table string) (map[string]struct{}, error) {
@@ -727,7 +656,7 @@ func scanAPIKey(scanner apiKeyScanner) (APIKey, error) {
 		&forcedExpired,
 		&key.RequestQuota,
 		&key.TokenQuota,
-		&key.CostQuotaMicro,
+		&key.QuotaMicrocredits,
 		&allowedModels,
 		&rateLimits,
 		&key.UsedRequests,

@@ -14,36 +14,36 @@ import (
 )
 
 type jwtGrantResponse struct {
-	JTI            string            `json:"jti"`
-	Name           string            `json:"name"`
-	Description    string            `json:"description"`
-	Status         string            `json:"status"`
-	IssueQuota     int64             `json:"issue_quota"`
-	IssuedCount    int64             `json:"issued_count"`
-	IssueRemaining int64             `json:"issue_remaining"`
-	IssueUnlimited bool              `json:"issue_unlimited"`
-	RequestQuota   int64             `json:"request_quota"`
-	TokenQuota     int64             `json:"token_quota"`
-	CostQuotaMicro int64             `json:"cost_quota_micro"`
-	AllowedModels  []string          `json:"allowed_models"`
-	RateLimits     []store.RateLimit `json:"rate_limits"`
-	JWT            string            `json:"jwt,omitempty"`
-	ExpiresAt      *time.Time        `json:"expires_at,omitempty"`
-	LastIssuedAt   *time.Time        `json:"last_issued_at,omitempty"`
-	CreatedAt      time.Time         `json:"created_at"`
-	UpdatedAt      time.Time         `json:"updated_at"`
+	JTI               string            `json:"jti"`
+	Name              string            `json:"name"`
+	Description       string            `json:"description"`
+	Status            string            `json:"status"`
+	IssueQuota        int64             `json:"issue_quota"`
+	IssuedCount       int64             `json:"issued_count"`
+	IssueRemaining    int64             `json:"issue_remaining"`
+	IssueUnlimited    bool              `json:"issue_unlimited"`
+	RequestQuota      int64             `json:"request_quota"`
+	TokenQuota        int64             `json:"token_quota"`
+	QuotaMicrocredits int64             `json:"quota_microcredits,string"`
+	AllowedModels     []string          `json:"allowed_models"`
+	RateLimits        []store.RateLimit `json:"rate_limits"`
+	JWT               string            `json:"jwt,omitempty"`
+	ExpiresAt         *time.Time        `json:"expires_at,omitempty"`
+	LastIssuedAt      *time.Time        `json:"last_issued_at,omitempty"`
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
 }
 
 type createJWTGrantRequest struct {
-	Name           string            `json:"name"`
-	Description    string            `json:"description"`
-	IssueQuota     int64             `json:"issue_quota"`
-	RequestQuota   *int64            `json:"request_quota"`
-	TokenQuota     *int64            `json:"token_quota"`
-	CostQuotaMicro *int64            `json:"cost_quota_micro"`
-	AllowedModels  []string          `json:"allowed_models"`
-	RateLimits     []store.RateLimit `json:"rate_limits"`
-	ExpiresAt      *time.Time        `json:"expires_at"`
+	Name              string            `json:"name"`
+	Description       string            `json:"description"`
+	IssueQuota        int64             `json:"issue_quota"`
+	RequestQuota      *int64            `json:"request_quota"`
+	TokenQuota        *int64            `json:"token_quota"`
+	QuotaMicrocredits *int64            `json:"quota_microcredits,string"`
+	AllowedModels     []string          `json:"allowed_models"`
+	RateLimits        []store.RateLimit `json:"rate_limits"`
+	ExpiresAt         *time.Time        `json:"expires_at"`
 }
 
 type createJWTGrantResponse struct {
@@ -52,15 +52,15 @@ type createJWTGrantResponse struct {
 }
 
 type patchJWTGrantRequest struct {
-	Name           *string                `json:"name"`
-	Description    *string                `json:"description"`
-	Status         *string                `json:"status"`
-	IssueQuota     *int64                 `json:"issue_quota"`
-	RequestQuota   *int64                 `json:"request_quota"`
-	TokenQuota     *int64                 `json:"token_quota"`
-	CostQuotaMicro *int64                 `json:"cost_quota_micro"`
-	AllowedModels  optionalStringSlice    `json:"allowed_models"`
-	RateLimits     optionalRateLimitSlice `json:"rate_limits"`
+	Name              *string                `json:"name"`
+	Description       *string                `json:"description"`
+	Status            *string                `json:"status"`
+	IssueQuota        *int64                 `json:"issue_quota"`
+	RequestQuota      *int64                 `json:"request_quota"`
+	TokenQuota        *int64                 `json:"token_quota"`
+	QuotaMicrocredits *int64                 `json:"quota_microcredits,string"`
+	AllowedModels     optionalStringSlice    `json:"allowed_models"`
+	RateLimits        optionalRateLimitSlice `json:"rate_limits"`
 }
 
 type applyAPIKeyRequest struct {
@@ -74,7 +74,7 @@ func (g *Gateway) createJWTGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req createJWTGrantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeBillingJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -97,9 +97,9 @@ func (g *Gateway) createJWTGrant(w http.ResponseWriter, r *http.Request) {
 	if req.TokenQuota != nil {
 		tokenQuota = *req.TokenQuota
 	}
-	costQuota := svc.DefaultAPIKeyCostQuotaMicro()
-	if req.CostQuotaMicro != nil {
-		costQuota = *req.CostQuotaMicro
+	costQuota := svc.DefaultAPIKeyQuotaMicrocredits()
+	if req.QuotaMicrocredits != nil {
+		costQuota = *req.QuotaMicrocredits
 	}
 	jti := store.GenerateJTI()
 	jwt, err := svc.SignGrant(jti, *expiresAt, now)
@@ -108,17 +108,17 @@ func (g *Gateway) createJWTGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	grant, err := g.store.CreateJWTGrant(r.Context(), store.CreateJWTGrantParams{
-		JTI:            jti,
-		Name:           req.Name,
-		Description:    req.Description,
-		IssueQuota:     req.IssueQuota,
-		RequestQuota:   requestQuota,
-		TokenQuota:     tokenQuota,
-		CostQuotaMicro: costQuota,
-		AllowedModels:  allowedModels,
-		RateLimits:     req.RateLimits,
-		JWT:            jwt,
-		ExpiresAt:      expiresAt,
+		JTI:               jti,
+		Name:              req.Name,
+		Description:       req.Description,
+		IssueQuota:        req.IssueQuota,
+		RequestQuota:      requestQuota,
+		TokenQuota:        tokenQuota,
+		QuotaMicrocredits: costQuota,
+		AllowedModels:     allowedModels,
+		RateLimits:        req.RateLimits,
+		JWT:               jwt,
+		ExpiresAt:         expiresAt,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -169,7 +169,7 @@ func (g *Gateway) getJWTGrant(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) patchJWTGrant(w http.ResponseWriter, r *http.Request) {
 	var req patchJWTGrantRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeBillingJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -183,17 +183,17 @@ func (g *Gateway) patchJWTGrant(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	grant, err := g.store.UpdateJWTGrant(r.Context(), chi.URLParam(r, "jti"), store.JWTGrantPatch{
-		Name:             req.Name,
-		Description:      req.Description,
-		Status:           req.Status,
-		IssueQuota:       req.IssueQuota,
-		RequestQuota:     req.RequestQuota,
-		TokenQuota:       req.TokenQuota,
-		CostQuotaMicro:   req.CostQuotaMicro,
-		AllowedModelsSet: req.AllowedModels.Set,
-		AllowedModels:    allowedModels,
-		RateLimitsSet:    req.RateLimits.Set,
-		RateLimits:       req.RateLimits.Value,
+		Name:              req.Name,
+		Description:       req.Description,
+		Status:            req.Status,
+		IssueQuota:        req.IssueQuota,
+		RequestQuota:      req.RequestQuota,
+		TokenQuota:        req.TokenQuota,
+		QuotaMicrocredits: req.QuotaMicrocredits,
+		AllowedModelsSet:  req.AllowedModels.Set,
+		AllowedModels:     allowedModels,
+		RateLimitsSet:     req.RateLimits.Set,
+		RateLimits:        req.RateLimits.Value,
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "jwt grant not found")
@@ -285,23 +285,23 @@ func toJWTGrantResponse(grant store.JWTGrant, includeJWT bool) jwtGrantResponse 
 		}
 	}
 	response := jwtGrantResponse{
-		JTI:            grant.JTI,
-		Name:           grant.Name,
-		Description:    grant.Description,
-		Status:         grant.Status,
-		IssueQuota:     grant.IssueQuota,
-		IssuedCount:    grant.IssuedCount,
-		IssueRemaining: remaining,
-		IssueUnlimited: unlimited,
-		RequestQuota:   grant.RequestQuota,
-		TokenQuota:     grant.TokenQuota,
-		CostQuotaMicro: grant.CostQuotaMicro,
-		AllowedModels:  grant.AllowedModels,
-		RateLimits:     grant.RateLimits,
-		ExpiresAt:      grant.ExpiresAt,
-		LastIssuedAt:   grant.LastIssuedAt,
-		CreatedAt:      grant.CreatedAt,
-		UpdatedAt:      grant.UpdatedAt,
+		JTI:               grant.JTI,
+		Name:              grant.Name,
+		Description:       grant.Description,
+		Status:            grant.Status,
+		IssueQuota:        grant.IssueQuota,
+		IssuedCount:       grant.IssuedCount,
+		IssueRemaining:    remaining,
+		IssueUnlimited:    unlimited,
+		RequestQuota:      grant.RequestQuota,
+		TokenQuota:        grant.TokenQuota,
+		QuotaMicrocredits: grant.QuotaMicrocredits,
+		AllowedModels:     grant.AllowedModels,
+		RateLimits:        grant.RateLimits,
+		ExpiresAt:         grant.ExpiresAt,
+		LastIssuedAt:      grant.LastIssuedAt,
+		CreatedAt:         grant.CreatedAt,
+		UpdatedAt:         grant.UpdatedAt,
 	}
 	if includeJWT {
 		response.JWT = grant.JWT

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -23,15 +24,15 @@ func TestControlStoreKeepsTelemetryTablesOutOfRuntimeSchema(t *testing.T) {
 	}
 	priceColumns := testColumns(t, store.db, "model_prices")
 	for _, column := range []string{
-		"input_cost_micro_per_1m",
-		"input_cache_hit_cost_micro_per_1m",
-		"output_cost_micro_per_1m",
+		"input_microcredits_per_1m",
+		"input_cache_hit_microcredits_per_1m",
+		"output_microcredits_per_1m",
 	} {
 		assertHasColumn(t, priceColumns, column)
 	}
 }
 
-func TestMigrateLegacyModelPriceColumnsPreservesData(t *testing.T) {
+func TestLegacyModelPriceColumnsRequireExplicitMigration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 	raw := openRawTestDB(t, path)
 	execTestSQL(t, raw, `
@@ -39,17 +40,17 @@ func TestMigrateLegacyModelPriceColumnsPreservesData(t *testing.T) {
 			id TEXT PRIMARY KEY,
 			protocol TEXT NOT NULL,
 			public_model TEXT NOT NULL,
-			input_cost_microusd_per_1m INTEGER NOT NULL DEFAULT 0,
-			input_cache_hit_cost_microusd_per_1m INTEGER,
-			output_cost_microusd_per_1m INTEGER NOT NULL DEFAULT 0,
+			input_microcreditsusd_per_1m INTEGER NOT NULL DEFAULT 0,
+			input_cache_hit_microcreditsusd_per_1m INTEGER,
+			output_microcreditsusd_per_1m INTEGER NOT NULL DEFAULT 0,
 			currency TEXT NOT NULL DEFAULT 'USD',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			UNIQUE(protocol, public_model)
 		);
 		INSERT INTO model_prices (
-			id, protocol, public_model, input_cost_microusd_per_1m,
-			input_cache_hit_cost_microusd_per_1m, output_cost_microusd_per_1m,
+			id, protocol, public_model, input_microcreditsusd_per_1m,
+			input_cache_hit_microcreditsusd_per_1m, output_microcreditsusd_per_1m,
 			currency, created_at, updated_at
 		) VALUES (
 			'price_legacy', 'openai', 'legacy-model', 1000000, 25000, 2000000,
@@ -58,21 +59,10 @@ func TestMigrateLegacyModelPriceColumnsPreservesData(t *testing.T) {
 	`)
 	closeRawTestDB(t, raw)
 
-	store := openTestStore(t, path)
-	defer closeTestStore(t, store)
-	price, ok, err := store.GetModelPrice(t.Context(), "openai", "legacy-model")
-	if err != nil {
-		t.Fatal(err)
+	if _, err := OpenControl(path); !errors.Is(err, ErrLegacyBilling) {
+		t.Fatalf("legacy billing must require explicit migration: %v", err)
 	}
-	if !ok {
-		t.Fatal("legacy model price not found")
-	}
-	if price.InputCostMicroPer1MTokens != 1_000_000 || price.OutputCostMicroPer1MTokens != 2_000_000 {
-		t.Fatalf("unexpected migrated price: %#v", price)
-	}
-	if price.InputCacheHitCostMicroPer1MTokens == nil || *price.InputCacheHitCostMicroPer1MTokens != 25_000 {
-		t.Fatalf("unexpected migrated cache price: %#v", price.InputCacheHitCostMicroPer1MTokens)
-	}
+
 }
 
 func TestUsageAndTelemetrySchemasAreIndependent(t *testing.T) {
@@ -97,11 +87,11 @@ func TestUsageAndTelemetrySchemasAreIndependent(t *testing.T) {
 	})
 
 	usageColumns := testColumns(t, usage.db, "usage_buckets")
-	for _, column := range []string{"api_key_id", "window", "window_start", "requests", "tokens", "cost_micro"} {
+	for _, column := range []string{"api_key_id", "window", "window_start", "requests", "tokens", "charged_microcredits"} {
 		assertHasColumn(t, usageColumns, column)
 	}
 	telemetryColumns := testColumns(t, mustTelemetryDB(t, telemetry), "request_logs")
-	for _, column := range []string{"api_key_id", "api_key_name", "key_prefix", "cost_micro", "created_at"} {
+	for _, column := range []string{"api_key_id", "api_key_name", "key_prefix", "charged_microcredits", "created_at"} {
 		assertHasColumn(t, telemetryColumns, column)
 	}
 	var foreignKeys int

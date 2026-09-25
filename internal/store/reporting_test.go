@@ -34,7 +34,7 @@ func TestTrafficSupportsMonthBuckets(t *testing.T) {
 	if jan.CacheHitTokens != 5 || jan.CacheMissTokens != 8 || jan.CacheTotalTokens != 13 {
 		t.Fatalf("unexpected January cache totals: %#v", jan)
 	}
-	if jan.CostMicro != 333 || jan.ErrorRequests != 1 {
+	if jan.ChargedMicrocredits != 333 || jan.ErrorRequests != 1 {
 		t.Fatalf("unexpected January cost/error totals: %#v", jan)
 	}
 	if len(jan.Models) != 1 || jan.Models[0].Model != "public-model" || jan.Models[0].Requests != 2 || jan.Models[0].TotalTokens != 43 {
@@ -45,7 +45,7 @@ func TestTrafficSupportsMonthBuckets(t *testing.T) {
 	}
 
 	feb := traffic[1]
-	if feb.Bucket != "2026-02" || feb.Requests != 1 || feb.TotalTokens != 10 || feb.CostMicro != 333 || feb.ErrorRequests != 0 {
+	if feb.Bucket != "2026-02" || feb.Requests != 1 || feb.TotalTokens != 10 || feb.ChargedMicrocredits != 333 || feb.ErrorRequests != 0 {
 		t.Fatalf("unexpected February traffic totals: %#v", feb)
 	}
 }
@@ -190,32 +190,32 @@ func openReportingStores(t *testing.T) (*Store, *Telemetry) {
 	return control, telemetry
 }
 
-func enqueueRequestLogForReportingTest(t *testing.T, telemetry *Telemetry, key APIKey, createdAt time.Time, statusCode int, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens, costMicro int64, errorType string) {
+func enqueueRequestLogForReportingTest(t *testing.T, telemetry *Telemetry, key APIKey, createdAt time.Time, statusCode int, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens, chargedMicrocredits int64, errorType string) {
 	t.Helper()
-	enqueueRequestLogForModelReportingTest(t, telemetry, key, "public-model", createdAt, statusCode, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens, costMicro, errorType)
+	enqueueRequestLogForModelReportingTest(t, telemetry, key, "public-model", createdAt, statusCode, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens, chargedMicrocredits, errorType)
 }
 
-func enqueueRequestLogForModelReportingTest(t *testing.T, telemetry *Telemetry, key APIKey, publicModel string, createdAt time.Time, statusCode int, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens, costMicro int64, errorType string) {
+func enqueueRequestLogForModelReportingTest(t *testing.T, telemetry *Telemetry, key APIKey, publicModel string, createdAt time.Time, statusCode int, requestTokens, responseTokens, cacheHitTokens, cacheMissTokens, chargedMicrocredits int64, errorType string) {
 	t.Helper()
 	if !telemetry.Enqueue(RequestLog{
-		APIKeyID:        key.ID,
-		APIKeyName:      key.Name,
-		KeyPrefix:       key.KeyPrefix,
-		Protocol:        "openai",
-		PublicModel:     publicModel,
-		UpstreamModel:   "upstream-model",
-		Provider:        "provider-a",
-		Pool:            "default",
-		Account:         "acct",
-		StatusCode:      statusCode,
-		Latency:         10 * time.Millisecond,
-		RequestTokens:   requestTokens,
-		ResponseTokens:  responseTokens,
-		CacheHitTokens:  cacheHitTokens,
-		CacheMissTokens: cacheMissTokens,
-		CostMicro:       costMicro,
-		ErrorType:       errorType,
-		CreatedAt:       createdAt,
+		APIKeyID:            key.ID,
+		APIKeyName:          key.Name,
+		KeyPrefix:           key.KeyPrefix,
+		Protocol:            "openai",
+		PublicModel:         publicModel,
+		UpstreamModel:       "upstream-model",
+		Provider:            "provider-a",
+		Pool:                "default",
+		Account:             "acct",
+		StatusCode:          statusCode,
+		Latency:             10 * time.Millisecond,
+		RequestTokens:       requestTokens,
+		ResponseTokens:      responseTokens,
+		CacheHitTokens:      cacheHitTokens,
+		CacheMissTokens:     cacheMissTokens,
+		ChargedMicrocredits: chargedMicrocredits,
+		ErrorType:           errorType,
+		CreatedAt:           createdAt,
 	}) {
 		t.Fatal("telemetry queue unexpectedly full")
 	}

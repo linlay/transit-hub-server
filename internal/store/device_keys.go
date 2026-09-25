@@ -34,7 +34,7 @@ func (s *Store) BindAPIKey(ctx context.Context, svc *accesskey.Service, identity
 	var result CreatedAPIKey
 	if created {
 		expiry := now.Add(svc.TTL)
-		result, err = s.createAPIKeyInTx(ctx, tx, CreateAPIKeyParams{Name: name, Prefix: "dk", Source: "access_token", ExpiresAt: &expiry, AllowedModels: svc.Config.AllowedModels, RequestQuota: svc.Config.RequestQuota, TokenQuota: svc.Config.TokenQuota, CostQuotaMicro: svc.Config.CostQuotaMicro, RateLimits: deviceRateLimits(svc.Config.RateLimits)})
+		result, err = s.createAPIKeyInTx(ctx, tx, CreateAPIKeyParams{Name: name, Prefix: "dk", Source: "access_token", ExpiresAt: &expiry, AllowedModels: svc.Config.AllowedModels, RequestQuota: svc.Config.RequestQuota, TokenQuota: svc.Config.TokenQuota, QuotaMicrocredits: svc.Config.QuotaMicrocredits, RateLimits: deviceRateLimits(svc.Config.RateLimits)})
 		if err != nil {
 			return CreatedAPIKey{}, false, err
 		}
@@ -80,7 +80,7 @@ func (s *Store) BindAPIKey(ctx context.Context, svc *accesskey.Service, identity
 func deviceRateLimits(limits []accesskey.RateLimit) []RateLimit {
 	result := make([]RateLimit, 0, len(limits))
 	for _, l := range limits {
-		result = append(result, RateLimit{Window: l.Window, RequestQuota: l.RequestQuota, TokenQuota: l.TokenQuota, CostQuotaMicro: l.CostQuotaMicro})
+		result = append(result, RateLimit{Window: l.Window, RequestQuota: l.RequestQuota, TokenQuota: l.TokenQuota, QuotaMicrocredits: l.QuotaMicrocredits})
 	}
 	return result
 }

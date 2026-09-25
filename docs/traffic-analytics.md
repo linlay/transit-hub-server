@@ -24,7 +24,7 @@
 
 - `items`：逐时间桶的 `TrafficBucket`，包括按模型的请求数和词元数。
 - `summary`：整个时间范围的聚合。活跃 Key 使用区间去重数量，平均耗时按每次请求平均，不能直接累加或平均每日统计。
-- `models` / `keys`：全部匹配模型和 Key 的排行数据，每行含 `id`、`name`、`requests`、`total_tokens`、`cost_micro`。前端选择排序指标。
+- `models` / `keys`：全部匹配模型和 Key 的排行数据，每行含 `id`、`name`、`requests`、`total_tokens`、`charged_microcredits`。前端选择排序指标。
 - `options.keys` / `options.models` / `options.providers`：来自保留日志的历史筛选选项，不随当前筛选收缩，因此历史已删除的 Key 和模型仍可分析。
 
 `GET /admin/traffic` 同步支持这些过滤参数。`GET /admin/logs` 支持同样过滤参数，并继续使用 `limit`、`offset` 分页，返回匹配条件的 `total`。
@@ -35,7 +35,7 @@ Traffic 默认最近 7 个自然日（含今天）、按天、北京时间 UTC+8
 
 图表包括调用趋势、活跃度和花费、模型排行、API Key 排行、词元与缓存、请求质量。选中单个 Key 后隐藏 Key 排行。所有筛选条件保存在页面 URL。
 
-日志在独立弹框中每页显示 50 条，弹框打开期间固定当前统计时间范围；关闭后恢复近期窗口每 30 秒刷新。图表的 Credits 由 `cost_micro / 10000` 换算，汇总显示四舍五入后的整数，不附加单位后缀；日志保留精确小数。
+日志在独立弹框中每页显示 50 条，弹框打开期间固定当前统计时间范围；关闭后恢复近期窗口每 30 秒刷新。图表的 Credits 由 `charged_microcredits / 10000` 换算，汇总显示四舍五入后的整数，不附加单位后缀；日志保留精确小数。
 
 统计基于保留的 telemetry 日志，时间为请求完成时间。日志清理会影响历史统计，不能用于替代 usage 库中的生命周期余额。
 

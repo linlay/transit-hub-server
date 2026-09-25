@@ -24,8 +24,8 @@ func TestCreditsConcurrentOverageAndBalanceWithoutTelemetry(t *testing.T) {
 		w.Write([]byte(`{"usage":{"prompt_tokens":3,"completion_tokens":4}}`))
 	}))
 	defer upstream.Close()
-	app, db, plain := newTestGatewayWithKey(t, []config.ProviderConfig{openAIProvider(upstream.URL)}, store.CreateAPIKeyParams{Name: "credits", CostQuotaMicro: 10, RateLimits: []store.RateLimit{{Window: "1h", CostQuotaMicro: 10}}})
-	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{Protocol: "openai", PublicModel: "public-model", Currency: "CNY", InputCostMicroPer1MTokens: 1_000_000, OutputCostMicroPer1MTokens: 1_000_000}); err != nil {
+	app, db, plain := newTestGatewayWithKey(t, []config.ProviderConfig{openAIProvider(upstream.URL)}, store.CreateAPIKeyParams{Name: "credits", QuotaMicrocredits: 10, RateLimits: []store.RateLimit{{Window: "1h", QuotaMicrocredits: 10}}})
+	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{Protocol: "openai", PublicModel: "public-model", Unit: "CREDITS", InputMicrocreditsPer1MTokens: 1_000_000, OutputMicrocreditsPer1MTokens: 1_000_000}); err != nil {
 		t.Fatal(err)
 	}
 	app.env.MaxConcurrentPerKey = 2
@@ -67,8 +67,8 @@ func TestCreditsConcurrentOverageAndBalanceWithoutTelemetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if key.UsedCostMicro != 14 {
-		t.Fatalf("used=%d", key.UsedCostMicro)
+	if key.UsedMicrocredits != 14 {
+		t.Fatalf("used=%d", key.UsedMicrocredits)
 	}
 	rec = httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, proxyRequest(plain))
@@ -85,7 +85,7 @@ func TestCreditsConcurrentOverageAndBalanceWithoutTelemetry(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &balance); err != nil {
 		t.Fatal(err)
 	}
-	if rec.Code != 200 || balance.UsedCostMicro != 14 || balance.CostRemainingMicro != -4 || balance.Unlimited || balance.BillingVersion != "credits_v1" || len(balance.Items) != 1 || balance.Items[0].CostRemainingMicro != -4 {
+	if rec.Code != 200 || balance.UsedMicrocredits != 14 || balance.RemainingMicrocredits != -4 || balance.Unlimited || balance.Unit != "CREDITS" || balance.MicrocreditsPerCredit != 1_000_000 || len(balance.Items) != 1 || balance.Items[0].RemainingMicrocredits != -4 {
 		t.Fatalf("balance=%+v body=%s", balance, rec.Body)
 	}
 }
@@ -96,20 +96,20 @@ func TestCreditsFailureFreeSnapshotAndStartWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	price := store.ModelPrice{Currency: "CNY", InputCostMicroPer1MTokens: 1_000_000, OutputCostMicroPer1MTokens: 1_000_000, Billing: store.PriceBilling{Mode: "tokens"}}
+	price := store.ModelPrice{Unit: "CREDITS", InputMicrocreditsPer1MTokens: 1_000_000, OutputMicrocreditsPer1MTokens: 1_000_000, Billing: store.PriceBilling{Mode: "tokens"}}
 	start := time.Now().UTC().Truncate(time.Hour).Add(-time.Minute)
 	req := withBillingContext(proxyRequest(plain), start)
 	app.logCompletedRequest(req, key, store.RequestLog{StatusCode: 502, ModelPrice: &price, RequestTokens: 100, Estimated: true})
 	app.logCompletedRequest(req, key, store.RequestLog{StatusCode: 200, ModelPrice: &price, RequestTokens: 3, ResponseTokens: 4})
 	price.Billing.Mode = "free"
 	app.logCompletedRequest(req, key, store.RequestLog{StatusCode: 200, ModelPrice: &price, RequestTokens: 100})
-	if total := app.usage.Total(key.ID); total.UsedCostMicro != 7 {
+	if total := app.usage.Total(key.ID); total.UsedMicrocredits != 7 {
 		t.Fatalf("charged failure/free: %+v", total)
 	}
-	limits := []store.RateLimit{{Window: "1h", CostQuotaMicro: 5}}
+	limits := []store.RateLimit{{Window: "1h", QuotaMicrocredits: 5}}
 	before, _ := app.usage.RateLimitStatuses(key.ID, limits, start)
 	now, _ := app.usage.RateLimitStatuses(key.ID, limits, time.Now().UTC())
-	if before[0].CostMicro != 7 || now[0].CostMicro != 0 {
+	if before[0].ChargedMicrocredits != 7 || now[0].ChargedMicrocredits != 0 {
 		t.Fatalf("wrong window: %+v %+v", before, now)
 	}
 	if err := app.telemetry.Flush(t.Context()); err != nil {
@@ -140,21 +140,21 @@ func TestCreditsAdminContractAndPricePatch(t *testing.T) {
 		app.Handler().ServeHTTP(rec, req)
 		return rec
 	}
-	created := call("POST", "/admin/api-keys", `{"name":"budget","allowed_models":["public-model"],"cost_quota_micro":1000000}`)
+	created := call("POST", "/admin/api-keys", `{"name":"budget","allowed_models":["public-model"],"quota_microcredits":"1000000"}`)
 	var key createAPIKeyResponse
-	if json.Unmarshal(created.Body.Bytes(), &key) != nil || created.Code != 201 || key.CostQuotaMicro != 1000000 {
+	if json.Unmarshal(created.Body.Bytes(), &key) != nil || created.Code != 201 || key.QuotaMicrocredits != 1000000 {
 		t.Fatalf("create %s", created.Body)
 	}
 	changed := call("PATCH", "/admin/api-keys/"+key.ID, `{"name":"renamed"}`)
 	var updated apiKeyResponse
 	json.Unmarshal(changed.Body.Bytes(), &updated)
-	if updated.CostQuotaMicro != 1000000 {
+	if updated.QuotaMicrocredits != 1000000 {
 		t.Fatalf("patch reset quota %s", changed.Body)
 	}
-	if rec := call("PATCH", "/admin/api-keys/"+key.ID, `{"cost_quota_micro":-1}`); rec.Code != 400 {
+	if rec := call("PATCH", "/admin/api-keys/"+key.ID, `{"quota_microcredits":"-1"}`); rec.Code != 400 {
 		t.Fatal("accepted negative quota")
 	}
-	price := call("POST", "/admin/model-prices", `{"protocol":"openai","public_model":"public-model","input_cost_micro_per_1m_tokens":1000000,"output_cost_micro_per_1m_tokens":2000000,"billing":{"mode":"tokens"}}`)
+	price := call("POST", "/admin/model-prices", `{"protocol":"openai","public_model":"public-model","input_microcredits_per_1m_tokens":"1000000","output_microcredits_per_1m_tokens":"2000000","billing":{"mode":"tokens"}}`)
 	var p store.ModelPrice
 	json.Unmarshal(price.Body.Bytes(), &p)
 	if price.Code != 201 {
@@ -162,7 +162,7 @@ func TestCreditsAdminContractAndPricePatch(t *testing.T) {
 	}
 	changed = call("PATCH", "/admin/model-prices/"+p.ID, `{"billing":{"mode":"tokens","max_output_tokens":1024}}`)
 	json.Unmarshal(changed.Body.Bytes(), &p)
-	if changed.Code != 200 || p.InputCostMicroPer1MTokens != 1000000 || p.OutputCostMicroPer1MTokens != 2000000 {
+	if changed.Code != 200 || p.InputMicrocreditsPer1MTokens != 1000000 || p.OutputMicrocreditsPer1MTokens != 2000000 {
 		t.Fatalf("partial price patch %s", changed.Body)
 	}
 	if rec := call("POST", "/admin/model-prices", `{"protocol":"openai","public_model":"zero"}`); rec.Code != 400 {
@@ -171,7 +171,7 @@ func TestCreditsAdminContractAndPricePatch(t *testing.T) {
 }
 
 func TestImageBilling(t *testing.T) {
-	price := store.ModelPrice{Billing: store.PriceBilling{Mode: "image", ImagePrices: []store.ImagePrice{{CostMicro: 2000}, {Size: "1024x1024", Quality: "hd", CostMicro: 5000}}}}
+	price := store.ModelPrice{Billing: store.PriceBilling{Mode: "image", ImagePrices: []store.ImagePrice{{ChargedMicrocredits: 2000}, {Size: "1024x1024", Quality: "hd", ChargedMicrocredits: 5000}}}}
 	body, err := parseProxyBody("openai_image_generations", "application/json", []byte(`{"model":"image","size":"1024x1024","quality":"hd","n":2}`))
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +285,7 @@ func TestImageTokenBillingAndMissingUsage(t *testing.T) {
 			provider.Models[0].Type = "image-generation"
 			app, db, plain := newTestGateway(t, []config.ProviderConfig{provider})
 			hit := int64(8750000)
-			_, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{Protocol: "openai", PublicModel: "public-model", Currency: "CNY", InputCostMicroPer1MTokens: 35000000, InputCacheHitCostMicroPer1MTokens: &hit, OutputCostMicroPer1MTokens: 210000000, Billing: &store.PriceBilling{Mode: "tokens"}})
+			_, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{Protocol: "openai", PublicModel: "public-model", Unit: "CREDITS", InputMicrocreditsPer1MTokens: 35000000, InputCacheHitMicrocreditsPer1MTokens: &hit, OutputMicrocreditsPer1MTokens: 210000000, Billing: &store.PriceBilling{Mode: "tokens"}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -301,8 +301,8 @@ func TestImageTokenBillingAndMissingUsage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if key.UsedCostMicro != tc.cost {
-				t.Fatalf("cost: %d", key.UsedCostMicro)
+			if key.UsedMicrocredits != tc.cost {
+				t.Fatalf("cost: %d", key.UsedMicrocredits)
 			}
 			if err := app.telemetry.Flush(t.Context()); err != nil {
 				t.Fatal(err)
@@ -315,5 +315,29 @@ func TestImageTokenBillingAndMissingUsage(t *testing.T) {
 				t.Fatalf("billing logs: %+v", logs.Items)
 			}
 		})
+	}
+}
+
+func TestNativeCreditsRejectsLegacyFieldsAndPreservesLargeIntegers(t *testing.T) {
+	app, _, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")})
+	for _, body := range []string{
+		`{"allowed_models":["public-model"],"name":"old","cost_quota_micro":1000000}`,
+		`{"allowed_models":["public-model"],"name":"old-window","rate_limits":[{"window":"1h","cost_quota_micro":1000000}]}`,
+		`{"allowed_models":["public-model"],"name":"numeric","quota_microcredits":1000000}`,
+	} {
+		req := httptest.NewRequest("POST", "/admin/api-keys", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer admin")
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		if rec.Code != 400 {
+			t.Fatalf("retired or non-string contract accepted: %d", rec.Code)
+		}
+	}
+	req := httptest.NewRequest("POST", "/admin/api-keys", strings.NewReader(`{"allowed_models":["public-model"],"name":"exact","quota_microcredits":"9007199254740993"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != 201 || !strings.Contains(rec.Body.String(), `"quota_microcredits":"9007199254740993"`) {
+		t.Fatalf("integer precision lost: %d %s", rec.Code, rec.Body.String())
 	}
 }

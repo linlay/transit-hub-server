@@ -28,7 +28,6 @@ func main() {
 	}
 
 	db, err := store.OpenControl(env.ControlDBPath)
-	store.DefaultCurrency = env.Currency
 	if err != nil {
 		logger.Fatalf("open control store: %v", err)
 	}
@@ -39,6 +38,9 @@ func main() {
 		logger.Fatalf("load rate limit timezone: %v", err)
 	}
 	usageManager, usageErr := store.NewUsageManager(env.UsageDBPath, rateLimitLocation)
+	if errors.Is(usageErr, store.ErrLegacyBilling) {
+		logger.Fatal(usageErr)
+	}
 	if usageErr != nil {
 		logger.Printf("usage database unavailable; continuing with in-memory counters: %v", usageErr)
 	}
@@ -48,6 +50,9 @@ func main() {
 		usageManager.Bootstrap(keys)
 	}
 	telemetry, telemetryErr := store.NewTelemetry(env.TelemetryDBPath, env.TelemetryRetention)
+	if errors.Is(telemetryErr, store.ErrLegacyBilling) {
+		logger.Fatal(telemetryErr)
+	}
 	if telemetryErr != nil {
 		logger.Printf("telemetry database unavailable; request logging is degraded: %v", telemetryErr)
 	}

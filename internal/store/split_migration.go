@@ -332,7 +332,7 @@ func openMigrationDatabases(options SplitMigrationOptions) (*sql.DB, *sql.DB, *s
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("open control database: %w", err)
 	}
-	if _, err := control.Exec(`ALTER TABLE api_keys ADD COLUMN used_cost_micro INTEGER NOT NULL DEFAULT 0`); err != nil && !isDuplicateColumnError(err) {
+	if _, err := control.Exec(`ALTER TABLE api_keys ADD COLUMN used_microcredits INTEGER NOT NULL DEFAULT 0`); err != nil && !isDuplicateColumnError(err) {
 		control.Close()
 		return nil, nil, nil, err
 	}
@@ -372,7 +372,7 @@ func openMigrationDatabases(options SplitMigrationOptions) (*sql.DB, *sql.DB, *s
 
 func copyLegacyUsageTotals(ctx context.Context, control, usage *sql.DB) (int64, error) {
 	rows, err := control.QueryContext(ctx, `
-		SELECT id, used_requests, used_tokens, used_cost_micro, last_used_at, updated_at FROM api_keys
+		SELECT id, used_requests, used_tokens, used_microcredits, last_used_at, updated_at FROM api_keys
 	`)
 	if err != nil {
 		return 0, err
@@ -392,12 +392,12 @@ func copyLegacyUsageTotals(ctx context.Context, control, usage *sql.DB) (int64, 
 			return 0, err
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO usage_totals (api_key_id, used_requests, used_tokens, used_cost_micro, last_used_at, updated_at)
+			INSERT INTO usage_totals (api_key_id, used_requests, used_tokens, used_microcredits, last_used_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?)
 			ON CONFLICT(api_key_id) DO UPDATE SET
 				used_requests = excluded.used_requests,
 				used_tokens = excluded.used_tokens,
-				used_cost_micro = MAX(usage_totals.used_cost_micro, excluded.used_cost_micro),
+				used_microcredits = MAX(usage_totals.used_microcredits, excluded.used_microcredits),
 				last_used_at = excluded.last_used_at,
 				updated_at = excluded.updated_at
 		`, id, requests, tokens, cost, nullableString(lastUsedAt), updatedAt); err != nil {
@@ -434,10 +434,10 @@ func aggregateLegacyUsageBuckets(ctx context.Context, control, usage *sql.DB, op
 	for key, value := range buckets {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO usage_buckets (
-				api_key_id, window, window_start, requests, tokens, cost_micro, updated_at
+				api_key_id, window, window_start, requests, tokens, charged_microcredits, updated_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?)
 		`, key.APIKeyID, key.Window, key.WindowStart, value.Requests, value.Tokens,
-			value.CostMicro, formatTime(value.UpdatedAt)); err != nil {
+			value.ChargedMicrocredits, formatTime(value.UpdatedAt)); err != nil {
 			return 0, err
 		}
 	}
@@ -451,7 +451,7 @@ func loadLegacyUsageBuckets(ctx context.Context, control *sql.DB, options SplitM
 	}
 	cutoff := formatTime(options.Now.Add(-options.Retention))
 	rows, err := control.QueryContext(ctx, `
-		SELECT api_key_id, request_tokens, response_tokens, cost_micro, COALESCE(started_at, created_at)
+		SELECT api_key_id, request_tokens, response_tokens, charged_microcredits, COALESCE(started_at, created_at)
 		FROM request_logs
 		WHERE created_at >= ?
 		ORDER BY created_at ASC
@@ -471,8 +471,8 @@ func loadLegacyUsageBuckets(ctx context.Context, control *sql.DB, options SplitM
 	buckets := map[usageBucketKey]usageBucketValue{}
 	for rows.Next() {
 		var apiKeyID, createdAt string
-		var requestTokens, responseTokens, costMicro int64
-		if err := rows.Scan(&apiKeyID, &requestTokens, &responseTokens, &costMicro, &createdAt); err != nil {
+		var requestTokens, responseTokens, chargedMicrocredits int64
+		if err := rows.Scan(&apiKeyID, &requestTokens, &responseTokens, &chargedMicrocredits, &createdAt); err != nil {
 			return nil, err
 		}
 		parsed, err := parseTime(createdAt)
@@ -492,7 +492,7 @@ func loadLegacyUsageBuckets(ctx context.Context, control *sql.DB, options SplitM
 			value := buckets[key]
 			value.Requests++
 			value.Tokens += requestTokens + responseTokens
-			value.CostMicro += costMicro
+			value.ChargedMicrocredits += chargedMicrocredits
 			value.UpdatedAt = options.Now
 			buckets[key] = value
 		}
@@ -512,7 +512,7 @@ func copyLegacyRequestLogs(ctx context.Context, control, telemetry *sql.DB, opti
 		SELECT l.id, l.api_key_id, COALESCE(k.name, ''), COALESCE(k.key_prefix, ''),
 		       l.protocol, l.public_model, l.upstream_model, l.provider, l.pool, l.account,
 		       l.device_id, l.source, l.status_code, l.latency_ms, l.request_tokens,
-		       l.response_tokens, l.cache_hit_tokens, l.cache_miss_tokens, l.cost_micro,
+		       l.response_tokens, l.cache_hit_tokens, l.cache_miss_tokens, l.charged_microcredits,
 		       l.estimated, l.error_type, l.created_at, l.billing_status, l.price_snapshot, l.started_at, l.cache_write_tokens, l.image_count
 		FROM request_logs l
 		LEFT JOIN api_keys k ON k.id = l.api_key_id
@@ -543,7 +543,7 @@ func copyLegacyRequestLogs(ctx context.Context, control, telemetry *sql.DB, opti
 				id, api_key_id, api_key_name, key_prefix, protocol, public_model,
 				upstream_model, provider, pool, account, device_id, source, status_code,
 				latency_ms, request_tokens, response_tokens, cache_hit_tokens,
-				cache_miss_tokens, cost_micro, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count
+				cache_miss_tokens, charged_microcredits, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				api_key_id = excluded.api_key_id,
@@ -563,7 +563,7 @@ func copyLegacyRequestLogs(ctx context.Context, control, telemetry *sql.DB, opti
 				response_tokens = excluded.response_tokens,
 				cache_hit_tokens = excluded.cache_hit_tokens,
 				cache_miss_tokens = excluded.cache_miss_tokens,
-				cost_micro = excluded.cost_micro,
+				charged_microcredits = excluded.charged_microcredits,
 				estimated = excluded.estimated,
 				error_type = excluded.error_type,
 				billing_status = excluded.billing_status,
@@ -708,19 +708,19 @@ func verifyOpenDatabases(ctx context.Context, control, usage, telemetry *sql.DB,
 		if independentDuration(key.Window) > 0 {
 			continue
 		}
-		var requests, tokens, costMicro int64
+		var requests, tokens, chargedMicrocredits int64
 		if err := usage.QueryRowContext(ctx, `
-			SELECT requests, tokens, cost_micro
+			SELECT requests, tokens, charged_microcredits
 			FROM usage_buckets
 			WHERE api_key_id = ? AND window = ? AND window_start = ?
-		`, key.APIKeyID, key.Window, key.WindowStart).Scan(&requests, &tokens, &costMicro); err != nil {
+		`, key.APIKeyID, key.Window, key.WindowStart).Scan(&requests, &tokens, &chargedMicrocredits); err != nil {
 			return report, fmt.Errorf("verify usage bucket %s/%s/%s: %w", key.APIKeyID, key.Window, key.WindowStart, err)
 		}
-		if requests < expected.Requests || tokens < expected.Tokens || costMicro < expected.CostMicro {
+		if requests < expected.Requests || tokens < expected.Tokens || chargedMicrocredits < expected.ChargedMicrocredits {
 			return report, fmt.Errorf(
 				"usage bucket %s/%s/%s is behind control: usage=(%d,%d,%d) control=(%d,%d,%d)",
 				key.APIKeyID, key.Window, key.WindowStart,
-				requests, tokens, costMicro, expected.Requests, expected.Tokens, expected.CostMicro,
+				requests, tokens, chargedMicrocredits, expected.Requests, expected.Tokens, expected.ChargedMicrocredits,
 			)
 		}
 	}
@@ -761,7 +761,7 @@ func mergeTelemetryLogsBack(ctx context.Context, telemetry, control *sql.DB) (in
 	rows, err := telemetry.QueryContext(ctx, `
 		SELECT id, api_key_id, protocol, public_model, upstream_model, provider, pool,
 		       account, device_id, source, status_code, latency_ms, request_tokens,
-		       response_tokens, cache_hit_tokens, cache_miss_tokens, cost_micro,
+		       response_tokens, cache_hit_tokens, cache_miss_tokens, charged_microcredits,
 		       estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count
 		FROM request_logs ORDER BY id ASC
 	`)
@@ -788,7 +788,7 @@ func mergeTelemetryLogsBack(ctx context.Context, telemetry, control *sql.DB) (in
 			INSERT OR IGNORE INTO request_logs (
 				id, api_key_id, protocol, public_model, upstream_model, provider, pool,
 				account, device_id, source, status_code, latency_ms, request_tokens,
-				response_tokens, cache_hit_tokens, cache_miss_tokens, cost_micro,
+				response_tokens, cache_hit_tokens, cache_miss_tokens, charged_microcredits,
 				estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, values...)
@@ -853,7 +853,7 @@ func mergeTelemetrySessionsBack(ctx context.Context, telemetry, control *sql.DB)
 
 func mergeUsageTotalsBack(ctx context.Context, usage, control *sql.DB) (int64, error) {
 	rows, err := usage.QueryContext(ctx, `
-		SELECT api_key_id, used_requests, used_tokens, used_cost_micro, last_used_at, updated_at FROM usage_totals
+		SELECT api_key_id, used_requests, used_tokens, used_microcredits, last_used_at, updated_at FROM usage_totals
 	`)
 	if err != nil {
 		return 0, err
@@ -874,7 +874,7 @@ func mergeUsageTotalsBack(ctx context.Context, usage, control *sql.DB) (int64, e
 		}
 		result, err := tx.ExecContext(ctx, `
 			UPDATE api_keys
-			SET used_requests = ?, used_tokens = ?, used_cost_micro = ?, last_used_at = ?, updated_at = MAX(updated_at, ?)
+			SET used_requests = ?, used_tokens = ?, used_microcredits = ?, last_used_at = ?, updated_at = MAX(updated_at, ?)
 			WHERE id = ?
 		`, requests, tokens, cost, nullableString(lastUsedAt), updatedAt, id)
 		if err != nil {
@@ -908,7 +908,7 @@ func ensureLegacyTelemetrySchema(db *sql.DB) error {
 			response_tokens INTEGER NOT NULL,
 			cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
 			cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
-			cost_micro INTEGER NOT NULL DEFAULT 0,
+			charged_microcredits INTEGER NOT NULL DEFAULT 0,
 			estimated INTEGER NOT NULL DEFAULT 0,
 			error_type TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,

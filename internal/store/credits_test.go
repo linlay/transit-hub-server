@@ -9,7 +9,7 @@ import (
 
 func TestCreditsCostPrecisionCacheAndOverflow(t *testing.T) {
 	hit, write := int64(2_000_000), int64(12_000_000)
-	p := ModelPrice{InputCostMicroPer1MTokens: 10_000_000, InputCacheHitCostMicroPer1MTokens: &hit, OutputCostMicroPer1MTokens: 30_000_000, Billing: PriceBilling{Mode: "tokens", CacheWriteCostMicroPer1M: &write}}
+	p := ModelPrice{InputMicrocreditsPer1MTokens: 10_000_000, InputCacheHitMicrocreditsPer1MTokens: &hit, OutputMicrocreditsPer1MTokens: 30_000_000, Billing: PriceBilling{Mode: "tokens", CacheWriteMicrocreditsPer1M: &write}}
 	if got := TokenCost(p, 2000, 1000, 500, 200); got != 46400 {
 		t.Fatalf("cache cost=%d", got)
 	}
@@ -42,7 +42,7 @@ func TestCreditsUsageMigrationDoesNotBackCharge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := manager.Total("old"); got.UsedRequests != 5 || got.UsedCostMicro != 0 {
+	if got := manager.Total("old"); got.UsedRequests != 5 || got.UsedMicrocredits != 0 {
 		t.Fatalf("migration %+v", got)
 	}
 	manager.Record("old", 1, 2, 2300, time.Now().UTC())
@@ -54,7 +54,7 @@ func TestCreditsUsageMigrationDoesNotBackCharge(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer manager.Close(t.Context())
-	if got := manager.Total("old"); got.UsedCostMicro != 2300 || got.UsedRequests != 6 {
+	if got := manager.Total("old"); got.UsedMicrocredits != 2300 || got.UsedRequests != 6 {
 		t.Fatalf("reload %+v", got)
 	}
 }
@@ -62,20 +62,20 @@ func TestCreditsUsageMigrationDoesNotBackCharge(t *testing.T) {
 func TestCreditsGrantInheritanceAndQuotaPatch(t *testing.T) {
 	db := openTestStore(t, filepath.Join(t.TempDir(), "control.db"))
 	defer db.Close()
-	grant, err := db.CreateJWTGrant(t.Context(), CreateJWTGrantParams{JTI: "credits", CostQuotaMicro: 1_000_000, RateLimits: []RateLimit{{Window: "1h", CostQuotaMicro: 10_000}}})
+	grant, err := db.CreateJWTGrant(t.Context(), CreateJWTGrantParams{JTI: "credits", QuotaMicrocredits: 1_000_000, RateLimits: []RateLimit{{Window: "1h", QuotaMicrocredits: 10_000}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := db.IssueAPIKeyFromJWTGrant(t.Context(), grant.JTI, CreateAPIKeyParams{CostQuotaMicro: 99_000_000}, time.Now())
+	key, err := db.IssueAPIKeyFromJWTGrant(t.Context(), grant.JTI, CreateAPIKeyParams{QuotaMicrocredits: 99_000_000}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if key.CostQuotaMicro != 1_000_000 || len(key.RateLimits) != 1 || key.RateLimits[0].CostQuotaMicro != 10_000 {
+	if key.QuotaMicrocredits != 1_000_000 || len(key.RateLimits) != 1 || key.RateLimits[0].QuotaMicrocredits != 10_000 {
 		t.Fatalf("inherit %+v", key)
 	}
 	zero := int64(0)
-	updated, err := db.UpdateAPIKey(t.Context(), key.ID, APIKeyPatch{CostQuotaMicro: &zero})
-	if err != nil || updated.CostQuotaMicro != 0 {
+	updated, err := db.UpdateAPIKey(t.Context(), key.ID, APIKeyPatch{QuotaMicrocredits: &zero})
+	if err != nil || updated.QuotaMicrocredits != 0 {
 		t.Fatalf("clear %+v %v", updated, err)
 	}
 }
@@ -84,7 +84,7 @@ func TestCreditsMergeBackPreservesMoneyAndMetadata(t *testing.T) {
 	dir := t.TempDir()
 	options := SplitMigrationOptions{ControlPath: filepath.Join(dir, "control.db"), UsagePath: filepath.Join(dir, "usage.db"), TelemetryPath: filepath.Join(dir, "telemetry.db"), Now: time.Now().UTC(), Location: time.UTC, Retention: 30 * 24 * time.Hour}
 	control := openTestStore(t, options.ControlPath)
-	key, err := control.CreateAPIKey(t.Context(), CreateAPIKeyParams{Name: "migration", CostQuotaMicro: 1000000})
+	key, err := control.CreateAPIKey(t.Context(), CreateAPIKeyParams{Name: "migration", QuotaMicrocredits: 1000000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestCreditsMergeBackPreservesMoneyAndMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	telemetry.Enqueue(RequestLog{APIKeyID: key.ID, Protocol: "openai", PublicModel: "test", StatusCode: 200, RequestTokens: 3, ResponseTokens: 4, CostMicro: 2300, BillingStatus: "charged", PriceSnapshot: `{"currency":"CNY"}`, StartedAt: options.Now, CreatedAt: options.Now, CacheWriteTokens: 2, ImageCount: 1})
+	telemetry.Enqueue(RequestLog{APIKeyID: key.ID, Protocol: "openai", PublicModel: "test", StatusCode: 200, RequestTokens: 3, ResponseTokens: 4, ChargedMicrocredits: 2300, BillingStatus: "charged", PriceSnapshot: `{"unit":"CREDITS"}`, StartedAt: options.Now, CreatedAt: options.Now, CacheWriteTokens: 2, ImageCount: 1})
 	if err := telemetry.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -115,13 +115,13 @@ func TestCreditsMergeBackPreservesMoneyAndMetadata(t *testing.T) {
 	defer legacy.Close()
 	var used int64
 	var status, snapshot string
-	if err := legacy.QueryRow(`SELECT used_cost_micro FROM api_keys WHERE id=?`, key.ID).Scan(&used); err != nil {
+	if err := legacy.QueryRow(`SELECT used_microcredits FROM api_keys WHERE id=?`, key.ID).Scan(&used); err != nil {
 		t.Fatal(err)
 	}
 	if err := legacy.QueryRow(`SELECT billing_status,price_snapshot FROM request_logs WHERE api_key_id=?`, key.ID).Scan(&status, &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if used != 2300 || status != "charged" || snapshot != `{"currency":"CNY"}` {
+	if used != 2300 || status != "charged" || snapshot != `{"unit":"CREDITS"}` {
 		t.Fatalf("lost data %d %s %s", used, status, snapshot)
 	}
 	fresh, err := openSQLite(filepath.Join(dir, "fresh-usage.db"), time.Second)
@@ -135,7 +135,7 @@ func TestCreditsMergeBackPreservesMoneyAndMetadata(t *testing.T) {
 	if _, err := copyLegacyUsageTotals(t.Context(), legacy, fresh); err != nil {
 		t.Fatal(err)
 	}
-	if err := fresh.QueryRow(`SELECT used_cost_micro FROM usage_totals WHERE api_key_id=?`, key.ID).Scan(&used); err != nil || used != 2300 {
+	if err := fresh.QueryRow(`SELECT used_microcredits FROM usage_totals WHERE api_key_id=?`, key.ID).Scan(&used); err != nil || used != 2300 {
 		t.Fatalf("resplit %d %v", used, err)
 	}
 	freshLogs, err := openSQLite(filepath.Join(dir, "fresh-logs.db"), time.Second)
@@ -157,19 +157,31 @@ func TestCreditsMergeBackPreservesMoneyAndMetadata(t *testing.T) {
 func TestTokenTierBoundaryAndCache(t *testing.T) {
 	hit := int64(140000)
 	highHit := int64(280000)
-	p := ModelPrice{InputCostMicroPer1MTokens: 1400000, OutputCostMicroPer1MTokens: 8400000, InputCacheHitCostMicroPer1MTokens: &hit, Billing: PriceBilling{Mode: "tokens", TokenTiers: []TokenPriceTier{{AboveInputTokens: 272000, InputCostMicroPer1M: 2800000, OutputCostMicroPer1M: 12600000, CacheHitCostMicroPer1M: &highHit}}}}
+	p := ModelPrice{InputMicrocreditsPer1MTokens: 1400000, OutputMicrocreditsPer1MTokens: 8400000, InputCacheHitMicrocreditsPer1MTokens: &hit, Billing: PriceBilling{Mode: "tokens", TokenTiers: []TokenPriceTier{{AboveInputTokens: 272000, InputMicrocreditsPer1M: 2800000, OutputMicrocreditsPer1M: 12600000, CacheHitMicrocreditsPer1M: &highHit}}}}
 	if got := TokenCost(p, 272000, 1000, 1000, 0); got != 387940 {
 		t.Fatalf("base boundary: %d", got)
 	}
 	if got := TokenCost(p, 272001, 1000, 1000, 0); got != 771683 {
 		t.Fatalf("high tier: %d", got)
 	}
-	params := ModelPriceParams{InputCostMicroPer1MTokens: 1400000}
+	params := ModelPriceParams{InputMicrocreditsPer1MTokens: 1400000}
 	if err := validateBilling(p.Billing, params); err != nil {
 		t.Fatal(err)
 	}
 	p.Billing.TokenTiers = append(p.Billing.TokenTiers, p.Billing.TokenTiers[0])
 	if err := validateBilling(p.Billing, params); err == nil {
 		t.Fatal("duplicate tier accepted")
+	}
+}
+
+func TestNativeCreditsTariffAndSingleRounding(t *testing.T) {
+	p := ModelPrice{InputMicrocreditsPer1MTokens: 100 * MicrocreditsPerCredit, OutputMicrocreditsPer1MTokens: 300 * MicrocreditsPerCredit, Billing: PriceBilling{Mode: "tokens"}}
+	if got := TokenCost(p, 2000, 1000, 0, 0); got != 500000 {
+		t.Fatalf("expected exactly 0.5 Credits, got %d micro-Credits", got)
+	}
+	// Two fractions of 0.3 micro-Credits round to one only after summing.
+	p.InputMicrocreditsPer1MTokens, p.OutputMicrocreditsPer1MTokens = 300000, 300000
+	if got := TokenCost(p, 1, 1, 0, 0); got != 1 {
+		t.Fatalf("single rounding: %d", got)
 	}
 }

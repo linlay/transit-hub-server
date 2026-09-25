@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/linlay/transit-hub/internal/config"
 	"github.com/linlay/transit-hub/internal/store"
@@ -67,8 +68,10 @@ func TestResponsesProxyPassthroughAndBilling(t *testing.T) {
 				cfg.Endpoints = map[string]string{"openai_responses": path}
 			}
 			app, db, plain := newTestGateway(t, []config.ProviderConfig{cfg})
+			// The multi-megabyte SSE fixture needs extra time under the race detector.
+			app.client.Timeout = 30 * time.Second
 			hitPrice := int64(500_000)
-			_, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{Protocol: "openai", PublicModel: "public-model", Currency: "CNY", InputCostMicroPer1MTokens: 1_000_000, OutputCostMicroPer1MTokens: 2_000_000, InputCacheHitCostMicroPer1MTokens: &hitPrice})
+			_, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{Protocol: "openai", PublicModel: "public-model", Unit: "CREDITS", InputMicrocreditsPer1MTokens: 1_000_000, OutputMicrocreditsPer1MTokens: 2_000_000, InputCacheHitMicrocreditsPer1MTokens: &hitPrice})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -88,8 +91,8 @@ func TestResponsesProxyPassthroughAndBilling(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if key.UsedRequests != 1 || key.UsedTokens != tc.tokens || key.UsedCostMicro != tc.cost {
-				t.Fatalf("usage: requests=%d tokens=%d cost=%d", key.UsedRequests, key.UsedTokens, key.UsedCostMicro)
+			if key.UsedRequests != 1 || key.UsedTokens != tc.tokens || key.UsedMicrocredits != tc.cost {
+				t.Fatalf("usage: requests=%d tokens=%d cost=%d", key.UsedRequests, key.UsedTokens, key.UsedMicrocredits)
 			}
 			if err := app.telemetry.Flush(t.Context()); err != nil {
 				t.Fatal(err)

@@ -65,11 +65,11 @@ func filteredRequestLogWhere(key string, from, to *time.Time, filters TrafficFil
 }
 
 type TrafficRanking struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Requests    int64  `json:"requests"`
-	TotalTokens int64  `json:"total_tokens"`
-	CostMicro   int64  `json:"cost_micro"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	Requests            int64  `json:"requests"`
+	TotalTokens         int64  `json:"total_tokens"`
+	ChargedMicrocredits int64  `json:"charged_microcredits,string"`
 }
 type TrafficOption struct {
 	ID   string `json:"id"`
@@ -110,8 +110,8 @@ func (t *Telemetry) TrafficAnalytics(ctx context.Context, query TrafficQuery) (T
 	err = db.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(DISTINCT NULLIF(api_key_id,'')),
  COALESCE(SUM(request_tokens),0), COALESCE(SUM(response_tokens),0),
  COALESCE(SUM(cache_hit_tokens),0), COALESCE(SUM(cache_miss_tokens),0),
- COALESCE(SUM(cost_micro),0), COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END),0),
- COALESCE(AVG(latency_ms),0) FROM request_logs `+where, args...).Scan(&summary.Requests, &summary.UniqueAPIKeys, &summary.RequestTokens, &summary.ResponseTokens, &summary.CacheHitTokens, &summary.CacheMissTokens, &summary.CostMicro, &summary.ErrorRequests, &summary.AverageLatency)
+ COALESCE(SUM(charged_microcredits),0), COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END),0),
+ COALESCE(AVG(latency_ms),0) FROM request_logs `+where, args...).Scan(&summary.Requests, &summary.UniqueAPIKeys, &summary.RequestTokens, &summary.ResponseTokens, &summary.CacheHitTokens, &summary.CacheMissTokens, &summary.ChargedMicrocredits, &summary.ErrorRequests, &summary.AverageLatency)
 	if err != nil {
 		return result, err
 	}
@@ -122,14 +122,14 @@ func (t *Telemetry) TrafficAnalytics(ctx context.Context, query TrafficQuery) (T
 	}{
 		{"public_model", "public_model", &result.Models}, {"api_key_id", "MAX(api_key_name)", &result.Keys},
 	} {
-		rows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT %s, %s, COUNT(*), COALESCE(SUM(request_tokens+response_tokens),0), COALESCE(SUM(cost_micro),0) FROM request_logs %s GROUP BY %s ORDER BY COUNT(*) DESC, %s ASC`, group.column, group.name, where, group.column, group.column), args...)
+		rows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT %s, %s, COUNT(*), COALESCE(SUM(request_tokens+response_tokens),0), COALESCE(SUM(charged_microcredits),0) FROM request_logs %s GROUP BY %s ORDER BY COUNT(*) DESC, %s ASC`, group.column, group.name, where, group.column, group.column), args...)
 		if err != nil {
 			return result, err
 		}
 		*group.target = []TrafficRanking{}
 		for rows.Next() {
 			var row TrafficRanking
-			if err = rows.Scan(&row.ID, &row.Name, &row.Requests, &row.TotalTokens, &row.CostMicro); err != nil {
+			if err = rows.Scan(&row.ID, &row.Name, &row.Requests, &row.TotalTokens, &row.ChargedMicrocredits); err != nil {
 				rows.Close()
 				return result, err
 			}

@@ -40,3 +40,7 @@ configs/issuer/*
 configs/access-key/*
 !configs/access-key/
 !configs/access-key/*.example.yaml
+
+# Native billing migration backups and Python bytecode
+/backups/native-credits-*/
+__pycache__/

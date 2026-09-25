@@ -271,25 +271,25 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			errorType = "upstream_status"
 		}
 		g.logCompletedRequest(r, key, store.RequestLog{
-			Protocol:         protocol,
-			PublicModel:      route.PublicModel,
-			UpstreamModel:    route.UpstreamModel,
-			Provider:         route.ProviderName,
-			Pool:             route.PoolName,
-			Account:          account.Name,
-			StatusCode:       resp.StatusCode,
-			Latency:          time.Since(started),
-			RequestTokens:    observed.RequestTokens,
-			ResponseTokens:   observed.ResponseTokens,
-			CacheHitTokens:   observed.CacheHitTokens,
-			CacheMissTokens:  observed.CacheMissTokens,
-			CacheWriteTokens: observed.CacheWriteTokens,
-			ImageCount:       imageCount,
-			UsageUnavailable: usageUnavailable,
-			CostMicro:        imageCost,
-			Estimated:        observed.Estimated,
-			ErrorType:        errorType,
-			ModelPrice:       modelPrice,
+			Protocol:            protocol,
+			PublicModel:         route.PublicModel,
+			UpstreamModel:       route.UpstreamModel,
+			Provider:            route.ProviderName,
+			Pool:                route.PoolName,
+			Account:             account.Name,
+			StatusCode:          resp.StatusCode,
+			Latency:             time.Since(started),
+			RequestTokens:       observed.RequestTokens,
+			ResponseTokens:      observed.ResponseTokens,
+			CacheHitTokens:      observed.CacheHitTokens,
+			CacheMissTokens:     observed.CacheMissTokens,
+			CacheWriteTokens:    observed.CacheWriteTokens,
+			ImageCount:          imageCount,
+			UsageUnavailable:    usageUnavailable,
+			ChargedMicrocredits: imageCost,
+			Estimated:           observed.Estimated,
+			ErrorType:           errorType,
+			ModelPrice:          modelPrice,
 		})
 	}
 }
@@ -386,16 +386,16 @@ func (g *Gateway) requestModelPrice(w http.ResponseWriter, r *http.Request, key 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return nil, false
 	}
-	needsCost := key.CostQuotaMicro > 0 || store.RateLimitsNeedCost(key.RateLimits)
+	needsCost := key.QuotaMicrocredits > 0 || store.RateLimitsNeedCost(key.RateLimits)
 	if needsCost && !found {
 		writeError(w, http.StatusTooManyRequests, "cost rate limit requires a model price for "+publicModel)
 		return nil, false
 	}
-	if found && (!strings.EqualFold(price.Currency, g.configuredCurrency()) || !strings.EqualFold(price.Currency, "CNY")) {
-		writeError(w, http.StatusTooManyRequests, "model price currency does not match configured currency")
+	if found && !strings.EqualFold(price.Unit, store.CreditsUnit) {
+		writeError(w, http.StatusTooManyRequests, "model price unit does not match configured unit")
 		return nil, false
 	}
-	if found && price.Billing.Mode == "tokens" && price.InputCostMicroPer1MTokens == 0 && price.OutputCostMicroPer1MTokens == 0 && (price.InputCacheHitCostMicroPer1MTokens == nil || *price.InputCacheHitCostMicroPer1MTokens == 0) && (price.Billing.CacheWriteCostMicroPer1M == nil || *price.Billing.CacheWriteCostMicroPer1M == 0) {
+	if found && price.Billing.Mode == "tokens" && price.InputMicrocreditsPer1MTokens == 0 && price.OutputMicrocreditsPer1MTokens == 0 && (price.InputCacheHitMicrocreditsPer1MTokens == nil || *price.InputCacheHitMicrocreditsPer1MTokens == 0) && (price.Billing.CacheWriteMicrocreditsPer1M == nil || *price.Billing.CacheWriteMicrocreditsPer1M == 0) {
 		writeError(w, http.StatusServiceUnavailable, "zero-priced model requires explicit free billing")
 		return nil, false
 	}
@@ -596,7 +596,7 @@ func (g *Gateway) logCompletedRequest(r *http.Request, key store.APIKey, logEntr
 		if logEntry.StatusCode >= 200 && logEntry.StatusCode < 300 {
 			switch price.Billing.Mode {
 			case "free":
-				logEntry.CostMicro = 0
+				logEntry.ChargedMicrocredits = 0
 				logEntry.BillingStatus = "free"
 			case "image":
 				if logEntry.ImageCount > 0 {
@@ -609,25 +609,25 @@ func (g *Gateway) logCompletedRequest(r *http.Request, key store.APIKey, logEntr
 				}
 			default:
 				if logEntry.UsageUnavailable {
-					logEntry.CostMicro = 0
+					logEntry.ChargedMicrocredits = 0
 					logEntry.BillingStatus = "unavailable"
 					break
 				}
-				logEntry.CostMicro = store.TokenCost(*price, logEntry.RequestTokens, logEntry.ResponseTokens, logEntry.CacheHitTokens, logEntry.CacheWriteTokens)
+				logEntry.ChargedMicrocredits = store.TokenCost(*price, logEntry.RequestTokens, logEntry.ResponseTokens, logEntry.CacheHitTokens, logEntry.CacheWriteTokens)
 				logEntry.BillingStatus = "charged"
 				if logEntry.Estimated {
 					logEntry.BillingStatus = "estimated"
 				}
 			}
 		} else {
-			logEntry.CostMicro = 0
+			logEntry.ChargedMicrocredits = 0
 		}
 	} else if logEntry.StatusCode >= 200 && logEntry.StatusCode < 300 {
 		logEntry.BillingStatus = "unpriced"
 	}
 	if g.usage != nil {
 		bindings, _ := r.Context().Value(usageWindowsContextKey{}).(store.WindowBindings)
-		g.usage.Record(key.ID, logEntry.RequestTokens, logEntry.ResponseTokens, logEntry.CostMicro, logEntry.StartedAt, bindings)
+		g.usage.Record(key.ID, logEntry.RequestTokens, logEntry.ResponseTokens, logEntry.ChargedMicrocredits, logEntry.StartedAt, bindings)
 	}
 	if g.telemetry != nil {
 		if !g.telemetry.Enqueue(logEntry) {

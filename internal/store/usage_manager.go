@@ -24,10 +24,10 @@ var supportedRateLimitWindows = []string{
 }
 
 type UsageTotal struct {
-	UsedCostMicro int64
-	UsedRequests  int64
-	UsedTokens    int64
-	LastUsedAt    *time.Time
+	UsedMicrocredits int64
+	UsedRequests     int64
+	UsedTokens       int64
+	LastUsedAt       *time.Time
 }
 
 type usageBucketKey struct {
@@ -37,17 +37,17 @@ type usageBucketKey struct {
 }
 
 type usageBucketValue struct {
-	Requests  int64
-	Tokens    int64
-	CostMicro int64
-	UpdatedAt time.Time
+	Requests            int64
+	Tokens              int64
+	ChargedMicrocredits int64
+	UpdatedAt           time.Time
 }
 
 type usageTotalDelta struct {
-	CostMicro  int64
-	Requests   int64
-	Tokens     int64
-	LastUsedAt time.Time
+	ChargedMicrocredits int64
+	Requests            int64
+	Tokens              int64
+	LastUsedAt          time.Time
 }
 
 // UsageManager keeps the authoritative counters for the running single
@@ -125,7 +125,7 @@ func (u *UsageManager) Bootstrap(keys []APIKey) {
 	u.signalIfNeededLocked()
 }
 
-func (u *UsageManager) Record(apiKeyID string, requestTokens, responseTokens, costMicro int64, at time.Time, bindings ...WindowBindings) {
+func (u *UsageManager) Record(apiKeyID string, requestTokens, responseTokens, chargedMicrocredits int64, at time.Time, bindings ...WindowBindings) {
 	if apiKeyID == "" {
 		return
 	}
@@ -140,7 +140,7 @@ func (u *UsageManager) Record(apiKeyID string, requestTokens, responseTokens, co
 	total := u.totals[apiKeyID]
 	total.UsedRequests++
 	total.UsedTokens += tokenDelta
-	total.UsedCostMicro = addCost(total.UsedCostMicro, costMicro)
+	total.UsedMicrocredits = addCost(total.UsedMicrocredits, chargedMicrocredits)
 	if total.LastUsedAt == nil || at.After(*total.LastUsedAt) {
 		total.LastUsedAt = timePtr(at)
 	}
@@ -149,7 +149,7 @@ func (u *UsageManager) Record(apiKeyID string, requestTokens, responseTokens, co
 	totalDelta := u.dirtyTotals[apiKeyID]
 	totalDelta.Requests++
 	totalDelta.Tokens += tokenDelta
-	totalDelta.CostMicro = addCost(totalDelta.CostMicro, costMicro)
+	totalDelta.ChargedMicrocredits = addCost(totalDelta.ChargedMicrocredits, chargedMicrocredits)
 	if totalDelta.LastUsedAt.IsZero() || at.After(totalDelta.LastUsedAt) {
 		totalDelta.LastUsedAt = at
 	}
@@ -174,14 +174,14 @@ func (u *UsageManager) Record(apiKeyID string, requestTokens, responseTokens, co
 		value := u.buckets[key]
 		value.Requests++
 		value.Tokens += tokenDelta
-		value.CostMicro = addCost(value.CostMicro, costMicro)
+		value.ChargedMicrocredits = addCost(value.ChargedMicrocredits, chargedMicrocredits)
 		value.UpdatedAt = at
 		u.buckets[key] = value
 
 		dirty := u.dirtyBuckets[key]
 		dirty.Requests++
 		dirty.Tokens += tokenDelta
-		dirty.CostMicro = addCost(dirty.CostMicro, costMicro)
+		dirty.ChargedMicrocredits = addCost(dirty.ChargedMicrocredits, chargedMicrocredits)
 		dirty.UpdatedAt = at
 		u.dirtyBuckets[key] = dirty
 	}
@@ -199,7 +199,7 @@ func (u *UsageManager) Overlay(key APIKey) APIKey {
 	}
 	key.UsedRequests = total.UsedRequests
 	key.UsedTokens = total.UsedTokens
-	key.UsedCostMicro = total.UsedCostMicro
+	key.UsedMicrocredits = total.UsedMicrocredits
 	key.LastUsedAt = total.LastUsedAt
 	return key
 }
@@ -239,20 +239,20 @@ func (u *UsageManager) rateLimitStatusesLocked(apiKeyID string, normalized []Rat
 			value = usageBucketValue{}
 		}
 		status := RateLimitStatus{
-			State:          state,
-			Window:         limit.Window,
-			StartsAt:       start,
-			ResetsAt:       end,
-			Requests:       value.Requests,
-			RequestQuota:   limit.RequestQuota,
-			Tokens:         value.Tokens,
-			TokenQuota:     limit.TokenQuota,
-			CostMicro:      value.CostMicro,
-			CostQuotaMicro: limit.CostQuotaMicro,
+			State:               state,
+			Window:              limit.Window,
+			StartsAt:            start,
+			ResetsAt:            end,
+			Requests:            value.Requests,
+			RequestQuota:        limit.RequestQuota,
+			Tokens:              value.Tokens,
+			TokenQuota:          limit.TokenQuota,
+			ChargedMicrocredits: value.ChargedMicrocredits,
+			QuotaMicrocredits:   limit.QuotaMicrocredits,
 		}
 		status.RequestRemaining = remaining(status.RequestQuota, status.Requests)
 		status.TokenRemaining = remaining(status.TokenQuota, status.Tokens)
-		status.CostRemainingMicro = CostRemaining(status.CostQuotaMicro, status.CostMicro)
+		status.RemainingMicrocredits = CostRemaining(status.QuotaMicrocredits, status.ChargedMicrocredits)
 		statuses = append(statuses, status)
 	}
 	return statuses, nil
@@ -297,19 +297,19 @@ func (u *UsageManager) Flush(ctx context.Context) error {
 			lastUsed = formatTime(delta.LastUsedAt)
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO usage_totals (api_key_id, used_requests, used_tokens, used_cost_micro, last_used_at, updated_at)
+			INSERT INTO usage_totals (api_key_id, used_requests, used_tokens, used_microcredits, last_used_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?)
 			ON CONFLICT(api_key_id) DO UPDATE SET
 				used_requests = usage_totals.used_requests + excluded.used_requests,
 				used_tokens = usage_totals.used_tokens + excluded.used_tokens,
-				used_cost_micro = CASE WHEN usage_totals.used_cost_micro > 9223372036854775807 - excluded.used_cost_micro THEN 9223372036854775807 ELSE usage_totals.used_cost_micro + excluded.used_cost_micro END,
+				used_microcredits = CASE WHEN usage_totals.used_microcredits > 9223372036854775807 - excluded.used_microcredits THEN 9223372036854775807 ELSE usage_totals.used_microcredits + excluded.used_microcredits END,
 				last_used_at = CASE
 					WHEN excluded.last_used_at IS NULL THEN usage_totals.last_used_at
 					WHEN usage_totals.last_used_at IS NULL OR excluded.last_used_at > usage_totals.last_used_at THEN excluded.last_used_at
 					ELSE usage_totals.last_used_at
 				END,
 				updated_at = excluded.updated_at
-		`, apiKeyID, delta.Requests, delta.Tokens, delta.CostMicro, lastUsed, formatTime(time.Now().UTC())); err != nil {
+		`, apiKeyID, delta.Requests, delta.Tokens, delta.ChargedMicrocredits, lastUsed, formatTime(time.Now().UTC())); err != nil {
 			u.restoreDirty(totals, buckets, pending)
 			u.degraded.Store(true)
 			return err
@@ -318,14 +318,14 @@ func (u *UsageManager) Flush(ctx context.Context) error {
 	for key, delta := range buckets {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO usage_buckets (
-				api_key_id, window, window_start, requests, tokens, cost_micro, updated_at
+				api_key_id, window, window_start, requests, tokens, charged_microcredits, updated_at
 			) VALUES (?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(api_key_id, window, window_start) DO UPDATE SET
 				requests = usage_buckets.requests + excluded.requests,
 				tokens = usage_buckets.tokens + excluded.tokens,
-				cost_micro = CASE WHEN usage_buckets.cost_micro > 9223372036854775807 - excluded.cost_micro THEN 9223372036854775807 ELSE usage_buckets.cost_micro + excluded.cost_micro END,
+				charged_microcredits = CASE WHEN usage_buckets.charged_microcredits > 9223372036854775807 - excluded.charged_microcredits THEN 9223372036854775807 ELSE usage_buckets.charged_microcredits + excluded.charged_microcredits END,
 				updated_at = excluded.updated_at
-		`, key.APIKeyID, key.Window, key.WindowStart, delta.Requests, delta.Tokens, delta.CostMicro, formatTime(delta.UpdatedAt)); err != nil {
+		`, key.APIKeyID, key.Window, key.WindowStart, delta.Requests, delta.Tokens, delta.ChargedMicrocredits, formatTime(delta.UpdatedAt)); err != nil {
 			u.restoreDirty(totals, buckets, pending)
 			u.degraded.Store(true)
 			return err
@@ -430,7 +430,7 @@ func (u *UsageManager) connect() error {
 		dirty := u.dirtyTotals[id]
 		persisted.UsedRequests += dirty.Requests
 		persisted.UsedTokens += dirty.Tokens
-		persisted.UsedCostMicro = addCost(persisted.UsedCostMicro, dirty.CostMicro)
+		persisted.UsedMicrocredits = addCost(persisted.UsedMicrocredits, dirty.ChargedMicrocredits)
 		if !dirty.LastUsedAt.IsZero() && (persisted.LastUsedAt == nil || dirty.LastUsedAt.After(*persisted.LastUsedAt)) {
 			persisted.LastUsedAt = timePtr(dirty.LastUsedAt)
 		}
@@ -440,7 +440,7 @@ func (u *UsageManager) connect() error {
 		dirty := u.dirtyBuckets[key]
 		persisted.Requests += dirty.Requests
 		persisted.Tokens += dirty.Tokens
-		persisted.CostMicro = addCost(persisted.CostMicro, dirty.CostMicro)
+		persisted.ChargedMicrocredits = addCost(persisted.ChargedMicrocredits, dirty.ChargedMicrocredits)
 		if dirty.UpdatedAt.After(persisted.UpdatedAt) {
 			persisted.UpdatedAt = dirty.UpdatedAt
 		}
@@ -479,7 +479,7 @@ func (u *UsageManager) restoreDirty(totals map[string]usageTotalDelta, buckets m
 		current := u.dirtyTotals[id]
 		current.Requests += delta.Requests
 		current.Tokens += delta.Tokens
-		current.CostMicro = addCost(current.CostMicro, delta.CostMicro)
+		current.ChargedMicrocredits = addCost(current.ChargedMicrocredits, delta.ChargedMicrocredits)
 		if delta.LastUsedAt.After(current.LastUsedAt) {
 			current.LastUsedAt = delta.LastUsedAt
 		}
@@ -489,7 +489,7 @@ func (u *UsageManager) restoreDirty(totals map[string]usageTotalDelta, buckets m
 		current := u.dirtyBuckets[key]
 		current.Requests += delta.Requests
 		current.Tokens += delta.Tokens
-		current.CostMicro = addCost(current.CostMicro, delta.CostMicro)
+		current.ChargedMicrocredits = addCost(current.ChargedMicrocredits, delta.ChargedMicrocredits)
 		if delta.UpdatedAt.After(current.UpdatedAt) {
 			current.UpdatedAt = delta.UpdatedAt
 		}
@@ -509,6 +509,9 @@ func (u *UsageManager) signalIfNeededLocked() {
 }
 
 func migrateUsage(db *sql.DB) error {
+	if err := requireNativeCredits(db); err != nil {
+		return err
+	}
 	_, err := db.Exec(`
         CREATE TABLE IF NOT EXISTS schema_migrations (
             name TEXT PRIMARY KEY,
@@ -537,7 +540,7 @@ func migrateUsage(db *sql.DB) error {
 			window_start TEXT NOT NULL,
 			requests INTEGER NOT NULL DEFAULT 0,
 			tokens INTEGER NOT NULL DEFAULT 0,
-			cost_micro INTEGER NOT NULL DEFAULT 0,
+			charged_microcredits INTEGER NOT NULL DEFAULT 0,
 			updated_at TEXT NOT NULL,
 			PRIMARY KEY (api_key_id, window, window_start)
 		);
@@ -547,17 +550,17 @@ func migrateUsage(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(`ALTER TABLE usage_totals ADD COLUMN used_cost_micro INTEGER NOT NULL DEFAULT 0`)
+	_, err = db.Exec(`ALTER TABLE usage_totals ADD COLUMN used_microcredits INTEGER NOT NULL DEFAULT 0`)
 	if err != nil && !isDuplicateColumnError(err) {
 		return err
 	}
-	_, err = db.Exec(`INSERT OR IGNORE INTO schema_migrations(name, applied_at) VALUES ('credits_v1', ?)`, formatTime(time.Now().UTC()))
+	_, err = db.Exec(`INSERT OR IGNORE INTO schema_migrations(name, applied_at) VALUES ('native_credits', ?)`, formatTime(time.Now().UTC()))
 	return err
 }
 
 func loadUsage(db *sql.DB, loc *time.Location, now time.Time) (map[string]UsageTotal, map[usageBucketKey]usageBucketValue, error) {
 	totals := map[string]UsageTotal{}
-	rows, err := db.Query(`SELECT api_key_id, used_requests, used_tokens, used_cost_micro, last_used_at FROM usage_totals`)
+	rows, err := db.Query(`SELECT api_key_id, used_requests, used_tokens, used_microcredits, last_used_at FROM usage_totals`)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -565,7 +568,7 @@ func loadUsage(db *sql.DB, loc *time.Location, now time.Time) (map[string]UsageT
 		var id string
 		var total UsageTotal
 		var last sql.NullString
-		if err := rows.Scan(&id, &total.UsedRequests, &total.UsedTokens, &total.UsedCostMicro, &last); err != nil {
+		if err := rows.Scan(&id, &total.UsedRequests, &total.UsedTokens, &total.UsedMicrocredits, &last); err != nil {
 			_ = rows.Close()
 			return nil, nil, err
 		}
@@ -596,7 +599,7 @@ func loadUsage(db *sql.DB, loc *time.Location, now time.Time) (map[string]UsageT
 		currentStarts[window] = formatTime(start)
 	}
 	rows, err = db.Query(`
-		SELECT api_key_id, window, window_start, requests, tokens, cost_micro, updated_at
+		SELECT api_key_id, window, window_start, requests, tokens, charged_microcredits, updated_at
 		FROM usage_buckets b
         WHERE b.window NOT IN ('5h', '7d') OR EXISTS (
             SELECT 1 FROM usage_windows w
@@ -611,7 +614,7 @@ func loadUsage(db *sql.DB, loc *time.Location, now time.Time) (map[string]UsageT
 		var key usageBucketKey
 		var value usageBucketValue
 		var updated string
-		if err := rows.Scan(&key.APIKeyID, &key.Window, &key.WindowStart, &value.Requests, &value.Tokens, &value.CostMicro, &updated); err != nil {
+		if err := rows.Scan(&key.APIKeyID, &key.Window, &key.WindowStart, &value.Requests, &value.Tokens, &value.ChargedMicrocredits, &updated); err != nil {
 			return nil, nil, err
 		}
 		value.UpdatedAt, err = parseTime(updated)

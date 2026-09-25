@@ -123,11 +123,11 @@ configs/
 - Store 层负责数据库 schema 和持久化规则，Gateway 层不要直接拼接 SQL。
 - Provider registry 是内存态，重载时整体替换；不要在请求路径中长期持有会被替换的全局可变状态。
 
-## Credits 计费（credits_v1）
+## 原生 Credits 计费
 
-- 运行时已拆分 control/usage/telemetry 三个 SQLite 库；生命周期金额权威计数位于 usage_totals.used_cost_micro，不从可清理的日志汇总余额。
-- 固定 CNY，1 Credit = 10,000 micro-CNY。总配额 api_keys.cost_quota_micro、JWT 发放配额和窗口金额 0 表示不限，剩余额度允许负数。
+- 运行时已拆分 control/usage/telemetry 三个 SQLite 库；生命周期金额权威计数位于 usage_totals.used_microcredits，不从可清理的日志汇总余额。
+- 唯一单位 CREDITS，1 Credit = 1,000,000 micro-Credits；API 金额为整数字符串，SQLite 为 int64；旧库先执行 scripts/migrate_native_credits.py。总配额 api_keys.quota_microcredits、JWT 发放配额和窗口金额 0 表示不限，剩余额度允许负数。
 - 软额度：开始时检查，完成后短锁累加并异步刷盘，不做金额预占或跨请求事务。限流按请求开始时间归桶，日志 created_at 是完成时间。
 - model_prices.billing 保存 tokens/image/free 模式、缓存写入价格、图片规则和输出上限；缺省价格不等同免费。计费快照和状态保存在 telemetry 请求日志中。
-- 改动金额协议时同步维护 docs/credits-api.md、Website 类型与表单。Desktop 的新字段要通过 /api/me 系列兼容提供。
+- 改动金额协议时同步维护 docs/credits-api.md、Website 类型与表单。Desktop 的新字段通过 /api/me 系列提供；当前契约直接修订，不提供 CNY 兼容层。
 - 修改计费链路至少运行 go test ./...；并发计数修改同时运行 go test -race ./...。

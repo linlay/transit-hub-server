@@ -515,14 +515,14 @@ func TestSelfBalanceAndPricesUseTransitHubLimits(t *testing.T) {
 
 	app, db, plainKey := newTestGatewayWithKey(t, []config.ProviderConfig{openAIProvider(upstream.URL)}, store.CreateAPIKeyParams{
 		Name:       "cost-self-check",
-		RateLimits: []store.RateLimit{{Window: store.RateLimitWindow1H, CostQuotaMicro: 100}},
+		RateLimits: []store.RateLimit{{Window: store.RateLimitWindow1H, QuotaMicrocredits: 100}},
 	})
 	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{
-		Protocol:                   "openai",
-		PublicModel:                "public-model",
-		InputCostMicroPer1MTokens:  2_000_000,
-		OutputCostMicroPer1MTokens: 4_000_000,
-		Currency:                   "CNY",
+		Protocol:                      "openai",
+		PublicModel:                   "public-model",
+		InputMicrocreditsPer1MTokens:  2_000_000,
+		OutputMicrocreditsPer1MTokens: 4_000_000,
+		Unit:                          "CREDITS",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +544,7 @@ func TestSelfBalanceAndPricesUseTransitHubLimits(t *testing.T) {
 	if err := json.Unmarshal(balanceRec.Body.Bytes(), &balance); err != nil {
 		t.Fatal(err)
 	}
-	if balance.Currency != "CNY" || balance.Unlimited || balance.CostMicro != 22 || len(balance.Items) != 1 || balance.Items[0].CostRemainingMicro != 78 {
+	if balance.Unit != "CREDITS" || balance.Unlimited || balance.UsedMicrocredits != 22 || len(balance.Items) != 1 || balance.Items[0].RemainingMicrocredits != 78 {
 		t.Fatalf("unexpected balance: %#v", balance)
 	}
 
@@ -561,7 +561,7 @@ func TestSelfBalanceAndPricesUseTransitHubLimits(t *testing.T) {
 	if err := json.Unmarshal(pricesRec.Body.Bytes(), &prices); err != nil {
 		t.Fatal(err)
 	}
-	if len(prices.Items) != 1 || prices.Items[0].PublicModel != "public-model" || prices.Items[0].Currency != "CNY" {
+	if len(prices.Items) != 1 || prices.Items[0].PublicModel != "public-model" || prices.Items[0].Unit != "CREDITS" {
 		t.Fatalf("unexpected prices: %#v", prices)
 	}
 }
@@ -676,14 +676,14 @@ func TestFixedWindowCostRateLimitRejectsNextRequest(t *testing.T) {
 
 	app, db, plainKey := newTestGatewayWithKey(t, []config.ProviderConfig{openAIProvider(upstream.URL)}, store.CreateAPIKeyParams{
 		Name:       "cost-window-limited",
-		RateLimits: []store.RateLimit{{Window: store.RateLimitWindow1H, CostQuotaMicro: 22}},
+		RateLimits: []store.RateLimit{{Window: store.RateLimitWindow1H, QuotaMicrocredits: 22}},
 	})
 	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{
-		Protocol:                   "openai",
-		PublicModel:                "public-model",
-		InputCostMicroPer1MTokens:  2_000_000,
-		OutputCostMicroPer1MTokens: 4_000_000,
-		Currency:                   "CNY",
+		Protocol:                      "openai",
+		PublicModel:                   "public-model",
+		InputMicrocreditsPer1MTokens:  2_000_000,
+		OutputMicrocreditsPer1MTokens: 4_000_000,
+		Unit:                          "CREDITS",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -714,7 +714,7 @@ func TestCostRateLimitRequiresModelPrice(t *testing.T) {
 
 	app, _, plainKey := newTestGatewayWithKey(t, []config.ProviderConfig{openAIProvider(upstream.URL)}, store.CreateAPIKeyParams{
 		Name:       "cost-window-limited",
-		RateLimits: []store.RateLimit{{Window: store.RateLimitWindow1H, CostQuotaMicro: 100}},
+		RateLimits: []store.RateLimit{{Window: store.RateLimitWindow1H, QuotaMicrocredits: 100}},
 	})
 
 	rec := httptest.NewRecorder()
@@ -816,41 +816,41 @@ func TestAdminOverviewRejectsInvalidTimeRange(t *testing.T) {
 	}
 }
 
-func TestAdminModelPriceRequiresConfiguredCurrency(t *testing.T) {
+func TestAdminModelPriceRequiresConfiguredUnit(t *testing.T) {
 	app, _, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider("https://upstream.invalid")})
 
 	invalidReq := httptest.NewRequest(http.MethodPost, "/admin/model-prices", bytes.NewBufferString(`{
 		"protocol":"openai",
 		"public_model":"public-model",
-		"input_cost_micro_per_1m_tokens":1000000,
-		"output_cost_micro_per_1m_tokens":2000000,
-		"currency":"USD"
+		"input_microcredits_per_1m_tokens":"1000000",
+		"output_microcredits_per_1m_tokens":"2000000",
+		"unit":"USD"
 	}`))
 	invalidReq.Header.Set("Authorization", "Bearer admin")
 	invalidRec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(invalidRec, invalidReq)
 	if invalidRec.Code != http.StatusBadRequest {
-		t.Fatalf("invalid currency status = %d, body = %s", invalidRec.Code, invalidRec.Body.String())
+		t.Fatalf("invalid unit status = %d, body = %s", invalidRec.Code, invalidRec.Body.String())
 	}
 
 	validReq := httptest.NewRequest(http.MethodPost, "/admin/model-prices", bytes.NewBufferString(`{
 		"protocol":"openai",
 		"public_model":"public-model",
-		"input_cost_micro_per_1m_tokens":1000000,
-		"output_cost_micro_per_1m_tokens":2000000
+		"input_microcredits_per_1m_tokens":"1000000",
+		"output_microcredits_per_1m_tokens":"2000000"
 	}`))
 	validReq.Header.Set("Authorization", "Bearer admin")
 	validRec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(validRec, validReq)
 	if validRec.Code != http.StatusCreated {
-		t.Fatalf("valid currency status = %d, body = %s", validRec.Code, validRec.Body.String())
+		t.Fatalf("valid unit status = %d, body = %s", validRec.Code, validRec.Body.String())
 	}
 	var price store.ModelPrice
 	if err := json.Unmarshal(validRec.Body.Bytes(), &price); err != nil {
 		t.Fatal(err)
 	}
-	if price.Currency != "CNY" {
-		t.Fatalf("currency = %q, want CNY", price.Currency)
+	if price.Unit != "CREDITS" {
+		t.Fatalf("unit = %q, want CREDITS", price.Unit)
 	}
 }
 
@@ -968,7 +968,7 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 		"request_quota":25,
 		"token_quota":2500,
 		"allowed_models":["public-model"],
-		"rate_limits":[{"window":"1h","request_quota":10,"token_quota":1000,"cost_quota_micro":5000000}]
+		"rate_limits":[{"window":"1h","request_quota":10,"token_quota":1000,"quota_microcredits":"5000000"}]
 	}`))
 	createReq.Header.Set("Authorization", "Bearer admin")
 	createRec := httptest.NewRecorder()
@@ -1043,7 +1043,7 @@ func TestJWTGrantIssuesDesktopAPIKeys(t *testing.T) {
 	if key.Source != "jwt" || key.IssuerJTI != jti || key.RequestQuota != 25 || key.TokenQuota != 2500 || strings.Join(key.AllowedModels, ",") != "public-model" {
 		t.Fatalf("unexpected issued key: %#v", key)
 	}
-	if len(key.RateLimits) != 1 || key.RateLimits[0].Window != store.RateLimitWindow1H || key.RateLimits[0].RequestQuota != 10 || key.RateLimits[0].TokenQuota != 1000 || key.RateLimits[0].CostQuotaMicro != 5000000 {
+	if len(key.RateLimits) != 1 || key.RateLimits[0].Window != store.RateLimitWindow1H || key.RateLimits[0].RequestQuota != 10 || key.RateLimits[0].TokenQuota != 1000 || key.RateLimits[0].QuotaMicrocredits != 5000000 {
 		t.Fatalf("unexpected issued key rate_limits: %#v", key.RateLimits)
 	}
 	if key.Description != "" {
@@ -1806,11 +1806,11 @@ func TestProxyRecordsSessionAndEstimatedCost(t *testing.T) {
 
 	app, db, plainKey := newTestGateway(t, []config.ProviderConfig{openAIProvider(upstream.URL)})
 	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{
-		Protocol:                   "openai",
-		PublicModel:                "public-model",
-		InputCostMicroPer1MTokens:  2_000_000,
-		OutputCostMicroPer1MTokens: 4_000_000,
-		Currency:                   "CNY",
+		Protocol:                      "openai",
+		PublicModel:                   "public-model",
+		InputMicrocreditsPer1MTokens:  2_000_000,
+		OutputMicrocreditsPer1MTokens: 4_000_000,
+		Unit:                          "CREDITS",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1835,8 +1835,8 @@ func TestProxyRecordsSessionAndEstimatedCost(t *testing.T) {
 	if logs.Total != 1 || logs.Items[0].DeviceID != "macbook-pro" || logs.Items[0].Source != "codex" {
 		t.Fatalf("unexpected log session fields: %#v", logs)
 	}
-	if logs.Items[0].CostMicro != 22 {
-		t.Fatalf("cost_micro = %d", logs.Items[0].CostMicro)
+	if logs.Items[0].ChargedMicrocredits != 22 {
+		t.Fatalf("charged_microcredits = %d", logs.Items[0].ChargedMicrocredits)
 	}
 	sessions, err := db.ListAPISessions(t.Context(), store.APISessionQuery{
 		APIKeyID:     key.ID,
@@ -1860,12 +1860,12 @@ func TestProxyRecordsDeepSeekCacheAndProviderUsage(t *testing.T) {
 	app, db, plainKey := newTestGateway(t, []config.ProviderConfig{openAIProvider(upstream.URL)})
 	inputCacheHitCost := int64(500_000)
 	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{
-		Protocol:                          "openai",
-		PublicModel:                       "public-model",
-		InputCostMicroPer1MTokens:         2_000_000,
-		InputCacheHitCostMicroPer1MTokens: &inputCacheHitCost,
-		OutputCostMicroPer1MTokens:        4_000_000,
-		Currency:                          "CNY",
+		Protocol:                             "openai",
+		PublicModel:                          "public-model",
+		InputMicrocreditsPer1MTokens:         2_000_000,
+		InputCacheHitMicrocreditsPer1MTokens: &inputCacheHitCost,
+		OutputMicrocreditsPer1MTokens:        4_000_000,
+		Unit:                                 "CREDITS",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1898,8 +1898,8 @@ func TestProxyRecordsDeepSeekCacheAndProviderUsage(t *testing.T) {
 	if log.CacheHitRate == nil || math.Abs(*log.CacheHitRate-0.4) > 0.0001 {
 		t.Fatalf("cache hit rate = %#v", log.CacheHitRate)
 	}
-	if log.CostMicro != 34 {
-		t.Fatalf("cost_micro = %d", log.CostMicro)
+	if log.ChargedMicrocredits != 34 {
+		t.Fatalf("charged_microcredits = %d", log.ChargedMicrocredits)
 	}
 
 	traffic, err := db.Traffic(t.Context(), store.TrafficQuery{APIKeyID: key.ID, Bucket: "day"})
@@ -1917,7 +1917,7 @@ func TestProxyRecordsDeepSeekCacheAndProviderUsage(t *testing.T) {
 	if len(providers) != 1 {
 		t.Fatalf("provider usage count = %d: %#v", len(providers), providers)
 	}
-	if providers[0].Provider != "test-openai" || providers[0].Requests != 1 || providers[0].TotalTokens != 15 || providers[0].CacheHitTokens != 4 || providers[0].CostMicro != 34 {
+	if providers[0].Provider != "test-openai" || providers[0].Requests != 1 || providers[0].TotalTokens != 15 || providers[0].CacheHitTokens != 4 || providers[0].ChargedMicrocredits != 34 {
 		t.Fatalf("unexpected provider usage: %#v", providers[0])
 	}
 	accountUsage, err := db.ProviderAccountUsage(t.Context(), store.ProviderUsageQuery{})

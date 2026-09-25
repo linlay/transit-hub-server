@@ -16,7 +16,7 @@ allowed_models:
 request_quota: 500
 token_quota: 2000000
 api_key_ttl: 720h
-# 0 = unlimited. 1 Credit = 10000 micro-CNY; 100 CNY = 100000000.
-cost_quota_micro: 0
+# 0 = unlimited. 1 Credit = 1000000 micro-Credits.
+quota_microcredits: 0
 rate_limits: []
-# Example: [{window: 1h, cost_quota_micro: 5000000}]
+# Example: [{window: 1h, quota_microcredits: 500000000}]

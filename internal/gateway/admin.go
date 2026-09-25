@@ -29,16 +29,16 @@ type apiKeyResponse struct {
 	ForcedExpired             bool                    `json:"forced_expired"`
 	RequestQuota              int64                   `json:"request_quota"`
 	TokenQuota                int64                   `json:"token_quota"`
-	CostQuotaMicro            int64                   `json:"cost_quota_micro"`
+	QuotaMicrocredits         int64                   `json:"quota_microcredits,string"`
 	AllowedModels             []string                `json:"allowed_models"`
 	RateLimits                []store.RateLimit       `json:"rate_limits"`
 	RateLimitUsage            []store.RateLimitStatus `json:"rate_limit_usage,omitempty"`
 	RateLimitUsageUnavailable bool                    `json:"rate_limit_usage_unavailable,omitempty"`
 	UsedRequests              int64                   `json:"used_requests"`
 	UsedTokens                int64                   `json:"used_tokens"`
-	UsedCostMicro             int64                   `json:"used_cost_micro"`
-	CostRemainingMicro        int64                   `json:"cost_remaining_micro"`
-	CostUnlimited             bool                    `json:"cost_unlimited"`
+	UsedMicrocredits          int64                   `json:"used_microcredits,string"`
+	RemainingMicrocredits     int64                   `json:"remaining_microcredits,string"`
+	CreditsUnlimited          bool                    `json:"credits_unlimited"`
 	LastUsedAt                *time.Time              `json:"last_used_at,omitempty"`
 	DeletedAt                 *time.Time              `json:"deleted_at,omitempty"`
 	CreatedAt                 time.Time               `json:"created_at"`
@@ -46,14 +46,14 @@ type apiKeyResponse struct {
 }
 
 type createAPIKeyRequest struct {
-	Name           string            `json:"name"`
-	Description    string            `json:"description"`
-	ExpiresAt      *time.Time        `json:"expires_at"`
-	RequestQuota   int64             `json:"request_quota"`
-	TokenQuota     int64             `json:"token_quota"`
-	CostQuotaMicro int64             `json:"cost_quota_micro"`
-	AllowedModels  []string          `json:"allowed_models"`
-	RateLimits     []store.RateLimit `json:"rate_limits"`
+	Name              string            `json:"name"`
+	Description       string            `json:"description"`
+	ExpiresAt         *time.Time        `json:"expires_at"`
+	RequestQuota      int64             `json:"request_quota"`
+	TokenQuota        int64             `json:"token_quota"`
+	QuotaMicrocredits int64             `json:"quota_microcredits,string"`
+	AllowedModels     []string          `json:"allowed_models"`
+	RateLimits        []store.RateLimit `json:"rate_limits"`
 }
 
 type createAPIKeyResponse struct {
@@ -62,16 +62,16 @@ type createAPIKeyResponse struct {
 }
 
 type patchAPIKeyRequest struct {
-	Name           *string                `json:"name"`
-	Description    *string                `json:"description"`
-	Status         *string                `json:"status"`
-	ExpiresAt      optionalTime           `json:"expires_at"`
-	ForcedExpired  *bool                  `json:"forced_expired"`
-	RequestQuota   *int64                 `json:"request_quota"`
-	TokenQuota     *int64                 `json:"token_quota"`
-	CostQuotaMicro *int64                 `json:"cost_quota_micro"`
-	AllowedModels  optionalStringSlice    `json:"allowed_models"`
-	RateLimits     optionalRateLimitSlice `json:"rate_limits"`
+	Name              *string                `json:"name"`
+	Description       *string                `json:"description"`
+	Status            *string                `json:"status"`
+	ExpiresAt         optionalTime           `json:"expires_at"`
+	ForcedExpired     *bool                  `json:"forced_expired"`
+	RequestQuota      *int64                 `json:"request_quota"`
+	TokenQuota        *int64                 `json:"token_quota"`
+	QuotaMicrocredits *int64                 `json:"quota_microcredits,string"`
+	AllowedModels     optionalStringSlice    `json:"allowed_models"`
+	RateLimits        optionalRateLimitSlice `json:"rate_limits"`
 }
 
 type batchAPIKeysRequest struct {
@@ -148,7 +148,7 @@ func (g *Gateway) adminAuth(next http.Handler) http.Handler {
 
 func (g *Gateway) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	var req createAPIKeyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeBillingJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -158,14 +158,14 @@ func (g *Gateway) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created, err := g.store.CreateAPIKey(r.Context(), store.CreateAPIKeyParams{
-		Name:           req.Name,
-		Description:    req.Description,
-		ExpiresAt:      req.ExpiresAt,
-		RequestQuota:   req.RequestQuota,
-		TokenQuota:     req.TokenQuota,
-		CostQuotaMicro: req.CostQuotaMicro,
-		AllowedModels:  allowedModels,
-		RateLimits:     req.RateLimits,
+		Name:              req.Name,
+		Description:       req.Description,
+		ExpiresAt:         req.ExpiresAt,
+		RequestQuota:      req.RequestQuota,
+		TokenQuota:        req.TokenQuota,
+		QuotaMicrocredits: req.QuotaMicrocredits,
+		AllowedModels:     allowedModels,
+		RateLimits:        req.RateLimits,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -253,7 +253,7 @@ func (g *Gateway) getAPIKey(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) patchAPIKey(w http.ResponseWriter, r *http.Request) {
 	var req patchAPIKeyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeBillingJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -267,19 +267,19 @@ func (g *Gateway) patchAPIKey(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	key, err := g.store.UpdateAPIKey(r.Context(), chi.URLParam(r, "id"), store.APIKeyPatch{
-		Name:             req.Name,
-		Description:      req.Description,
-		Status:           req.Status,
-		ExpiresAtSet:     req.ExpiresAt.Set,
-		ExpiresAt:        req.ExpiresAt.Value,
-		ForcedExpired:    req.ForcedExpired,
-		RequestQuota:     req.RequestQuota,
-		TokenQuota:       req.TokenQuota,
-		CostQuotaMicro:   req.CostQuotaMicro,
-		AllowedModelsSet: req.AllowedModels.Set,
-		AllowedModels:    allowedModels,
-		RateLimitsSet:    req.RateLimits.Set,
-		RateLimits:       req.RateLimits.Value,
+		Name:              req.Name,
+		Description:       req.Description,
+		Status:            req.Status,
+		ExpiresAtSet:      req.ExpiresAt.Set,
+		ExpiresAt:         req.ExpiresAt.Value,
+		ForcedExpired:     req.ForcedExpired,
+		RequestQuota:      req.RequestQuota,
+		TokenQuota:        req.TokenQuota,
+		QuotaMicrocredits: req.QuotaMicrocredits,
+		AllowedModelsSet:  req.AllowedModels.Set,
+		AllowedModels:     allowedModels,
+		RateLimitsSet:     req.RateLimits.Set,
+		RateLimits:        req.RateLimits.Value,
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "api key not found")
@@ -315,7 +315,7 @@ func (g *Gateway) deleteAPIKey(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) batchAPIKeys(w http.ResponseWriter, r *http.Request) {
 	var req batchAPIKeysRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeBillingJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -364,7 +364,7 @@ func (g *Gateway) setRoutePool(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Pool string `json:"pool"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeBillingJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
@@ -390,30 +390,30 @@ func (g *Gateway) clearRoutePool(w http.ResponseWriter, r *http.Request) {
 
 func toAPIKeyResponse(key store.APIKey) apiKeyResponse {
 	return apiKeyResponse{
-		DeviceBinding:      key.DeviceBinding,
-		ID:                 key.ID,
-		Name:               key.Name,
-		Description:        key.Description,
-		KeyPrefix:          key.KeyPrefix,
-		Source:             key.Source,
-		IssuerJTI:          key.IssuerJTI,
-		Status:             key.Status,
-		ExpiresAt:          key.ExpiresAt,
-		ForcedExpired:      key.ForcedExpired,
-		RequestQuota:       key.RequestQuota,
-		TokenQuota:         key.TokenQuota,
-		CostQuotaMicro:     key.CostQuotaMicro,
-		AllowedModels:      key.AllowedModels,
-		RateLimits:         key.RateLimits,
-		UsedRequests:       key.UsedRequests,
-		UsedTokens:         key.UsedTokens,
-		UsedCostMicro:      key.UsedCostMicro,
-		CostRemainingMicro: store.CostRemaining(key.CostQuotaMicro, key.UsedCostMicro),
-		CostUnlimited:      key.CostQuotaMicro == 0,
-		LastUsedAt:         key.LastUsedAt,
-		DeletedAt:          key.DeletedAt,
-		CreatedAt:          key.CreatedAt,
-		UpdatedAt:          key.UpdatedAt,
+		DeviceBinding:         key.DeviceBinding,
+		ID:                    key.ID,
+		Name:                  key.Name,
+		Description:           key.Description,
+		KeyPrefix:             key.KeyPrefix,
+		Source:                key.Source,
+		IssuerJTI:             key.IssuerJTI,
+		Status:                key.Status,
+		ExpiresAt:             key.ExpiresAt,
+		ForcedExpired:         key.ForcedExpired,
+		RequestQuota:          key.RequestQuota,
+		TokenQuota:            key.TokenQuota,
+		QuotaMicrocredits:     key.QuotaMicrocredits,
+		AllowedModels:         key.AllowedModels,
+		RateLimits:            key.RateLimits,
+		UsedRequests:          key.UsedRequests,
+		UsedTokens:            key.UsedTokens,
+		UsedMicrocredits:      key.UsedMicrocredits,
+		RemainingMicrocredits: store.CostRemaining(key.QuotaMicrocredits, key.UsedMicrocredits),
+		CreditsUnlimited:      key.QuotaMicrocredits == 0,
+		LastUsedAt:            key.LastUsedAt,
+		DeletedAt:             key.DeletedAt,
+		CreatedAt:             key.CreatedAt,
+		UpdatedAt:             key.UpdatedAt,
 	}
 }
 

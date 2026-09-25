@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -13,13 +12,13 @@ import (
 )
 
 type modelPriceRequest struct {
-	Billing                           *store.PriceBilling `json:"billing"`
-	Protocol                          string              `json:"protocol"`
-	PublicModel                       string              `json:"public_model"`
-	InputCostMicroPer1MTokens         int64               `json:"input_cost_micro_per_1m_tokens"`
-	InputCacheHitCostMicroPer1MTokens *int64              `json:"input_cache_hit_cost_micro_per_1m_tokens"`
-	OutputCostMicroPer1MTokens        int64               `json:"output_cost_micro_per_1m_tokens"`
-	Currency                          string              `json:"currency"`
+	Billing                              *store.PriceBilling `json:"billing"`
+	Protocol                             string              `json:"protocol"`
+	PublicModel                          string              `json:"public_model"`
+	InputMicrocreditsPer1MTokens         int64               `json:"input_microcredits_per_1m_tokens,string"`
+	InputCacheHitMicrocreditsPer1MTokens *int64              `json:"input_cache_hit_microcredits_per_1m_tokens,string"`
+	OutputMicrocreditsPer1MTokens        int64               `json:"output_microcredits_per_1m_tokens,string"`
+	Unit                                 string              `json:"unit"`
 }
 
 func (g *Gateway) overview(w http.ResponseWriter, r *http.Request) {
@@ -271,23 +270,23 @@ func (g *Gateway) listModelPrices(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) createModelPrice(w http.ResponseWriter, r *http.Request) {
 	var req modelPriceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeBillingJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
-	currency, ok := g.modelPriceCurrency(w, req.Currency)
+	unit, ok := g.modelPriceUnit(w, req.Unit)
 	if !ok {
 		return
 	}
 	price, err := g.store.UpsertModelPrice(r.Context(), store.ModelPriceParams{
-		CacheHitPriceSet:                  true,
-		Billing:                           req.Billing,
-		Protocol:                          req.Protocol,
-		PublicModel:                       req.PublicModel,
-		InputCostMicroPer1MTokens:         req.InputCostMicroPer1MTokens,
-		InputCacheHitCostMicroPer1MTokens: req.InputCacheHitCostMicroPer1MTokens,
-		OutputCostMicroPer1MTokens:        req.OutputCostMicroPer1MTokens,
-		Currency:                          currency,
+		CacheHitPriceSet:                     true,
+		Billing:                              req.Billing,
+		Protocol:                             req.Protocol,
+		PublicModel:                          req.PublicModel,
+		InputMicrocreditsPer1MTokens:         req.InputMicrocreditsPer1MTokens,
+		InputCacheHitMicrocreditsPer1MTokens: req.InputCacheHitMicrocreditsPer1MTokens,
+		OutputMicrocreditsPer1MTokens:        req.OutputMicrocreditsPer1MTokens,
+		Unit:                                 unit,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -306,24 +305,24 @@ func (g *Gateway) patchModelPrice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	req := modelPriceRequest{Protocol: current.Protocol, PublicModel: current.PublicModel, Currency: current.Currency, Billing: &current.Billing, InputCostMicroPer1MTokens: current.InputCostMicroPer1MTokens, InputCacheHitCostMicroPer1MTokens: current.InputCacheHitCostMicroPer1MTokens, OutputCostMicroPer1MTokens: current.OutputCostMicroPer1MTokens}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req := modelPriceRequest{Protocol: current.Protocol, PublicModel: current.PublicModel, Unit: current.Unit, Billing: &current.Billing, InputMicrocreditsPer1MTokens: current.InputMicrocreditsPer1MTokens, InputCacheHitMicrocreditsPer1MTokens: current.InputCacheHitMicrocreditsPer1MTokens, OutputMicrocreditsPer1MTokens: current.OutputMicrocreditsPer1MTokens}
+	if err := decodeBillingJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
-	currency, ok := g.modelPriceCurrency(w, req.Currency)
+	unit, ok := g.modelPriceUnit(w, req.Unit)
 	if !ok {
 		return
 	}
 	price, err := g.store.UpdateModelPrice(r.Context(), chi.URLParam(r, "id"), store.ModelPriceParams{
-		CacheHitPriceSet:                  true,
-		Billing:                           req.Billing,
-		Protocol:                          req.Protocol,
-		PublicModel:                       req.PublicModel,
-		InputCostMicroPer1MTokens:         req.InputCostMicroPer1MTokens,
-		InputCacheHitCostMicroPer1MTokens: req.InputCacheHitCostMicroPer1MTokens,
-		OutputCostMicroPer1MTokens:        req.OutputCostMicroPer1MTokens,
-		Currency:                          currency,
+		CacheHitPriceSet:                     true,
+		Billing:                              req.Billing,
+		Protocol:                             req.Protocol,
+		PublicModel:                          req.PublicModel,
+		InputMicrocreditsPer1MTokens:         req.InputMicrocreditsPer1MTokens,
+		InputCacheHitMicrocreditsPer1MTokens: req.InputCacheHitMicrocreditsPer1MTokens,
+		OutputMicrocreditsPer1MTokens:        req.OutputMicrocreditsPer1MTokens,
+		Unit:                                 unit,
 	})
 	if errors.Is(err, store.ErrPriceNotFound) {
 		writeError(w, http.StatusNotFound, "model price not found")
@@ -336,14 +335,14 @@ func (g *Gateway) patchModelPrice(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, price)
 }
 
-func (g *Gateway) modelPriceCurrency(w http.ResponseWriter, requested string) (string, bool) {
-	currency := g.configuredCurrency()
+func (g *Gateway) modelPriceUnit(w http.ResponseWriter, requested string) (string, bool) {
+	unit := store.CreditsUnit
 	requested = strings.ToUpper(strings.TrimSpace(requested))
-	if requested != "" && requested != currency {
-		writeError(w, http.StatusBadRequest, "currency must match configured currency "+currency)
+	if requested != "" && requested != unit {
+		writeError(w, http.StatusBadRequest, "unit must match configured unit "+unit)
 		return "", false
 	}
-	return currency, true
+	return unit, true
 }
 
 func (g *Gateway) deleteModelPrice(w http.ResponseWriter, r *http.Request) {

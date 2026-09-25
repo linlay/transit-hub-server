@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 )
 
 type errorResponse struct {
@@ -61,4 +63,42 @@ func withDegradedComponent(components []string, component string) []string {
 		}
 	}
 	return append(components, component)
+}
+
+// Reject the retired money fields explicitly; unrelated deprecated fields
+// (such as output token defaults) retain their existing ignored behavior.
+func decodeBillingJSON(r *http.Request, target any) error {
+	var raw json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		return err
+	}
+	var fields any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	var check func(any) error
+	check = func(value any) error {
+		switch v := value.(type) {
+		case map[string]any:
+			for key, item := range v {
+				if key == "currency" || strings.Contains(key, "cost_micro") || key == "cost_quota_micro" || key == "cost_remaining_micro" {
+					return fmt.Errorf("retired billing field %s; use native Credits fields", key)
+				}
+				if err := check(item); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, item := range v {
+				if err := check(item); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := check(fields); err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, target)
 }

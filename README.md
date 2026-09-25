@@ -53,7 +53,6 @@ ADMIN_TOKEN=replace-with-a-long-random-token
 | `UPSTREAM_TIMEOUT` | `5m` | 上游请求超时 |
 | `CIRCUIT_FAILURE_THRESHOLD` | `3` | 连续失败多少次后熔断账号 |
 | `CIRCUIT_COOLDOWN` | `30s` | 熔断冷却时间 |
-| `CURRENCY` | `CNY` | 模型价格、成本统计和金额限流使用的全局货币 |
 | `RATE_LIMIT_TIMEZONE` | `Asia/Shanghai` | 固定窗口限流的本地时区 |
 
 ### 2. 配置上游 Provider
@@ -166,9 +165,9 @@ quota:
 sqlite3 data/transit-hub.db < scripts/seed_prices.sql
 ```
 
-如果 `.env` 中修改了 `CONTROL_DB_PATH`（或兼容变量 `DB_PATH`），请把命令里的 `data/transit-hub.db` 换成实际 Control 数据库路径。价格单位是当前 `CURRENCY` 下的每百万 token 金额，脚本以 micro-CNY 存储；导入后刷新管理站 `/pricing` 即可看到多模型价格清单。
+如果 `.env` 中修改了 `CONTROL_DB_PATH`（或兼容变量 `DB_PATH`），请把命令里的 `data/transit-hub.db` 换成实际 Control 数据库路径。价格单位统一为 Credits / 百万 tokens，脚本存储整数 micro-Credits（1 Credit = 1,000,000 micro-Credits）；导入后刷新管理站 `/pricing`。
 
-脚本包含 DeepSeek、MiniMax 和 Mimo 的常见公开模型名。Token Plan 的四个百炼路由使用独立的 `scripts/seed_bailian_token_plan_prices.sql`，价格按百炼按量 API 的当前 CNY 单价记录，而非 Credits。当前价格模型支持 input、cache hit/read 和 output 三项；MiniMax 的 cache write 费用没有独立字段，会按普通 input 估算。生产导入前请按实际上游账单复核，尤其是自定义公开模型名、长上下文档位、优先级服务或非 CNY 结算场景。
+脚本包含 DeepSeek、MiniMax 和 Mimo 的公开模型定价。百炼路由使用 `scripts/seed_bailian_token_plan_prices.sql`。这些脚本是静态 Credits 定价，不自动跟随上游价格或汇率变化；支持输入、缓存读写、输出和显式阶梯。
 
 ### 4. 配置 JWT Grant 签发密钥
 
@@ -268,12 +267,12 @@ Admin API 需要携带 `Authorization: Bearer $ADMIN_TOKEN` 或 `x-admin-token: 
 curl -sS -X POST http://localhost:8080/admin/api-keys \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"demo","request_quota":1000,"token_quota":100000,"allowed_models":["example-chat"],"rate_limits":[{"window":"1h","request_quota":100,"token_quota":200000,"cost_quota_micro":100000000}]}'
+  -d '{"name":"demo","request_quota":1000,"token_quota":100000,"allowed_models":["example-chat"],"rate_limits":[{"window":"1h","request_quota":100,"token_quota":200000,"quota_microcredits":"10000000000"}]}'
 ```
 
 响应里的 `key` 只会返回这一次，请妥善保存。配额字段为 `0` 表示不限额。`allowed_models` 是该 key 可调用的公开模型名白名单，创建和修改时必须至少包含一个公开模型名；已有空白名单 key 不允许调用任何模型。
 
-`rate_limits` 可选，支持 `1h`、`5h`、`1d`、`7d`、`30d`。5h/7d 按各 Key 首次接纳请求起算，持续 5/168 小时，到期后下次使用再开窗；其他周期保持原固定窗口规则。旧 5h/7d 周期用量不迁移，累计用量保留。每个窗口可分别限制 `request_quota`、`token_quota` 和 `cost_quota_micro`；金额以 micro currency 存储，`100000000` 表示 100 个 `CURRENCY` 单位。配置了金额限流的 key 必须先为对应模型配置价格。
+`rate_limits` 可选，支持 `1h`、`5h`、`1d`、`7d`、`30d`。5h/7d 按各 Key 首次接纳请求起算，持续 5/168 小时，到期后下次使用再开窗；其他周期保持原固定窗口规则。旧 5h/7d 周期用量不迁移，累计用量保留。每个窗口可分别限制 `request_quota`、`token_quota` 和 `quota_microcredits`；额度以 micro-Credits 存储，JSON 字符串 `"100000000"` 表示 100 Credits。配置了金额限流的 key 必须先为对应模型配置价格。
 
 常用管理命令：
 
@@ -317,7 +316,7 @@ curl -sS -X DELETE http://localhost:8080/admin/api-keys/key_xxx \
 curl -sS -X POST http://localhost:8080/admin/jwt-grants \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"desktop rollout","issue_quota":100,"request_quota":500,"token_quota":2000000,"allowed_models":["example-chat"],"rate_limits":[{"window":"1d","request_quota":200,"token_quota":2000000,"cost_quota_micro":100000000}]}'
+  -d '{"name":"desktop rollout","issue_quota":100,"request_quota":500,"token_quota":2000000,"allowed_models":["example-chat"],"rate_limits":[{"window":"1d","request_quota":200,"token_quota":2000000,"quota_microcredits":"10000000000"}]}'
 ```
 
 客户端拿到 JWT 后调用公开申请接口：
@@ -548,7 +547,7 @@ curl -sS http://localhost:8080/anthropic/v1/models/your-anthropic-public-model \
   -H "x-api-key: $CLIENT_API_KEY"
 ```
 
-当前客户端 API Key 也可以自查自身状态、限流、用量、余额视图、日志、会话和价格。这里的余额只来自 Transit Hub 的 `cost_quota_micro` 与本地 `model_prices`，不是上游 provider 钱包余额：
+当前客户端 API Key 也可以自查自身状态、限流、用量、余额视图、日志、会话和价格。这里的余额只来自 Transit Hub 的 `quota_microcredits` 与本地 `model_prices`，不是上游 provider 钱包余额：
 
 ```bash
 curl -sS http://localhost:8080/api/me \
@@ -648,9 +647,9 @@ make tidy
 
 ## Credits 计费
 
-支持 `1 元 = 100 Credits`，内部金额使用整数微元（1 Credit = 10,000 micro）。管理员可配置 Key 生命周期总额度和自然小时等固定窗口额度；请求完成后扣费，允许在途请求造成少量超额，不预占余额。
+唯一计费单位为 Credits，内部使用整数 micro-Credits（1 Credit = 1,000,000 micro-Credits），没有人民币换算。管理员可配置 Key 生命周期总额度和自然小时等固定窗口额度；请求完成后扣费，允许在途请求造成少量超额，不预占余额。
 
-完整模型价格、三个 SQLite 数据库升级、失败计费规则及 Desktop 接入字段见 [Credits 与 Desktop API 契约](docs/credits-api.md)。运行时要求 `CURRENCY=CNY`；`MAX_CONCURRENT_PER_KEY` 默认 16。模型价格支持 token、缓存读写、按张图片规则和显式免费。
+完整模型价格、三个 SQLite 数据库升级、失败计费规则及 Desktop 接入字段见 [Credits 与 Desktop API 契约](docs/credits-api.md)。旧库先使用 `scripts/migrate_native_credits.py` 离线备份迁移（见契约文档）；`MAX_CONCURRENT_PER_KEY` 默认 16。模型价格支持 token、缓存读写、按张图片规则和显式免费。
 
 ### Traffic 使用分析
 

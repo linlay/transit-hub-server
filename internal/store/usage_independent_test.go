@@ -91,7 +91,7 @@ func TestIndependentWindowQuotaBlocksOtherWindowCreation(t *testing.T) {
 			case "tokens":
 				key.RateLimits[1].TokenQuota = 2
 			case "cost":
-				key.RateLimits[1].CostQuotaMicro = 3
+				key.RateLimits[1].QuotaMicrocredits = 3
 			}
 			at := time.Now().UTC()
 			first := admitTest(t, u, key, at)
@@ -137,7 +137,7 @@ func TestIndependentWindowsPersistConcurrentFirstUse(t *testing.T) {
 	}
 	defer reloaded.Close(context.Background())
 	for _, s := range statusTest(t, reloaded, key, at) {
-		if !s.StartsAt.Equal(at) || s.Requests != 20 || s.CostMicro != 60 {
+		if !s.StartsAt.Equal(at) || s.Requests != 20 || s.ChargedMicrocredits != 60 {
 			t.Fatalf("reload: %+v", s)
 		}
 	}

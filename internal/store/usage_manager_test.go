@@ -48,7 +48,7 @@ func TestUsageManagerConcurrentRecordFlushAndReload(t *testing.T) {
 	})
 	total := reloaded.Total("key-1")
 	wantRequests := int64(workers * eventsPerWorker)
-	if total.UsedRequests != wantRequests || total.UsedTokens != wantRequests*5 || total.UsedCostMicro != wantRequests*7 {
+	if total.UsedRequests != wantRequests || total.UsedTokens != wantRequests*5 || total.UsedMicrocredits != wantRequests*7 {
 		t.Fatalf("unexpected persisted total: %#v", total)
 	}
 	statuses, err := reloaded.RateLimitStatuses("key-1", []RateLimit{{
@@ -57,7 +57,7 @@ func TestUsageManagerConcurrentRecordFlushAndReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(statuses) != 1 || statuses[0].Requests != wantRequests || statuses[0].CostMicro != wantRequests*7 {
+	if len(statuses) != 1 || statuses[0].Requests != wantRequests || statuses[0].ChargedMicrocredits != wantRequests*7 {
 		t.Fatalf("unexpected persisted bucket: %#v", statuses)
 	}
 }
@@ -135,7 +135,7 @@ func TestUsageManagerUpdatesAllFiveWindows(t *testing.T) {
 		t.Fatalf("statuses=%d want=%d", len(statuses), len(supportedRateLimitWindows))
 	}
 	for _, status := range statuses {
-		if status.Requests != 1 || status.Tokens != 3 || status.CostMicro != 3 {
+		if status.Requests != 1 || status.Tokens != 3 || status.ChargedMicrocredits != 3 {
 			t.Fatalf("window %s missing usage: %#v", status.Window, status)
 		}
 	}

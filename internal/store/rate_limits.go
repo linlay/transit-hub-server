@@ -29,26 +29,26 @@ var rateLimitWindowOrder = map[string]int{
 }
 
 type RateLimit struct {
-	Window         string `json:"window"`
-	RequestQuota   int64  `json:"request_quota"`
-	TokenQuota     int64  `json:"token_quota"`
-	CostQuotaMicro int64  `json:"cost_quota_micro"`
+	Window            string `json:"window"`
+	RequestQuota      int64  `json:"request_quota"`
+	TokenQuota        int64  `json:"token_quota"`
+	QuotaMicrocredits int64  `json:"quota_microcredits,string"`
 }
 
 type RateLimitStatus struct {
-	State              string    `json:"state,omitempty"`
-	Window             string    `json:"window"`
-	StartsAt           time.Time `json:"starts_at"`
-	ResetsAt           time.Time `json:"resets_at"`
-	Requests           int64     `json:"requests"`
-	RequestQuota       int64     `json:"request_quota"`
-	RequestRemaining   int64     `json:"request_remaining"`
-	Tokens             int64     `json:"tokens"`
-	TokenQuota         int64     `json:"token_quota"`
-	TokenRemaining     int64     `json:"token_remaining"`
-	CostMicro          int64     `json:"cost_micro"`
-	CostQuotaMicro     int64     `json:"cost_quota_micro"`
-	CostRemainingMicro int64     `json:"cost_remaining_micro"`
+	State                 string    `json:"state,omitempty"`
+	Window                string    `json:"window"`
+	StartsAt              time.Time `json:"starts_at"`
+	ResetsAt              time.Time `json:"resets_at"`
+	Requests              int64     `json:"requests"`
+	RequestQuota          int64     `json:"request_quota"`
+	RequestRemaining      int64     `json:"request_remaining"`
+	Tokens                int64     `json:"tokens"`
+	TokenQuota            int64     `json:"token_quota"`
+	TokenRemaining        int64     `json:"token_remaining"`
+	ChargedMicrocredits   int64     `json:"charged_microcredits,string"`
+	QuotaMicrocredits     int64     `json:"quota_microcredits,string"`
+	RemainingMicrocredits int64     `json:"remaining_microcredits,string"`
 }
 
 type RateLimitViolation struct {
@@ -73,14 +73,14 @@ func NormalizeRateLimits(limits []RateLimit) ([]RateLimit, error) {
 			return nil, fmt.Errorf("duplicate rate limit window: %s", window)
 		}
 		seen[window] = struct{}{}
-		if limit.RequestQuota < 0 || limit.TokenQuota < 0 || limit.CostQuotaMicro < 0 {
+		if limit.RequestQuota < 0 || limit.TokenQuota < 0 || limit.QuotaMicrocredits < 0 {
 			return nil, errors.New("rate limit quotas must be >= 0")
 		}
 		normalized = append(normalized, RateLimit{
-			Window:         window,
-			RequestQuota:   limit.RequestQuota,
-			TokenQuota:     limit.TokenQuota,
-			CostQuotaMicro: limit.CostQuotaMicro,
+			Window:            window,
+			RequestQuota:      limit.RequestQuota,
+			TokenQuota:        limit.TokenQuota,
+			QuotaMicrocredits: limit.QuotaMicrocredits,
 		})
 	}
 	sort.Slice(normalized, func(i, j int) bool {
@@ -91,7 +91,7 @@ func NormalizeRateLimits(limits []RateLimit) ([]RateLimit, error) {
 
 func RateLimitsNeedCost(limits []RateLimit) bool {
 	for _, limit := range limits {
-		if limit.CostQuotaMicro > 0 {
+		if limit.QuotaMicrocredits > 0 {
 			return true
 		}
 	}
@@ -136,7 +136,7 @@ func FirstRateLimitViolation(statuses []RateLimitStatus) (RateLimitViolation, bo
 		if status.TokenQuota > 0 && status.Tokens >= status.TokenQuota {
 			return RateLimitViolation{Window: status.Window, Dimension: "tokens", ResetsAt: status.ResetsAt}, true
 		}
-		if status.CostQuotaMicro > 0 && status.CostMicro >= status.CostQuotaMicro {
+		if status.QuotaMicrocredits > 0 && status.ChargedMicrocredits >= status.QuotaMicrocredits {
 			return RateLimitViolation{Window: status.Window, Dimension: "cost", ResetsAt: status.ResetsAt}, true
 		}
 	}

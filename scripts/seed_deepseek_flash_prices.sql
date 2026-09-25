@@ -1,17 +1,16 @@
--- Source: zenmind-env/registries.example/models/deepseek-flash.yml (2026-09-16).
--- CNY per 1M tokens: input 2.0, cache hit 0.04, output 8.0.
+-- Native Credits tariff. Integer micro-Credits per million tokens (1 Credit = 1000000).
+-- Preserves the visible Credits prices at the native billing migration; no runtime exchange rate.
 INSERT INTO model_prices (
-  id, protocol, public_model, input_cost_micro_per_1m,
-  input_cache_hit_cost_micro_per_1m, output_cost_micro_per_1m,
-  currency, created_at, updated_at
+  id, protocol, public_model, input_microcredits_per_1m,
+  input_cache_hit_microcredits_per_1m, output_microcredits_per_1m,
+  unit, created_at, updated_at
 ) VALUES (
-  'price_deepseek_flash', 'openai', 'deepseek-flash', 2000000,
-  40000, 8000000, 'CNY', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+  'price_deepseek_flash', 'openai', 'deepseek-flash', 200000000, 4000000, 800000000, 'CREDITS', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
   strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 )
 ON CONFLICT(protocol, public_model) DO UPDATE SET
-  input_cost_micro_per_1m = excluded.input_cost_micro_per_1m,
-  input_cache_hit_cost_micro_per_1m = excluded.input_cache_hit_cost_micro_per_1m,
-  output_cost_micro_per_1m = excluded.output_cost_micro_per_1m,
-  currency = excluded.currency,
+  input_microcredits_per_1m = excluded.input_microcredits_per_1m,
+  input_cache_hit_microcredits_per_1m = excluded.input_cache_hit_microcredits_per_1m,
+  output_microcredits_per_1m = excluded.output_microcredits_per_1m,
+  unit = excluded.unit,
   updated_at = excluded.updated_at;

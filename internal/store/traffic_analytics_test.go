@@ -26,7 +26,7 @@ func TestTrafficAnalyticsFiltersAndTotals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Summary.Requests != 128 || result.Summary.UniqueAPIKeys != 2 || result.Summary.CostMicro != 1330000 || result.Summary.ErrorRequests != 2 {
+	if result.Summary.Requests != 128 || result.Summary.UniqueAPIKeys != 2 || result.Summary.ChargedMicrocredits != 1330000 || result.Summary.ErrorRequests != 2 {
 		t.Fatalf("bad summary: %+v", result.Summary)
 	}
 	if len(result.Items) != 2 || result.Items[0].Bucket != "2026-09-02" || result.Items[1].Bucket != "2026-09-03" {
@@ -42,7 +42,7 @@ func TestTrafficAnalyticsFiltersAndTotals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filtered.Summary.Requests != 125 || filtered.Summary.UniqueAPIKeys != 1 || filtered.Summary.TotalTokens != 625 || filtered.Summary.CostMicro != 1250000 {
+	if filtered.Summary.Requests != 125 || filtered.Summary.UniqueAPIKeys != 1 || filtered.Summary.TotalTokens != 625 || filtered.Summary.ChargedMicrocredits != 1250000 {
 		t.Fatalf("bad filtered summary: %+v", filtered.Summary)
 	}
 	if len(filtered.Options.Keys) != 2 || len(filtered.Options.Models) != 2 {

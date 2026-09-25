@@ -232,12 +232,12 @@ func (t *Telemetry) writeBatch(ctx context.Context, batch []RequestLog) error {
 				api_key_id, api_key_name, key_prefix, protocol, public_model, upstream_model,
 				provider, pool, account, device_id, source, status_code, latency_ms,
 				request_tokens, response_tokens, cache_hit_tokens, cache_miss_tokens,
-				cost_micro, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count
+				charged_microcredits, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, entry.APIKeyID, entry.APIKeyName, entry.KeyPrefix, entry.Protocol, entry.PublicModel,
 			entry.UpstreamModel, entry.Provider, entry.Pool, entry.Account, deviceID, source,
 			entry.StatusCode, entry.Latency.Milliseconds(), entry.RequestTokens, entry.ResponseTokens,
-			entry.CacheHitTokens, entry.CacheMissTokens, entry.CostMicro, boolInt(entry.Estimated),
+			entry.CacheHitTokens, entry.CacheMissTokens, entry.ChargedMicrocredits, boolInt(entry.Estimated),
 			entry.ErrorType, formatTime(createdAt), entry.BillingStatus, nonemptySnapshot(entry.PriceSnapshot), nullableStart(entry.StartedAt), entry.CacheWriteTokens, entry.ImageCount); err != nil {
 			return err
 		}
@@ -337,7 +337,7 @@ func (t *Telemetry) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficB
 		       COUNT(*), COUNT(DISTINCT NULLIF(api_key_id, '')),
 		       COALESCE(SUM(request_tokens), 0), COALESCE(SUM(response_tokens), 0),
 		       COALESCE(SUM(cache_hit_tokens), 0), COALESCE(SUM(cache_miss_tokens), 0),
-		       COALESCE(SUM(cost_micro), 0),
+		       COALESCE(SUM(charged_microcredits), 0),
 		       COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0),
 		       COALESCE(AVG(latency_ms), 0)
 		FROM request_logs
@@ -354,7 +354,7 @@ func (t *Telemetry) Traffic(ctx context.Context, query TrafficQuery) ([]TrafficB
 	for rows.Next() {
 		var item TrafficBucket
 		if err := rows.Scan(&item.Bucket, &item.Requests, &item.UniqueAPIKeys, &item.RequestTokens, &item.ResponseTokens,
-			&item.CacheHitTokens, &item.CacheMissTokens, &item.CostMicro, &item.ErrorRequests,
+			&item.CacheHitTokens, &item.CacheMissTokens, &item.ChargedMicrocredits, &item.ErrorRequests,
 			&item.AverageLatency); err != nil {
 			return nil, err
 		}
@@ -412,13 +412,13 @@ func (t *Telemetry) RequestLogSummary(ctx context.Context, query RequestLogQuery
 	err = db.QueryRowContext(ctx, fmt.Sprintf(`
 		SELECT COUNT(*), COALESCE(SUM(request_tokens), 0), COALESCE(SUM(response_tokens), 0),
 		       COALESCE(SUM(cache_hit_tokens), 0), COALESCE(SUM(cache_miss_tokens), 0),
-		       COALESCE(SUM(cost_micro), 0),
+		       COALESCE(SUM(charged_microcredits), 0),
 		       COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0),
 		       COALESCE(AVG(latency_ms), 0)
 		FROM request_logs
 		%s
 	`, where), args...).Scan(&summary.Requests, &summary.RequestTokens, &summary.ResponseTokens,
-		&summary.CacheHitTokens, &summary.CacheMissTokens, &summary.CostMicro,
+		&summary.CacheHitTokens, &summary.CacheMissTokens, &summary.ChargedMicrocredits,
 		&summary.ErrorRequests, &summary.AverageLatency)
 	if err != nil {
 		t.markQueryFailure(err)
@@ -456,7 +456,7 @@ func (t *Telemetry) ListRequestLogs(ctx context.Context, query RequestLogQuery) 
 		SELECT id, api_key_id, api_key_name, protocol, public_model, upstream_model,
 		       provider, pool, account, device_id, source, status_code, latency_ms,
 		       request_tokens, response_tokens, cache_hit_tokens, cache_miss_tokens,
-		       cost_micro, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count
+		       charged_microcredits, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count
 		FROM request_logs
 		%s
 		ORDER BY created_at DESC, id DESC
@@ -477,7 +477,7 @@ func (t *Telemetry) ListRequestLogs(ctx context.Context, query RequestLogQuery) 
 		if err := rows.Scan(&item.ID, &item.APIKeyID, &item.APIKeyName, &item.Protocol,
 			&item.PublicModel, &item.UpstreamModel, &item.Provider, &item.Pool, &item.Account,
 			&item.DeviceID, &item.Source, &item.StatusCode, &item.LatencyMS, &item.RequestTokens,
-			&item.ResponseTokens, &item.CacheHitTokens, &item.CacheMissTokens, &item.CostMicro,
+			&item.ResponseTokens, &item.CacheHitTokens, &item.CacheMissTokens, &item.ChargedMicrocredits,
 			&estimated, &item.ErrorType, &createdAt, &item.BillingStatus, &snapshot, &started, &item.CacheWriteTokens, &item.ImageCount); err != nil {
 			return RequestLogListResult{}, err
 		}
@@ -523,7 +523,7 @@ func (t *Telemetry) ProviderUsage(ctx context.Context, query ProviderUsageQuery)
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT provider, COUNT(*), COALESCE(SUM(request_tokens), 0),
 		       COALESCE(SUM(response_tokens), 0), COALESCE(SUM(cache_hit_tokens), 0),
-		       COALESCE(SUM(cache_miss_tokens), 0), COALESCE(SUM(cost_micro), 0),
+		       COALESCE(SUM(cache_miss_tokens), 0), COALESCE(SUM(charged_microcredits), 0),
 		       COALESCE(SUM(CASE WHEN status_code >= 400 OR error_type <> '' THEN 1 ELSE 0 END), 0),
 		       COALESCE(AVG(latency_ms), 0)
 		FROM request_logs
@@ -540,7 +540,7 @@ func (t *Telemetry) ProviderUsage(ctx context.Context, query ProviderUsageQuery)
 	for rows.Next() {
 		var item ProviderUsage
 		if err := rows.Scan(&item.Provider, &item.Requests, &item.RequestTokens, &item.ResponseTokens,
-			&item.CacheHitTokens, &item.CacheMissTokens, &item.CostMicro, &item.ErrorRequests,
+			&item.CacheHitTokens, &item.CacheMissTokens, &item.ChargedMicrocredits, &item.ErrorRequests,
 			&item.AverageLatency); err != nil {
 			return nil, err
 		}
@@ -753,6 +753,9 @@ func (t *Telemetry) QuickCheck(ctx context.Context) error {
 }
 
 func migrateTelemetry(db *sql.DB) error {
+	if err := requireNativeCredits(db); err != nil {
+		return err
+	}
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS request_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -773,7 +776,7 @@ func migrateTelemetry(db *sql.DB) error {
 			response_tokens INTEGER NOT NULL,
 			cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
 			cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
-			cost_micro INTEGER NOT NULL DEFAULT 0,
+			charged_microcredits INTEGER NOT NULL DEFAULT 0,
 			estimated INTEGER NOT NULL DEFAULT 0,
 			error_type TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL
@@ -812,6 +815,6 @@ func migrateTelemetry(db *sql.DB) error {
 			return err
 		}
 	}
-	_, err = db.Exec(`INSERT OR IGNORE INTO schema_migrations(name, applied_at) VALUES ('credits_v1', ?)`, formatTime(time.Now().UTC()))
+	_, err = db.Exec(`INSERT OR IGNORE INTO schema_migrations(name, applied_at) VALUES ('native_credits', ?)`, formatTime(time.Now().UTC()))
 	return err
 }

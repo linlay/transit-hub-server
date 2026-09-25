@@ -61,7 +61,7 @@ func (u *UsageManager) Admit(ctx context.Context, key APIKey, now time.Time) (Wi
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if total, ok := u.totals[key.ID]; ok {
-		key.UsedRequests, key.UsedTokens, key.UsedCostMicro = total.UsedRequests, total.UsedTokens, total.UsedCostMicro
+		key.UsedRequests, key.UsedTokens, key.UsedMicrocredits = total.UsedRequests, total.UsedTokens, total.UsedMicrocredits
 	}
 	if err := ValidateUsableKey(key, now); err != nil {
 		return nil, err

@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// All persisted amounts are integer micro-CNY; Credits are a presentation unit.
-const MicroPerCredit int64 = 10_000
+// All persisted amounts are integer micro-Credits. Credits are the only billing unit.
+const MicrocreditsPerCredit int64 = 1_000_000
 
 func CostRemaining(quota, used int64) int64 {
 	if quota == 0 {
@@ -32,41 +32,41 @@ func nullableStart(value time.Time) any {
 }
 
 type ImagePrice struct {
-	Size      string `json:"size"`
-	Quality   string `json:"quality"`
-	CostMicro int64  `json:"cost_micro"`
+	Size                string `json:"size"`
+	Quality             string `json:"quality"`
+	ChargedMicrocredits int64  `json:"charged_microcredits,string"`
 }
 
 // TokenPriceTier replaces the entire request tariff once input exceeds the threshold.
 type TokenPriceTier struct {
-	AboveInputTokens       int64  `json:"above_input_tokens"`
-	InputCostMicroPer1M    int64  `json:"input_cost_micro_per_1m_tokens"`
-	OutputCostMicroPer1M   int64  `json:"output_cost_micro_per_1m_tokens"`
-	CacheHitCostMicroPer1M *int64 `json:"input_cache_hit_cost_micro_per_1m_tokens,omitempty"`
+	AboveInputTokens          int64  `json:"above_input_tokens"`
+	InputMicrocreditsPer1M    int64  `json:"input_microcredits_per_1m_tokens,string"`
+	OutputMicrocreditsPer1M   int64  `json:"output_microcredits_per_1m_tokens,string"`
+	CacheHitMicrocreditsPer1M *int64 `json:"input_cache_hit_microcredits_per_1m_tokens,omitempty,string"`
 }
 
 type PriceBilling struct {
-	TokenTiers               []TokenPriceTier `json:"token_tiers,omitempty"`
-	Mode                     string           `json:"mode"` // tokens, image, free
-	CacheWriteCostMicroPer1M *int64           `json:"cache_write_cost_micro_per_1m_tokens,omitempty"`
-	ImagePrices              []ImagePrice     `json:"image_prices,omitempty"`
+	TokenTiers                  []TokenPriceTier `json:"token_tiers,omitempty"`
+	Mode                        string           `json:"mode"` // tokens, image, free
+	CacheWriteMicrocreditsPer1M *int64           `json:"cache_write_microcredits_per_1m_tokens,omitempty,string"`
+	ImagePrices                 []ImagePrice     `json:"image_prices,omitempty"`
 }
 
 func validateBilling(b PriceBilling, p ModelPriceParams) error {
 	if b.Mode != "tokens" && b.Mode != "image" && b.Mode != "free" {
 		return errors.New("billing.mode must be tokens, image or free")
 	}
-	for _, cost := range []int64{p.InputCostMicroPer1MTokens, p.OutputCostMicroPer1MTokens} {
+	for _, cost := range []int64{p.InputMicrocreditsPer1MTokens, p.OutputMicrocreditsPer1MTokens} {
 		if cost < 0 || cost > 9_000_000_000_000_000 {
 			return errors.New("price out of range")
 		}
 	}
-	for _, cost := range []*int64{p.InputCacheHitCostMicroPer1MTokens, b.CacheWriteCostMicroPer1M} {
+	for _, cost := range []*int64{p.InputCacheHitMicrocreditsPer1MTokens, b.CacheWriteMicrocreditsPer1M} {
 		if cost != nil && (*cost < 0 || *cost > 9_000_000_000_000_000) {
 			return errors.New("price out of range")
 		}
 	}
-	if b.Mode == "tokens" && p.InputCostMicroPer1MTokens == 0 && p.OutputCostMicroPer1MTokens == 0 && (p.InputCacheHitCostMicroPer1MTokens == nil || *p.InputCacheHitCostMicroPer1MTokens == 0) && (b.CacheWriteCostMicroPer1M == nil || *b.CacheWriteCostMicroPer1M == 0) {
+	if b.Mode == "tokens" && p.InputMicrocreditsPer1MTokens == 0 && p.OutputMicrocreditsPer1MTokens == 0 && (p.InputCacheHitMicrocreditsPer1MTokens == nil || *p.InputCacheHitMicrocreditsPer1MTokens == 0) && (b.CacheWriteMicrocreditsPer1M == nil || *b.CacheWriteMicrocreditsPer1M == 0) {
 		return errors.New("zero-priced models must explicitly use billing.mode=free")
 	}
 	if b.Mode == "image" && len(b.ImagePrices) == 0 {
@@ -77,7 +77,7 @@ func validateBilling(b PriceBilling, p ModelPriceParams) error {
 		if b.Mode != "tokens" || tier.AboveInputTokens < 0 || tier.AboveInputTokens <= previous {
 			return errors.New("token tiers require tokens mode and increasing non-negative thresholds")
 		}
-		params := ModelPriceParams{InputCostMicroPer1MTokens: tier.InputCostMicroPer1M, OutputCostMicroPer1MTokens: tier.OutputCostMicroPer1M, InputCacheHitCostMicroPer1MTokens: tier.CacheHitCostMicroPer1M}
+		params := ModelPriceParams{InputMicrocreditsPer1MTokens: tier.InputMicrocreditsPer1M, OutputMicrocreditsPer1MTokens: tier.OutputMicrocreditsPer1M, InputCacheHitMicrocreditsPer1MTokens: tier.CacheHitMicrocreditsPer1M}
 		if err := validateBilling(PriceBilling{Mode: "tokens"}, params); err != nil {
 			return err
 		}
@@ -86,7 +86,7 @@ func validateBilling(b PriceBilling, p ModelPriceParams) error {
 	seen := map[string]bool{}
 	for _, rule := range b.ImagePrices {
 		key := rule.Size + "\x00" + rule.Quality
-		if seen[key] || rule.CostMicro <= 0 || rule.CostMicro > 9_000_000_000_000_000 {
+		if seen[key] || rule.ChargedMicrocredits <= 0 || rule.ChargedMicrocredits > 9_000_000_000_000_000 {
 			return errors.New("invalid or duplicate image price")
 		}
 		seen[key] = true
@@ -113,7 +113,7 @@ func (p ModelPrice) ImageUnitCost(size, quality string) (int64, bool) {
 			score++
 		}
 		if score > best {
-			best, value, matches = score, rule.CostMicro, 1
+			best, value, matches = score, rule.ChargedMicrocredits, 1
 		} else if score == best {
 			matches++
 		}
@@ -121,7 +121,7 @@ func (p ModelPrice) ImageUnitCost(size, quality string) (int64, bool) {
 	return value, matches == 1
 }
 
-// Sum at full precision, then round half up once to micro-CNY. Big integers
+// Sum at full precision, then round half up once to micro-Credits. Big integers
 // prevent intermediate token*price overflow. Saturation can only deny more use.
 func pricedSum(pairs ...int64) int64 {
 	sum := new(big.Int)
@@ -144,21 +144,21 @@ func TokenCost(p ModelPrice, input, output, hit, write int64) int64 {
 	}
 	for _, tier := range p.Billing.TokenTiers {
 		if input > tier.AboveInputTokens {
-			p.InputCostMicroPer1MTokens = tier.InputCostMicroPer1M
-			p.OutputCostMicroPer1MTokens = tier.OutputCostMicroPer1M
-			p.InputCacheHitCostMicroPer1MTokens = tier.CacheHitCostMicroPer1M
+			p.InputMicrocreditsPer1MTokens = tier.InputMicrocreditsPer1M
+			p.OutputMicrocreditsPer1MTokens = tier.OutputMicrocreditsPer1M
+			p.InputCacheHitMicrocreditsPer1MTokens = tier.CacheHitMicrocreditsPer1M
 		}
 	}
 	hit = max(0, min(hit, input))
 	write = max(0, min(write, input-hit))
-	hitPrice, writePrice := p.InputCostMicroPer1MTokens, p.InputCostMicroPer1MTokens
-	if p.InputCacheHitCostMicroPer1MTokens != nil {
-		hitPrice = *p.InputCacheHitCostMicroPer1MTokens
+	hitPrice, writePrice := p.InputMicrocreditsPer1MTokens, p.InputMicrocreditsPer1MTokens
+	if p.InputCacheHitMicrocreditsPer1MTokens != nil {
+		hitPrice = *p.InputCacheHitMicrocreditsPer1MTokens
 	}
-	if p.Billing.CacheWriteCostMicroPer1M != nil {
-		writePrice = *p.Billing.CacheWriteCostMicroPer1M
+	if p.Billing.CacheWriteMicrocreditsPer1M != nil {
+		writePrice = *p.Billing.CacheWriteMicrocreditsPer1M
 	}
-	return pricedSum(max(0, input-hit-write), p.InputCostMicroPer1MTokens, hit, hitPrice, write, writePrice, output, p.OutputCostMicroPer1MTokens)
+	return pricedSum(max(0, input-hit-write), p.InputMicrocreditsPer1MTokens, hit, hitPrice, write, writePrice, output, p.OutputMicrocreditsPer1MTokens)
 }
 
 func ImageCost(count, unit int64) int64 {

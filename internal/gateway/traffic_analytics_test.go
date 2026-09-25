@@ -34,7 +34,7 @@ func TestTrafficAnalyticsHTTPAndMatchingLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, model := range []string{"model-a", "model-b"} {
-		if !app.telemetry.Enqueue(store.RequestLog{APIKeyID: key.ID, APIKeyName: key.Name, PublicModel: model, Provider: "provider-a", StatusCode: 200, RequestTokens: 2, ResponseTokens: 3, CostMicro: 10000, CreatedAt: time.Now().UTC()}) {
+		if !app.telemetry.Enqueue(store.RequestLog{APIKeyID: key.ID, APIKeyName: key.Name, PublicModel: model, Provider: "provider-a", StatusCode: 200, RequestTokens: 2, ResponseTokens: 3, ChargedMicrocredits: 10000, CreatedAt: time.Now().UTC()}) {
 			t.Fatal("enqueue failed")
 		}
 	}

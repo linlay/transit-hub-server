@@ -148,7 +148,7 @@ func insertLegacyMigrationLog(t *testing.T, control *Store, apiKeyID string, cre
 	if _, err := control.db.ExecContext(t.Context(), `
 		INSERT INTO request_logs (
 			api_key_id, protocol, public_model, upstream_model, provider, pool, account,
-			status_code, latency_ms, request_tokens, response_tokens, cost_micro, created_at
+			status_code, latency_ms, request_tokens, response_tokens, charged_microcredits, created_at
 		) VALUES (?, 'openai', 'model', 'upstream', 'provider', 'default', 'account',
 			200, 10, ?, ?, 12, ?)
 	`, apiKeyID, requestTokens, responseTokens, formatTime(createdAt)); err != nil {

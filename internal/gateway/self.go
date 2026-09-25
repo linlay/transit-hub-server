@@ -8,61 +8,59 @@ import (
 )
 
 type selfAPIKeyResponse struct {
-	ID                 string            `json:"id"`
-	Name               string            `json:"name"`
-	Description        string            `json:"description"`
-	KeyPrefix          string            `json:"key_prefix"`
-	Source             string            `json:"source"`
-	IssuerJTI          string            `json:"issuer_jti,omitempty"`
-	Status             string            `json:"status"`
-	ExpiresAt          *time.Time        `json:"expires_at,omitempty"`
-	ForcedExpired      bool              `json:"forced_expired"`
-	RequestQuota       int64             `json:"request_quota"`
-	RequestRemaining   int64             `json:"request_remaining"`
-	RequestUnlimited   bool              `json:"request_unlimited"`
-	TokenQuota         int64             `json:"token_quota"`
-	CostQuotaMicro     int64             `json:"cost_quota_micro"`
-	TokenRemaining     int64             `json:"token_remaining"`
-	TokenUnlimited     bool              `json:"token_unlimited"`
-	AllowedModels      []string          `json:"allowed_models"`
-	RateLimits         []store.RateLimit `json:"rate_limits"`
-	UsedRequests       int64             `json:"used_requests"`
-	UsedTokens         int64             `json:"used_tokens"`
-	UsedCostMicro      int64             `json:"used_cost_micro"`
-	CostRemainingMicro int64             `json:"cost_remaining_micro"`
-	CostUnlimited      bool              `json:"cost_unlimited"`
-	LastUsedAt         *time.Time        `json:"last_used_at,omitempty"`
-	CreatedAt          time.Time         `json:"created_at"`
-	UpdatedAt          time.Time         `json:"updated_at"`
+	ID                    string            `json:"id"`
+	Name                  string            `json:"name"`
+	Description           string            `json:"description"`
+	KeyPrefix             string            `json:"key_prefix"`
+	Source                string            `json:"source"`
+	IssuerJTI             string            `json:"issuer_jti,omitempty"`
+	Status                string            `json:"status"`
+	ExpiresAt             *time.Time        `json:"expires_at,omitempty"`
+	ForcedExpired         bool              `json:"forced_expired"`
+	RequestQuota          int64             `json:"request_quota"`
+	RequestRemaining      int64             `json:"request_remaining"`
+	RequestUnlimited      bool              `json:"request_unlimited"`
+	TokenQuota            int64             `json:"token_quota"`
+	QuotaMicrocredits     int64             `json:"quota_microcredits,string"`
+	TokenRemaining        int64             `json:"token_remaining"`
+	TokenUnlimited        bool              `json:"token_unlimited"`
+	AllowedModels         []string          `json:"allowed_models"`
+	RateLimits            []store.RateLimit `json:"rate_limits"`
+	UsedRequests          int64             `json:"used_requests"`
+	UsedTokens            int64             `json:"used_tokens"`
+	UsedMicrocredits      int64             `json:"used_microcredits,string"`
+	RemainingMicrocredits int64             `json:"remaining_microcredits,string"`
+	CreditsUnlimited      bool              `json:"credits_unlimited"`
+	LastUsedAt            *time.Time        `json:"last_used_at,omitempty"`
+	CreatedAt             time.Time         `json:"created_at"`
+	UpdatedAt             time.Time         `json:"updated_at"`
 }
 
 type selfLifetimeLimits struct {
-	UsedCostMicro      int64 `json:"used_cost_micro"`
-	CostRemainingMicro int64 `json:"cost_remaining_micro"`
-	CostUnlimited      bool  `json:"cost_unlimited"`
+	UsedMicrocredits      int64 `json:"used_microcredits,string"`
+	RemainingMicrocredits int64 `json:"remaining_microcredits,string"`
+	CreditsUnlimited      bool  `json:"credits_unlimited"`
 
-	Requests         int64 `json:"requests"`
-	RequestQuota     int64 `json:"request_quota"`
-	RequestRemaining int64 `json:"request_remaining"`
-	RequestUnlimited bool  `json:"request_unlimited"`
-	Tokens           int64 `json:"tokens"`
-	TokenQuota       int64 `json:"token_quota"`
-	CostQuotaMicro   int64 `json:"cost_quota_micro"`
-	TokenRemaining   int64 `json:"token_remaining"`
-	TokenUnlimited   bool  `json:"token_unlimited"`
+	Requests          int64 `json:"requests"`
+	RequestQuota      int64 `json:"request_quota"`
+	RequestRemaining  int64 `json:"request_remaining"`
+	RequestUnlimited  bool  `json:"request_unlimited"`
+	Tokens            int64 `json:"tokens"`
+	TokenQuota        int64 `json:"token_quota"`
+	QuotaMicrocredits int64 `json:"quota_microcredits,string"`
+	TokenRemaining    int64 `json:"token_remaining"`
+	TokenUnlimited    bool  `json:"token_unlimited"`
 }
 
 type selfBalanceResponse struct {
-	UsedCostMicro      int64 `json:"used_cost_micro"`
-	CostRemainingMicro int64 `json:"cost_remaining_micro"`
-	CostUnlimited      bool  `json:"cost_unlimited"`
+	UsedMicrocredits      int64 `json:"used_microcredits,string"`
+	RemainingMicrocredits int64 `json:"remaining_microcredits,string"`
+	CreditsUnlimited      bool  `json:"credits_unlimited"`
 
-	CostQuotaMicro int64  `json:"cost_quota_micro"`
-	BillingVersion string `json:"billing_version"`
-	MicroPerCredit int64  `json:"micro_per_credit"`
+	QuotaMicrocredits     int64 `json:"quota_microcredits,string"`
+	MicrocreditsPerCredit int64 `json:"microcredits_per_credit"`
 
-	Currency           string                  `json:"currency"`
-	CostMicro          int64                   `json:"cost_micro"`
+	Unit               string                  `json:"unit"`
 	Unlimited          bool                    `json:"unlimited"`
 	Items              []store.RateLimitStatus `json:"items"`
 	DegradedComponents []string                `json:"degraded_components,omitempty"`
@@ -143,21 +141,19 @@ func (g *Gateway) currentAPIKeyBalance(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]store.RateLimitStatus, 0, len(statuses))
 	for _, status := range statuses {
-		if status.CostQuotaMicro > 0 {
+		if status.QuotaMicrocredits > 0 {
 			items = append(items, status)
 		}
 	}
 	response := selfBalanceResponse{
-		Currency:           g.configuredCurrency(),
-		CostMicro:          key.UsedCostMicro,
-		UsedCostMicro:      key.UsedCostMicro,
-		CostQuotaMicro:     key.CostQuotaMicro,
-		CostRemainingMicro: store.CostRemaining(key.CostQuotaMicro, key.UsedCostMicro),
-		CostUnlimited:      key.CostQuotaMicro == 0,
-		BillingVersion:     "credits_v1",
-		MicroPerCredit:     store.MicroPerCredit,
-		Unlimited:          key.CostQuotaMicro == 0 && len(items) == 0,
-		Items:              items,
+		Unit:                  store.CreditsUnit,
+		UsedMicrocredits:      key.UsedMicrocredits,
+		QuotaMicrocredits:     key.QuotaMicrocredits,
+		RemainingMicrocredits: store.CostRemaining(key.QuotaMicrocredits, key.UsedMicrocredits),
+		CreditsUnlimited:      key.QuotaMicrocredits == 0,
+		MicrocreditsPerCredit: store.MicrocreditsPerCredit,
+		Unlimited:             key.QuotaMicrocredits == 0 && len(items) == 0,
+		Items:                 items,
 	}
 	components := g.degradedComponents()
 	if len(components) > 0 {
@@ -254,49 +250,49 @@ func (g *Gateway) allowedPriceKeys(key store.APIKey) map[string]struct{} {
 func selfAPIKeyFromStore(key store.APIKey) selfAPIKeyResponse {
 	lifetime := selfLifetimeFromKey(key)
 	return selfAPIKeyResponse{
-		ID:                 key.ID,
-		Name:               key.Name,
-		Description:        key.Description,
-		KeyPrefix:          key.KeyPrefix,
-		Source:             key.Source,
-		IssuerJTI:          key.IssuerJTI,
-		Status:             key.Status,
-		ExpiresAt:          key.ExpiresAt,
-		ForcedExpired:      key.ForcedExpired,
-		RequestQuota:       key.RequestQuota,
-		RequestRemaining:   lifetime.RequestRemaining,
-		RequestUnlimited:   lifetime.RequestUnlimited,
-		TokenQuota:         key.TokenQuota,
-		CostQuotaMicro:     key.CostQuotaMicro,
-		TokenRemaining:     lifetime.TokenRemaining,
-		TokenUnlimited:     lifetime.TokenUnlimited,
-		AllowedModels:      key.AllowedModels,
-		RateLimits:         key.RateLimits,
-		UsedRequests:       key.UsedRequests,
-		UsedTokens:         key.UsedTokens,
-		UsedCostMicro:      key.UsedCostMicro,
-		CostRemainingMicro: store.CostRemaining(key.CostQuotaMicro, key.UsedCostMicro),
-		CostUnlimited:      key.CostQuotaMicro == 0,
-		LastUsedAt:         key.LastUsedAt,
-		CreatedAt:          key.CreatedAt,
-		UpdatedAt:          key.UpdatedAt,
+		ID:                    key.ID,
+		Name:                  key.Name,
+		Description:           key.Description,
+		KeyPrefix:             key.KeyPrefix,
+		Source:                key.Source,
+		IssuerJTI:             key.IssuerJTI,
+		Status:                key.Status,
+		ExpiresAt:             key.ExpiresAt,
+		ForcedExpired:         key.ForcedExpired,
+		RequestQuota:          key.RequestQuota,
+		RequestRemaining:      lifetime.RequestRemaining,
+		RequestUnlimited:      lifetime.RequestUnlimited,
+		TokenQuota:            key.TokenQuota,
+		QuotaMicrocredits:     key.QuotaMicrocredits,
+		TokenRemaining:        lifetime.TokenRemaining,
+		TokenUnlimited:        lifetime.TokenUnlimited,
+		AllowedModels:         key.AllowedModels,
+		RateLimits:            key.RateLimits,
+		UsedRequests:          key.UsedRequests,
+		UsedTokens:            key.UsedTokens,
+		UsedMicrocredits:      key.UsedMicrocredits,
+		RemainingMicrocredits: store.CostRemaining(key.QuotaMicrocredits, key.UsedMicrocredits),
+		CreditsUnlimited:      key.QuotaMicrocredits == 0,
+		LastUsedAt:            key.LastUsedAt,
+		CreatedAt:             key.CreatedAt,
+		UpdatedAt:             key.UpdatedAt,
 	}
 }
 
 func selfLifetimeFromKey(key store.APIKey) selfLifetimeLimits {
 	return selfLifetimeLimits{
-		UsedCostMicro:      key.UsedCostMicro,
-		CostRemainingMicro: store.CostRemaining(key.CostQuotaMicro, key.UsedCostMicro),
-		CostUnlimited:      key.CostQuotaMicro == 0,
-		Requests:           key.UsedRequests,
-		RequestQuota:       key.RequestQuota,
-		RequestRemaining:   quotaRemaining(key.RequestQuota, key.UsedRequests),
-		RequestUnlimited:   key.RequestQuota == 0,
-		Tokens:             key.UsedTokens,
-		TokenQuota:         key.TokenQuota,
-		CostQuotaMicro:     key.CostQuotaMicro,
-		TokenRemaining:     quotaRemaining(key.TokenQuota, key.UsedTokens),
-		TokenUnlimited:     key.TokenQuota == 0,
+		UsedMicrocredits:      key.UsedMicrocredits,
+		RemainingMicrocredits: store.CostRemaining(key.QuotaMicrocredits, key.UsedMicrocredits),
+		CreditsUnlimited:      key.QuotaMicrocredits == 0,
+		Requests:              key.UsedRequests,
+		RequestQuota:          key.RequestQuota,
+		RequestRemaining:      quotaRemaining(key.RequestQuota, key.UsedRequests),
+		RequestUnlimited:      key.RequestQuota == 0,
+		Tokens:                key.UsedTokens,
+		TokenQuota:            key.TokenQuota,
+		QuotaMicrocredits:     key.QuotaMicrocredits,
+		TokenRemaining:        quotaRemaining(key.TokenQuota, key.UsedTokens),
+		TokenUnlimited:        key.TokenQuota == 0,
 	}
 }
 

@@ -37,7 +37,6 @@ type Env struct {
 	UpstreamTimeout         time.Duration
 	CircuitFailureThreshold int
 	CircuitCooldown         time.Duration
-	Currency                string
 	RateLimitTimezone       string
 }
 
@@ -99,25 +98,25 @@ type AccountConfig struct {
 }
 
 type IssuerConfig struct {
-	PrivateKeyPath              string
-	PublicKeyPath               string
-	Issuer                      string
-	Audience                    string
-	DefaultJWTTTL               time.Duration
-	DefaultAPIKeyRequestQuota   int64
-	DefaultAPIKeyTokenQuota     int64
-	DefaultAPIKeyCostQuotaMicro int64
+	PrivateKeyPath                 string
+	PublicKeyPath                  string
+	Issuer                         string
+	Audience                       string
+	DefaultJWTTTL                  time.Duration
+	DefaultAPIKeyRequestQuota      int64
+	DefaultAPIKeyTokenQuota        int64
+	DefaultAPIKeyQuotaMicrocredits int64
 }
 
 type issuerConfigFile struct {
-	PrivateKeyPath              string `yaml:"private_key_path"`
-	PublicKeyPath               string `yaml:"public_key_path"`
-	Issuer                      string `yaml:"issuer"`
-	Audience                    string `yaml:"audience"`
-	DefaultJWTTTL               string `yaml:"default_jwt_ttl"`
-	DefaultAPIKeyRequestQuota   int64  `yaml:"default_api_key_request_quota"`
-	DefaultAPIKeyTokenQuota     int64  `yaml:"default_api_key_token_quota"`
-	DefaultAPIKeyCostQuotaMicro int64  `yaml:"default_api_key_cost_quota_micro"`
+	PrivateKeyPath                 string `yaml:"private_key_path"`
+	PublicKeyPath                  string `yaml:"public_key_path"`
+	Issuer                         string `yaml:"issuer"`
+	Audience                       string `yaml:"audience"`
+	DefaultJWTTTL                  string `yaml:"default_jwt_ttl"`
+	DefaultAPIKeyRequestQuota      int64  `yaml:"default_api_key_request_quota"`
+	DefaultAPIKeyTokenQuota        int64  `yaml:"default_api_key_token_quota"`
+	DefaultAPIKeyQuotaMicrocredits int64  `yaml:"default_api_key_quota_microcredits"`
 }
 
 const (
@@ -190,7 +189,6 @@ func LoadEnv() (Env, error) {
 		CircuitFailureThreshold: getIntEnv("CIRCUIT_FAILURE_THRESHOLD", 3),
 		CircuitCooldown:         getDurationEnv("CIRCUIT_COOLDOWN", 30*time.Second),
 		MaxConcurrentPerKey:     getIntEnv("MAX_CONCURRENT_PER_KEY", 16),
-		Currency:                getEnv("CURRENCY", "CNY"),
 		RateLimitTimezone:       getEnv("RATE_LIMIT_TIMEZONE", "Asia/Shanghai"),
 	}
 	if strings.TrimSpace(env.AdminToken) == "" {
@@ -210,9 +208,6 @@ func LoadEnv() (Env, error) {
 	}
 	if env.SessionActiveWindow <= 0 {
 		return Env{}, errors.New("SESSION_ACTIVE_WINDOW must be positive")
-	}
-	if !strings.EqualFold(env.Currency, "CNY") {
-		return Env{}, errors.New("Credits billing requires CURRENCY=CNY; convert existing model prices explicitly")
 	}
 	if env.TelemetryRetention <= 0 {
 		return Env{}, errors.New("TELEMETRY_RETENTION must be positive")
@@ -235,18 +230,20 @@ func LoadIssuerConfig(path string) (IssuerConfig, bool, error) {
 		return IssuerConfig{}, false, fmt.Errorf("read issuer config %s: %w", path, err)
 	}
 	var raw issuerConfigFile
-	if err := yaml.Unmarshal(data, &raw); err != nil {
+	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&raw); err != nil {
 		return IssuerConfig{}, false, fmt.Errorf("parse issuer config %s: %w", path, err)
 	}
 	cfg := IssuerConfig{
-		PrivateKeyPath:              resolveRelativePath(filepath.Dir(path), raw.PrivateKeyPath),
-		PublicKeyPath:               resolveRelativePath(filepath.Dir(path), raw.PublicKeyPath),
-		Issuer:                      strings.TrimSpace(raw.Issuer),
-		Audience:                    strings.TrimSpace(raw.Audience),
-		DefaultJWTTTL:               720 * time.Hour,
-		DefaultAPIKeyRequestQuota:   raw.DefaultAPIKeyRequestQuota,
-		DefaultAPIKeyTokenQuota:     raw.DefaultAPIKeyTokenQuota,
-		DefaultAPIKeyCostQuotaMicro: raw.DefaultAPIKeyCostQuotaMicro,
+		PrivateKeyPath:                 resolveRelativePath(filepath.Dir(path), raw.PrivateKeyPath),
+		PublicKeyPath:                  resolveRelativePath(filepath.Dir(path), raw.PublicKeyPath),
+		Issuer:                         strings.TrimSpace(raw.Issuer),
+		Audience:                       strings.TrimSpace(raw.Audience),
+		DefaultJWTTTL:                  720 * time.Hour,
+		DefaultAPIKeyRequestQuota:      raw.DefaultAPIKeyRequestQuota,
+		DefaultAPIKeyTokenQuota:        raw.DefaultAPIKeyTokenQuota,
+		DefaultAPIKeyQuotaMicrocredits: raw.DefaultAPIKeyQuotaMicrocredits,
 	}
 	if strings.TrimSpace(raw.DefaultJWTTTL) != "" {
 		parsed, err := time.ParseDuration(strings.TrimSpace(raw.DefaultJWTTTL))
@@ -270,7 +267,7 @@ func LoadIssuerConfig(path string) (IssuerConfig, bool, error) {
 	if cfg.DefaultJWTTTL <= 0 {
 		return IssuerConfig{}, false, errors.New("default_jwt_ttl must be positive")
 	}
-	if cfg.DefaultAPIKeyRequestQuota < 0 || cfg.DefaultAPIKeyTokenQuota < 0 || cfg.DefaultAPIKeyCostQuotaMicro < 0 {
+	if cfg.DefaultAPIKeyRequestQuota < 0 || cfg.DefaultAPIKeyTokenQuota < 0 || cfg.DefaultAPIKeyQuotaMicrocredits < 0 {
 		return IssuerConfig{}, false, errors.New("default api key quotas must be >= 0")
 	}
 	if cfg.DefaultAPIKeyRequestQuota == 0 {
