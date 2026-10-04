@@ -14,11 +14,11 @@ models:
     type: chat
     pool: primary
     display_name: gpt-6-luna
-  - public: gpt-6-sol
-    upstream: gpt-6-sol
+  - public: gpt-6.1-sol
+    upstream: gpt-6.1-sol
     type: chat
     pool: primary
-    display_name: gpt-6-sol
+    display_name: gpt-6.1-sol
   - public: gpt-5_6-luna
     upstream: gpt-5.6-luna
     type: chat
