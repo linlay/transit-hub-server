@@ -98,6 +98,8 @@ pools:
 - `models[].image.endpointPath` 仅为 `/v1/images/generations` 覆盖上游路径；未配置时使用 provider 级 `openai_image_generations`，再未配置时使用请求路径。edits 和 variations 只使用各自的 provider 级 endpoint 或请求路径。
 - `models[].owned_by`、`models[].display_name`、`models[].created_at` 可选，用于公开模型查询接口；未配置时分别使用 provider 名、公开模型名和 `1970-01-01T00:00:00Z`。
 
+BabelArk 的 Claude Haiku / Opus / Sonnet 5.5 使用独立的 `configs/providers/babelark-anthropic.example.yaml`，复用 `BABELARK_API_KEY`，通过 `/v1/messages` 调用。公开模型名、Credits 价格导入和 adaptive thinking 请求示例见 [Claude 5.5 接入](docs/babelark-claude-5_5.md)。
+
 可选的 `quota` 块会按账号定时查询上游额度，并把配置明确引用的响应字段渲染为文字摘要。不同厂商可以自由定义标题和行，不需要统一成固定的小时、每日、每周、次数或余额结构。`items_path` 和字段路径使用点分隔的对象路径；根响应本身是数组或单个额度对象时可省略 `items_path`。例如 MiniMax：
 
 ```yaml
