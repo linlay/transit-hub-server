@@ -232,13 +232,13 @@ func (t *Telemetry) writeBatch(ctx context.Context, batch []RequestLog) error {
 				api_key_id, api_key_name, key_prefix, protocol, public_model, upstream_model,
 				provider, pool, account, device_id, source, status_code, latency_ms,
 				request_tokens, response_tokens, cache_hit_tokens, cache_miss_tokens,
-				charged_microcredits, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				charged_microcredits, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count, upstream_request_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, entry.APIKeyID, entry.APIKeyName, entry.KeyPrefix, entry.Protocol, entry.PublicModel,
 			entry.UpstreamModel, entry.Provider, entry.Pool, entry.Account, deviceID, source,
 			entry.StatusCode, entry.Latency.Milliseconds(), entry.RequestTokens, entry.ResponseTokens,
 			entry.CacheHitTokens, entry.CacheMissTokens, entry.ChargedMicrocredits, boolInt(entry.Estimated),
-			entry.ErrorType, formatTime(createdAt), entry.BillingStatus, nonemptySnapshot(entry.PriceSnapshot), nullableStart(entry.StartedAt), entry.CacheWriteTokens, entry.ImageCount); err != nil {
+			entry.ErrorType, formatTime(createdAt), entry.BillingStatus, nonemptySnapshot(entry.PriceSnapshot), nullableStart(entry.StartedAt), entry.CacheWriteTokens, entry.ImageCount, entry.UpstreamRequestID); err != nil {
 			return err
 		}
 		if deviceID == "" {
@@ -456,7 +456,7 @@ func (t *Telemetry) ListRequestLogs(ctx context.Context, query RequestLogQuery) 
 		SELECT id, api_key_id, api_key_name, protocol, public_model, upstream_model,
 		       provider, pool, account, device_id, source, status_code, latency_ms,
 		       request_tokens, response_tokens, cache_hit_tokens, cache_miss_tokens,
-		       charged_microcredits, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count
+		       charged_microcredits, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count, upstream_request_id
 		FROM request_logs
 		%s
 		ORDER BY created_at DESC, id DESC
@@ -478,7 +478,7 @@ func (t *Telemetry) ListRequestLogs(ctx context.Context, query RequestLogQuery) 
 			&item.PublicModel, &item.UpstreamModel, &item.Provider, &item.Pool, &item.Account,
 			&item.DeviceID, &item.Source, &item.StatusCode, &item.LatencyMS, &item.RequestTokens,
 			&item.ResponseTokens, &item.CacheHitTokens, &item.CacheMissTokens, &item.ChargedMicrocredits,
-			&estimated, &item.ErrorType, &createdAt, &item.BillingStatus, &snapshot, &started, &item.CacheWriteTokens, &item.ImageCount); err != nil {
+			&estimated, &item.ErrorType, &createdAt, &item.BillingStatus, &snapshot, &started, &item.CacheWriteTokens, &item.ImageCount, &item.UpstreamRequestID); err != nil {
 			return RequestLogListResult{}, err
 		}
 		item.PriceSnapshot = []byte(snapshot)
@@ -810,7 +810,7 @@ func migrateTelemetry(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	for _, column := range []string{"billing_status TEXT NOT NULL DEFAULT 'legacy'", "price_snapshot TEXT NOT NULL DEFAULT 'null'", "started_at TEXT", "cache_write_tokens INTEGER NOT NULL DEFAULT 0", "image_count INTEGER NOT NULL DEFAULT 0"} {
+	for _, column := range []string{"billing_status TEXT NOT NULL DEFAULT 'legacy'", "price_snapshot TEXT NOT NULL DEFAULT 'null'", "started_at TEXT", "cache_write_tokens INTEGER NOT NULL DEFAULT 0", "image_count INTEGER NOT NULL DEFAULT 0", "upstream_request_id TEXT NOT NULL DEFAULT ''"} {
 		if _, err = db.Exec("ALTER TABLE request_logs ADD COLUMN " + column); err != nil && !isDuplicateColumnError(err) {
 			return err
 		}

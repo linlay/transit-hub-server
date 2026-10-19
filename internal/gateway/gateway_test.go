@@ -2092,12 +2092,15 @@ func TestAdminProviderConnectivityTestsExactAccountWithoutUsage(t *testing.T) {
 func TestAdminProviderConnectivityReportsUpstreamFailure(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Babelark-Request-Id", "babel-connectivity-error")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"message":"bad upstream key"}}`))
 	}))
 	defer upstream.Close()
 
-	app, _, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider(upstream.URL)})
+	cfg := openAIProvider(upstream.URL)
+	cfg.RequestIDHeader = "X-Babelark-Request-Id"
+	app, _, _ := newTestGateway(t, []config.ProviderConfig{cfg})
 	req := httptest.NewRequest(http.MethodPost, "/admin/providers/test", bytes.NewBufferString(`{"provider":"test-openai"}`))
 	req.Header.Set("Authorization", "Bearer admin")
 	rec := httptest.NewRecorder()
@@ -2108,6 +2111,9 @@ func TestAdminProviderConnectivityReportsUpstreamFailure(t *testing.T) {
 	var result providerConnectivityTestResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
+	}
+	if result.UpstreamRequestID != "babel-connectivity-error" {
+		t.Fatalf("missing upstream ID: %+v", result)
 	}
 	if result.OK || result.StatusCode != http.StatusUnauthorized || result.Error != "bad upstream key" {
 		t.Fatalf("unexpected failure result: %#v", result)

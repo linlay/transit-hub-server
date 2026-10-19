@@ -115,6 +115,7 @@ type RequestLogQuery struct {
 }
 
 type RequestLogEntry struct {
+	UpstreamRequestID   string          `json:"upstream_request_id"`
 	BillingStatus       string          `json:"billing_status"`
 	PriceSnapshot       json.RawMessage `json:"price_snapshot"`
 	StartedAt           *time.Time      `json:"started_at"`

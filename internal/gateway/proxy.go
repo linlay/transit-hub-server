@@ -223,11 +223,33 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		account.Breaker.Record(upstreamHealthy)
 
 		copyResponseHeaders(w.Header(), resp.Header)
+		upstreamRequestID := upstreamResponseRequestID(resp.Header, route.Provider.RequestIDHeader)
+		if upstreamRequestID != "" {
+			responseHeader := route.Provider.RequestIDResponseHeader
+			if responseHeader == "" {
+				responseHeader = "X-Request-Id"
+			}
+			w.Header().Set(responseHeader, upstreamRequestID)
+			// Expose the configured header alongside any existing CORS exposure list.
+			if w.Header().Get("Access-Control-Allow-Origin") != "" {
+				exposed := false
+				for _, line := range w.Header().Values("Access-Control-Expose-Headers") {
+					for _, name := range strings.Split(line, ",") {
+						if strings.EqualFold(strings.TrimSpace(name), responseHeader) {
+							exposed = true
+						}
+					}
+				}
+				if !exposed {
+					w.Header().Add("Access-Control-Expose-Headers", responseHeader)
+				}
+			}
+		}
 		w.WriteHeader(resp.StatusCode)
 
 		result, copyErr := copyResponse(w, resp.Body, upstreamBody.Envelope.Stream || isEventStream(resp.Header))
 		if copyErr != nil {
-			g.logger.Printf("copy upstream response failed: %v", copyErr)
+			g.logger.Printf("copy upstream response failed: provider=%s upstream_request_id=%q error=%v", route.ProviderName, upstreamRequestID, copyErr)
 		}
 
 		observed := observedTokens(body, result.Sample, upstreamBody.Envelope.Stream || isEventStream(resp.Header))
@@ -267,10 +289,11 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		errorType := ""
 		if copyErr != nil {
 			errorType = "response_copy_error"
-		} else if !upstreamHealthy {
+		} else if resp.StatusCode >= 400 {
 			errorType = "upstream_status"
 		}
 		g.logCompletedRequest(r, key, store.RequestLog{
+			UpstreamRequestID:   upstreamRequestID,
 			Protocol:            protocol,
 			PublicModel:         route.PublicModel,
 			UpstreamModel:       route.UpstreamModel,
@@ -513,6 +536,16 @@ func copyResponse(w http.ResponseWriter, body io.Reader, flush bool) (copyResult
 			return copyResult{Sample: sample.Bytes(), Bytes: written, Usage: collector.Finish()}, readErr
 		}
 	}
+}
+
+// An upstream ID must come from response headers, never the incoming client request.
+func upstreamResponseRequestID(headers http.Header, configuredHeader string) string {
+	if configuredHeader != "" {
+		if value := strings.TrimSpace(headers.Get(configuredHeader)); value != "" {
+			return value
+		}
+	}
+	return strings.TrimSpace(headers.Get("X-Request-Id"))
 }
 
 func copyResponseHeaders(dst, src http.Header) {

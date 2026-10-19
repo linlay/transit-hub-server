@@ -23,18 +23,19 @@ type providerConnectivityTestRequest struct {
 }
 
 type providerConnectivityTestResponse struct {
-	OK            bool      `json:"ok"`
-	Provider      string    `json:"provider"`
-	Protocol      string    `json:"protocol"`
-	PublicModel   string    `json:"public_model"`
-	UpstreamModel string    `json:"upstream_model"`
-	Pool          string    `json:"pool"`
-	Account       string    `json:"account"`
-	Endpoint      string    `json:"endpoint"`
-	StatusCode    int       `json:"status_code"`
-	LatencyMS     int64     `json:"latency_ms"`
-	Error         string    `json:"error,omitempty"`
-	TestedAt      time.Time `json:"tested_at"`
+	UpstreamRequestID string    `json:"upstream_request_id,omitempty"`
+	OK                bool      `json:"ok"`
+	Provider          string    `json:"provider"`
+	Protocol          string    `json:"protocol"`
+	PublicModel       string    `json:"public_model"`
+	UpstreamModel     string    `json:"upstream_model"`
+	Pool              string    `json:"pool"`
+	Account           string    `json:"account"`
+	Endpoint          string    `json:"endpoint"`
+	StatusCode        int       `json:"status_code"`
+	LatencyMS         int64     `json:"latency_ms"`
+	Error             string    `json:"error,omitempty"`
+	TestedAt          time.Time `json:"tested_at"`
 }
 
 func (g *Gateway) testProviderConnectivity(w http.ResponseWriter, r *http.Request) {
@@ -96,6 +97,7 @@ func (g *Gateway) testProviderConnectivity(w http.ResponseWriter, r *http.Reques
 	}
 	defer resp.Body.Close()
 
+	result.UpstreamRequestID = upstreamResponseRequestID(resp.Header, route.Provider.RequestIDHeader)
 	result.StatusCode = resp.StatusCode
 	result.OK = resp.StatusCode >= 200 && resp.StatusCode < 400
 	if !result.OK {

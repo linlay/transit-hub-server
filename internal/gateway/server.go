@@ -201,6 +201,7 @@ func (g *Gateway) cors(next http.Handler) http.Handler {
 				w.Header().Set("Vary", "Origin")
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, x-admin-token, x-api-key, x-device-id, x-source")
+				w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
 			}
 		}

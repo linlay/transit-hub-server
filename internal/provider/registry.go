@@ -28,13 +28,15 @@ type Registry struct {
 }
 
 type Provider struct {
-	Name        string
-	Protocol    string
-	BaseURL     *url.URL
-	DefaultPool string
-	Headers     map[string]string
-	Endpoints   map[string]string
-	Pools       map[string]*Pool
+	RequestIDResponseHeader string
+	RequestIDHeader         string
+	Name                    string
+	Protocol                string
+	BaseURL                 *url.URL
+	DefaultPool             string
+	Headers                 map[string]string
+	Endpoints               map[string]string
+	Pools                   map[string]*Pool
 }
 
 type Pool struct {
@@ -72,14 +74,16 @@ type Snapshot struct {
 }
 
 type ProviderSnapshot struct {
-	Name        string            `json:"name"`
-	Protocol    string            `json:"protocol"`
-	BaseURL     string            `json:"base_url"`
-	DefaultPool string            `json:"default_pool"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	Endpoints   map[string]string `json:"endpoints,omitempty"`
-	Models      []RouteSnapshot   `json:"models"`
-	Pools       []PoolSnapshot    `json:"pools"`
+	RequestIDResponseHeader string            `json:"request_id_response_header,omitempty"`
+	RequestIDHeader         string            `json:"request_id_header,omitempty"`
+	Name                    string            `json:"name"`
+	Protocol                string            `json:"protocol"`
+	BaseURL                 string            `json:"base_url"`
+	DefaultPool             string            `json:"default_pool"`
+	Headers                 map[string]string `json:"headers,omitempty"`
+	Endpoints               map[string]string `json:"endpoints,omitempty"`
+	Models                  []RouteSnapshot   `json:"models"`
+	Pools                   []PoolSnapshot    `json:"pools"`
 }
 
 type RouteSnapshot struct {
@@ -292,14 +296,16 @@ func (r *Registry) Snapshot(overrides map[string]string) Snapshot {
 	for _, providerName := range providerNames {
 		provider := r.providers[providerName]
 		providerSnapshot := ProviderSnapshot{
-			Name:        provider.Name,
-			Protocol:    provider.Protocol,
-			BaseURL:     provider.BaseURL.String(),
-			DefaultPool: provider.DefaultPool,
-			Headers:     cloneStringMap(provider.Headers),
-			Endpoints:   cloneStringMap(provider.Endpoints),
-			Models:      make([]RouteSnapshot, 0),
-			Pools:       make([]PoolSnapshot, 0, len(provider.Pools)),
+			Name:                    provider.Name,
+			Protocol:                provider.Protocol,
+			BaseURL:                 provider.BaseURL.String(),
+			DefaultPool:             provider.DefaultPool,
+			Headers:                 cloneStringMap(provider.Headers),
+			RequestIDHeader:         provider.RequestIDHeader,
+			RequestIDResponseHeader: provider.RequestIDResponseHeader,
+			Endpoints:               cloneStringMap(provider.Endpoints),
+			Models:                  make([]RouteSnapshot, 0),
+			Pools:                   make([]PoolSnapshot, 0, len(provider.Pools)),
 		}
 		routeKeys := make([]string, 0, len(r.routes))
 		for key, route := range r.routes {
@@ -435,13 +441,15 @@ func build(configs []config.ProviderConfig, options CircuitOptions) (map[string]
 			defaultPool = cfg.Pools[0].Name
 		}
 		provider := &Provider{
-			Name:        cfg.Name,
-			Protocol:    strings.ToLower(cfg.Protocol),
-			BaseURL:     baseURL,
-			DefaultPool: defaultPool,
-			Headers:     cloneStringMap(cfg.Headers),
-			Endpoints:   cloneStringMap(cfg.Endpoints),
-			Pools:       make(map[string]*Pool, len(cfg.Pools)),
+			Name:                    cfg.Name,
+			Protocol:                strings.ToLower(cfg.Protocol),
+			BaseURL:                 baseURL,
+			DefaultPool:             defaultPool,
+			Headers:                 cloneStringMap(cfg.Headers),
+			RequestIDHeader:         cfg.RequestIDHeader,
+			RequestIDResponseHeader: cfg.RequestIDResponseHeader,
+			Endpoints:               cloneStringMap(cfg.Endpoints),
+			Pools:                   make(map[string]*Pool, len(cfg.Pools)),
 		}
 		for _, poolConfig := range cfg.Pools {
 			pool := &Pool{

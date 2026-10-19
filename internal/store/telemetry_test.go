@@ -138,3 +138,51 @@ func testTelemetryLog(apiKeyID string, at time.Time) RequestLog {
 		CreatedAt:      at,
 	}
 }
+
+func TestTelemetryMigratesAndPersistsUpstreamRequestID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "telemetry.db")
+	telemetry, err := NewTelemetry(path, 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	telemetry.Enqueue(testTelemetryLog("historical", time.Now().UTC()))
+	if err := telemetry.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// Recreate the schema from before request IDs were introduced.
+	raw := openRawTestDB(t, path)
+	execTestSQL(t, raw, "ALTER TABLE request_logs DROP COLUMN upstream_request_id")
+	closeRawTestDB(t, raw)
+	telemetry, err = NewTelemetry(path, 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := testTelemetryLog("new", time.Now().UTC())
+	entry.UpstreamRequestID = "babel-persisted"
+	telemetry.Enqueue(entry)
+	if err := telemetry.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// Reopening also checks that migration is repeatable and IDs survive restart.
+	telemetry, err = NewTelemetry(path, 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer telemetry.Close(t.Context())
+	logs, err := telemetry.ListRequestLogs(t.Context(), RequestLogQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs.Items) != 2 {
+		t.Fatalf("logs=%+v", logs.Items)
+	}
+	for _, log := range logs.Items {
+		want := ""
+		if log.APIKeyID == "new" {
+			want = "babel-persisted"
+		}
+		if log.UpstreamRequestID != want {
+			t.Fatalf("ID=%q want=%q", log.UpstreamRequestID, want)
+		}
+	}
+}

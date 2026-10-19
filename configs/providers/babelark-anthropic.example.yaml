@@ -1,6 +1,8 @@
 name: babelark-anthropic
 protocol: anthropic
 base_url: https://api.babelark.ai
+requestIdHeader: X-Babelark-Request-Id
+requestIdResponseHeader: X-Request-Id
 default_pool: primary
 headers:
   anthropic-version: "2023-06-01"
