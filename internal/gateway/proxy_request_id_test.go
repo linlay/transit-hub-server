@@ -27,6 +27,8 @@ func TestProxyUpstreamRequestID(t *testing.T) {
 		{"fallback", "/v1/responses", "X-Babelark-Request-Id", "", "native", "native", 200, false},
 		{"empty_custom", "/v1/responses", "X-Babelark-Request-Id", "  ", "native", "native", 200, false},
 		{"unconfigured", "/v1/responses", "", "babel", "native", "native", 200, false},
+		{"native_source", "/v1/responses", "x-request-id", "", "native", "native", 200, false},
+		{"other_source", "/v1/responses", "X-Vendor-Trace", "vendor-trace", "", "vendor-trace", 200, false},
 		{"missing", "/v1/responses", "X-Babelark-Request-Id", "", "", "", 200, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -36,7 +38,11 @@ func TestProxyUpstreamRequestID(t *testing.T) {
 			}
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if tc.custom != "" {
-					w.Header().Set("X-Babelark-Request-Id", tc.custom)
+					sourceHeader := tc.configured
+					if sourceHeader == "" {
+						sourceHeader = "X-Babelark-Request-Id"
+					}
+					w.Header().Set(sourceHeader, tc.custom)
 				}
 				if tc.native != "" {
 					w.Header().Set("X-Request-Id", tc.native)
@@ -69,6 +75,12 @@ func TestProxyUpstreamRequestID(t *testing.T) {
 			}
 			if got := response.Header.Get("X-Request-Id"); got != tc.want || len(response.Header.Values("X-Request-Id")) > 1 {
 				t.Fatalf("request ID headers=%v want=%q", response.Header.Values("X-Request-Id"), tc.want)
+			}
+			if tc.configured != "" && !strings.EqualFold(tc.configured, "X-Request-Id") && len(response.Header.Values(tc.configured)) != 0 {
+				t.Fatalf("upstream request ID source header leaked: %s", tc.configured)
+			}
+			if tc.configured == "" && response.Header.Get("X-Babelark-Request-Id") != tc.custom {
+				t.Fatal("unconfigured response header was removed")
 			}
 			if !strings.Contains(strings.Join(response.Header.Values("Access-Control-Expose-Headers"), ","), "X-Request-Id") {
 				t.Fatal("request ID not exposed to browsers")
@@ -110,6 +122,9 @@ func TestProxyRequestIDOnInterruptedStream(t *testing.T) {
 	app.Handler().ServeHTTP(rec, req)
 	if got := rec.Result().Header.Get("X-Request-Id"); got != "interrupted-stream" {
 		t.Fatalf("request ID=%q", got)
+	}
+	if len(rec.Result().Header.Values("X-Babelark-Request-Id")) != 0 {
+		t.Fatal("upstream request ID source header leaked on interrupted stream")
 	}
 	if err := app.telemetry.Flush(t.Context()); err != nil {
 		t.Fatal(err)

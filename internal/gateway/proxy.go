@@ -224,6 +224,9 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 
 		copyResponseHeaders(w.Header(), resp.Header)
 		upstreamRequestID := upstreamResponseRequestID(resp.Header, route.Provider.RequestIDHeader)
+		if sourceHeader := route.Provider.RequestIDHeader; sourceHeader != "" && !strings.EqualFold(sourceHeader, "X-Request-Id") {
+			w.Header().Del(sourceHeader)
+		}
 		if upstreamRequestID != "" {
 			w.Header().Set("X-Request-Id", upstreamRequestID)
 		}

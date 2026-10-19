@@ -104,7 +104,7 @@ Provider 仅通过 `requestIdHeader` 配置上游请求 ID 来源头。Transit H
 requestIdHeader: X-Babelark-Request-Id
 ```
 
-网关在 JSON、SSE 和上游错误响应中统一以 `X-Request-Id` 返回该值，并记录到请求日志和连通性测试结果的 `upstream_request_id`。指定头缺失时回退到上游 `X-Request-Id`；均缺失时留空，不使用客户端传入或网关生成的 ID 冒充上游 ID。原上游响应头仍透传。浏览器可跨域读取 `X-Request-Id`。客户端应从该响应头填写 `usage.upstreamRequestId` 及错误诊断，不依赖响应体中的 `usage`。配置修改后调用 `POST /admin/providers/reload` 或重启；日志库启动时自动补充新字段，历史记录为空。
+网关在 JSON、SSE 和上游错误响应中统一以 `X-Request-Id` 返回该值，并记录到请求日志和连通性测试结果的 `upstream_request_id`。指定头缺失时回退到上游 `X-Request-Id`；均缺失时留空，不使用客户端传入或网关生成的 ID 冒充上游 ID。配置指定的来源头在提取后会从对外响应中移除，仅通过 `X-Request-Id` 提供该标识；来源本身为 `X-Request-Id` 时保留。其他响应头继续透传。浏览器可跨域读取 `X-Request-Id`。客户端应从该响应头填写 `usage.upstreamRequestId` 及错误诊断，不依赖响应体中的 `usage`。配置修改后调用 `POST /admin/providers/reload` 或重启；日志库启动时自动补充新字段，历史记录为空。
 
 BabelArk 的 Claude Haiku / Opus / Sonnet 5.5 使用独立的 `configs/providers/babelark-anthropic.example.yaml`，复用 `BABELARK_API_KEY`，通过 `/v1/messages` 调用。公开模型名、Credits 价格导入和 adaptive thinking 请求示例见 [Claude 5.5 接入](docs/babelark-claude-5_5.md)。
 
