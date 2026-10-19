@@ -59,7 +59,6 @@ pools: []
 	realConfig := `
 name: deepseek
 requestIdHeader: X-Babelark-Request-Id
-requestIdResponseHeader: X-Correlation-Id
 protocol: openai
 base_url: https://api.deepseek.com
 default_pool: primary
@@ -83,9 +82,6 @@ pools:
 	}
 	if len(configs) != 1 {
 		t.Fatalf("configs len = %d", len(configs))
-	}
-	if configs[0].RequestIDResponseHeader != "X-Correlation-Id" {
-		t.Fatal("requestIdResponseHeader was not loaded")
 	}
 	if configs[0].RequestIDHeader != "X-Babelark-Request-Id" {
 		t.Fatal("requestIdHeader was not loaded")
@@ -281,12 +277,6 @@ func cloneTestQuotaDisplay(input ProviderQuotaDisplayConfig) ProviderQuotaDispla
 		output.ValueMaps[name] = cloneTestStringMap(values)
 	}
 	return output
-}
-
-func TestRejectInvalidRequestIDResponseHeader(t *testing.T) {
-	if err := ValidateProviderConfig(ProviderConfig{RequestIDResponseHeader: "Bad Header"}); err == nil || err.Error() != "requestIdResponseHeader must be a valid HTTP header name" {
-		t.Fatalf("invalid target header: %v", err)
-	}
 }
 
 func TestRejectInvalidRequestIDHeader(t *testing.T) {

@@ -17,9 +17,6 @@ func TestProxyUpstreamRequestID(t *testing.T) {
 		status                                       int
 		stream                                       bool
 	}{
-		{"custom_target_json", "/v1/chat/completions", "X-Babelark-Request-Id", "mapped-json", "", "mapped-json", 200, false},
-		{"custom_target_sse", "/v1/responses", "X-Babelark-Request-Id", "mapped-sse", "", "mapped-sse", 200, true},
-		{"custom_target_error", "/v1/messages", "X-Babelark-Request-Id", "mapped-error", "", "mapped-error", 403, false},
 		{"chat", "/v1/chat/completions", "X-Babelark-Request-Id", "babel-1", "", "babel-1", 200, false},
 		{"chat_stream", "/v1/chat/completions", "x-babelark-request-id", "babel-2", "", "babel-2", 200, true},
 		{"responses_stream", "/v1/responses", "X-Babelark-Request-Id", "babel-3", "", "babel-3", 200, true},
@@ -56,11 +53,6 @@ func TestProxyUpstreamRequestID(t *testing.T) {
 				cfg = anthropicProvider(upstream.URL)
 			}
 			cfg.RequestIDHeader = tc.configured
-			outputHeader := "X-Request-Id"
-			if strings.HasPrefix(tc.name, "custom_target") {
-				outputHeader = "X-Correlation-Id"
-				cfg.RequestIDResponseHeader = outputHeader
-			}
 			app, db, plain := newTestGateway(t, []config.ProviderConfig{cfg})
 			req := httptest.NewRequest("POST", tc.path, strings.NewReader(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}],"input":"hi","max_tokens":16,"stream":%t}`, cfg.Models[0].Public, tc.stream)))
 			req.Header.Set("Authorization", "Bearer "+plain)
@@ -75,13 +67,10 @@ func TestProxyUpstreamRequestID(t *testing.T) {
 			if rec.Code != tc.status || rec.Body.String() != body {
 				t.Fatalf("response changed: status=%d body=%s", rec.Code, rec.Body.String())
 			}
-			if got := response.Header.Get(outputHeader); got != tc.want || len(response.Header.Values(outputHeader)) > 1 {
-				t.Fatalf("request ID headers=%v want=%q", response.Header.Values(outputHeader), tc.want)
+			if got := response.Header.Get("X-Request-Id"); got != tc.want || len(response.Header.Values("X-Request-Id")) > 1 {
+				t.Fatalf("request ID headers=%v want=%q", response.Header.Values("X-Request-Id"), tc.want)
 			}
-			if cfg.RequestIDResponseHeader != "" && response.Header.Get("X-Request-Id") != "" {
-				t.Fatal("target header was hardcoded")
-			}
-			if !strings.Contains(strings.Join(response.Header.Values("Access-Control-Expose-Headers"), ","), outputHeader) {
+			if !strings.Contains(strings.Join(response.Header.Values("Access-Control-Expose-Headers"), ","), "X-Request-Id") {
 				t.Fatal("request ID not exposed to browsers")
 			}
 			if tc.stream && !rec.Flushed {

@@ -41,17 +41,16 @@ type Env struct {
 }
 
 type ProviderConfig struct {
-	RequestIDResponseHeader string               `yaml:"requestIdResponseHeader" json:"request_id_response_header,omitempty"`
-	RequestIDHeader         string               `yaml:"requestIdHeader" json:"request_id_header,omitempty"`
-	Name                    string               `yaml:"name" json:"name"`
-	Protocol                string               `yaml:"protocol" json:"protocol"`
-	BaseURL                 string               `yaml:"base_url" json:"base_url"`
-	DefaultPool             string               `yaml:"default_pool" json:"default_pool"`
-	Headers                 map[string]string    `yaml:"headers" json:"headers,omitempty"`
-	Endpoints               map[string]string    `yaml:"endpoints" json:"endpoints,omitempty"`
-	Quota                   *ProviderQuotaConfig `yaml:"quota" json:"-"`
-	Models                  []ModelConfig        `yaml:"models" json:"models"`
-	Pools                   []PoolConfig         `yaml:"pools" json:"pools"`
+	RequestIDHeader string               `yaml:"requestIdHeader" json:"request_id_header,omitempty"`
+	Name            string               `yaml:"name" json:"name"`
+	Protocol        string               `yaml:"protocol" json:"protocol"`
+	BaseURL         string               `yaml:"base_url" json:"base_url"`
+	DefaultPool     string               `yaml:"default_pool" json:"default_pool"`
+	Headers         map[string]string    `yaml:"headers" json:"headers,omitempty"`
+	Endpoints       map[string]string    `yaml:"endpoints" json:"endpoints,omitempty"`
+	Quota           *ProviderQuotaConfig `yaml:"quota" json:"-"`
+	Models          []ModelConfig        `yaml:"models" json:"models"`
+	Pools           []PoolConfig         `yaml:"pools" json:"pools"`
 }
 
 type ProviderQuotaConfig struct {
@@ -343,13 +342,10 @@ func ProviderConfigDir(configDir string) string {
 }
 
 func ValidateProviderConfig(cfg ProviderConfig) error {
-	for name, header := range map[string]string{"requestIdHeader": cfg.RequestIDHeader, "requestIdResponseHeader": cfg.RequestIDResponseHeader} {
-		for _, c := range header {
-			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", c)) {
-				return fmt.Errorf("%s must be a valid HTTP header name", name)
-			}
+	for _, c := range cfg.RequestIDHeader {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", c)) {
+			return errors.New("requestIdHeader must be a valid HTTP header name")
 		}
-
 	}
 	if strings.TrimSpace(cfg.Name) == "" {
 		return errors.New("name is required")

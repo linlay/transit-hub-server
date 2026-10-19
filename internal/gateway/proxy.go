@@ -225,25 +225,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		copyResponseHeaders(w.Header(), resp.Header)
 		upstreamRequestID := upstreamResponseRequestID(resp.Header, route.Provider.RequestIDHeader)
 		if upstreamRequestID != "" {
-			responseHeader := route.Provider.RequestIDResponseHeader
-			if responseHeader == "" {
-				responseHeader = "X-Request-Id"
-			}
-			w.Header().Set(responseHeader, upstreamRequestID)
-			// Expose the configured header alongside any existing CORS exposure list.
-			if w.Header().Get("Access-Control-Allow-Origin") != "" {
-				exposed := false
-				for _, line := range w.Header().Values("Access-Control-Expose-Headers") {
-					for _, name := range strings.Split(line, ",") {
-						if strings.EqualFold(strings.TrimSpace(name), responseHeader) {
-							exposed = true
-						}
-					}
-				}
-				if !exposed {
-					w.Header().Add("Access-Control-Expose-Headers", responseHeader)
-				}
-			}
+			w.Header().Set("X-Request-Id", upstreamRequestID)
 		}
 		w.WriteHeader(resp.StatusCode)
 
