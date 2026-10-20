@@ -115,6 +115,17 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			reject("route_not_found")
 			return
 		}
+		disabled, err := g.store.ModelDisabled(r.Context(), protocol, route.PublicModel)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "model state unavailable")
+			reject("internal_error")
+			return
+		}
+		if disabled {
+			writeError(w, http.StatusServiceUnavailable, "model is disabled")
+			reject("model_disabled")
+			return
+		}
 		rejected.PublicModel = route.PublicModel
 		rejected.UpstreamModel = route.UpstreamModel
 		rejected.Provider = route.ProviderName

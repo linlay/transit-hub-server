@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -49,7 +50,7 @@ func (g *Gateway) listOpenAIModels(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	routes := g.allowedRoutes("openai", key)
+	routes := g.allowedRoutes(r.Context(), "openai", key)
 	models := make([]openAIModelResponse, 0, len(routes))
 	for _, route := range routes {
 		models = append(models, openAIModelFromRoute(route))
@@ -65,7 +66,7 @@ func (g *Gateway) retrieveOpenAIModel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	route, ok := g.allowedRoute("openai", chi.URLParam(r, "model_id"), key)
+	route, ok := g.allowedRoute(r.Context(), "openai", chi.URLParam(r, "model_id"), key)
 	if !ok {
 		writeError(w, http.StatusNotFound, "model not found")
 		return
@@ -83,7 +84,7 @@ func (g *Gateway) listAnthropicModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	routes := g.allowedRoutes("anthropic", key)
+	routes := g.allowedRoutes(r.Context(), "anthropic", key)
 	window, err := anthropicModelWindow(routes, r.URL.Query().Get("after_id"), r.URL.Query().Get("before_id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -114,7 +115,7 @@ func (g *Gateway) retrieveAnthropicModel(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	route, ok := g.allowedRoute("anthropic", chi.URLParam(r, "model_id"), key)
+	route, ok := g.allowedRoute(r.Context(), "anthropic", chi.URLParam(r, "model_id"), key)
 	if !ok {
 		writeError(w, http.StatusNotFound, "model not found")
 		return
@@ -122,20 +123,22 @@ func (g *Gateway) retrieveAnthropicModel(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, anthropicModelFromRoute(route))
 }
 
-func (g *Gateway) allowedRoutes(protocol string, key store.APIKey) []provider.Route {
+func (g *Gateway) allowedRoutes(ctx context.Context, protocol string, key store.APIKey) []provider.Route {
 	routes := g.registry.PublicRoutes(protocol)
 	allowed := make([]provider.Route, 0, len(routes))
 	for _, route := range routes {
-		if store.APIKeyAllowsModel(key, route.PublicModel) {
+		disabled, err := g.store.ModelDisabled(ctx, protocol, route.PublicModel)
+		if err == nil && !disabled && store.APIKeyAllowsModel(key, route.PublicModel) {
 			allowed = append(allowed, route)
 		}
 	}
 	return allowed
 }
 
-func (g *Gateway) allowedRoute(protocol, modelID string, key store.APIKey) (provider.Route, bool) {
+func (g *Gateway) allowedRoute(ctx context.Context, protocol, modelID string, key store.APIKey) (provider.Route, bool) {
 	modelID = strings.TrimSpace(modelID)
-	if !store.APIKeyAllowsModel(key, modelID) {
+	disabled, err := g.store.ModelDisabled(ctx, protocol, modelID)
+	if err != nil || disabled || !store.APIKeyAllowsModel(key, modelID) {
 		return provider.Route{}, false
 	}
 	return g.registry.Resolve(protocol, modelID)

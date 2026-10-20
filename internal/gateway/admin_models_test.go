@@ -152,3 +152,60 @@ func TestAdminModelsRequireAuthAndReturnNotFound(t *testing.T) {
 		t.Fatalf("bad request status = %d, body = %s", badRequestRec.Code, badRequestRec.Body.String())
 	}
 }
+
+func TestModelEnableDisable(t *testing.T) {
+	cfg := config.ProviderConfig{Name: "test", Protocol: "openai", BaseURL: "https://upstream.invalid", DefaultPool: "main", Models: []config.ModelConfig{{Public: "test-model", Upstream: "upstream"}}, Pools: []config.PoolConfig{{Name: "main", Accounts: []config.AccountConfig{{Name: "a", APIKey: "secret", Weight: 1}}}}}
+	app, db, key := newTestGateway(t, []config.ProviderConfig{cfg})
+	call := func(method, path, body, token string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	path := "/admin/models/detail?protocol=openai&public_model=test-model"
+	if rec := call("PATCH", path, `{"enabled":false}`, ""); rec.Code == http.StatusOK {
+		t.Fatal("unauthenticated mutation allowed")
+	}
+	if rec := call("PATCH", path, `{}`, "admin"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing enabled: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, enabled := range []bool{false, true} {
+		body := `{"enabled":false}`
+		if enabled {
+			body = `{"enabled":true}`
+		}
+		rec := call("PATCH", path, body, "admin")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("update: %d %s", rec.Code, rec.Body.String())
+		}
+		var model adminModelResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil || model.Enabled != enabled {
+			t.Fatalf("bad model: %s", rec.Body.String())
+		}
+		disabled, err := db.ModelDisabled(t.Context(), "openai", "test-model")
+		if err != nil || disabled == enabled {
+			t.Fatalf("state not persisted: %v %v", disabled, err)
+		}
+		other, err := db.ModelDisabled(t.Context(), "anthropic", "test-model")
+		if err != nil || other {
+			t.Fatal("state leaked across protocols")
+		}
+		rec = call("GET", "/v1/models", "", key)
+		if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"id":"test-model"`) != enabled {
+			t.Fatalf("public catalog: %d %s", rec.Code, rec.Body.String())
+		}
+		rec = call("GET", "/v1/models/test-model", "", key)
+		if enabled && rec.Code != http.StatusOK || !enabled && rec.Code != http.StatusNotFound {
+			t.Fatalf("retrieve: %d %s", rec.Code, rec.Body.String())
+		}
+		if !enabled {
+			rec = call("POST", "/v1/chat/completions", `{"model":"test-model","messages":[{"role":"user","content":"hello"}]}`, key)
+			if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "model is disabled") {
+				t.Fatalf("disabled proxy: %d %s", rec.Code, rec.Body.String())
+			}
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
@@ -11,6 +12,7 @@ import (
 )
 
 type adminModelResponse struct {
+	Enabled         bool   `json:"enabled"`
 	Protocol        string `json:"protocol"`
 	Type            string `json:"type"`
 	PublicModel     string `json:"public_model"`
@@ -45,7 +47,14 @@ func (g *Gateway) listAdminModels(w http.ResponseWriter, r *http.Request) {
 	routes := g.registry.PublicRoutes("")
 	models := make([]adminModelResponse, 0, len(routes))
 	for _, route := range routes {
-		models = append(models, adminModelFromRoute(route, overrides[route.PublicModel]))
+		disabled, err := g.store.ModelDisabled(r.Context(), route.Protocol, route.PublicModel)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		model := adminModelFromRoute(route, overrides[route.PublicModel])
+		model.Enabled = !disabled
+		models = append(models, model)
 	}
 	writeJSON(w, http.StatusOK, adminModelListResponse{Items: models})
 }
@@ -71,7 +80,14 @@ func (g *Gateway) getAdminModel(w http.ResponseWriter, r *http.Request) {
 	if !exists {
 		override = ""
 	}
-	writeJSON(w, http.StatusOK, adminModelFromRoute(route, override))
+	disabled, err := g.store.ModelDisabled(r.Context(), protocol, publicModel)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	model := adminModelFromRoute(route, override)
+	model.Enabled = !disabled
+	writeJSON(w, http.StatusOK, model)
 }
 
 func adminModelFromRoute(route provider.Route, overridePool string) adminModelResponse {
@@ -151,4 +167,29 @@ func sanitizedURL(source *url.URL) *url.URL {
 	clean.ForceQuery = false
 	clean.Fragment = ""
 	return &clean
+}
+
+func (g *Gateway) updateAdminModel(w http.ResponseWriter, r *http.Request) {
+	protocol := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("protocol")))
+	model := strings.TrimSpace(r.URL.Query().Get("public_model"))
+	if protocol == "" || model == "" {
+		writeError(w, http.StatusBadRequest, "protocol and public_model are required")
+		return
+	}
+	if _, ok := g.registry.Resolve(protocol, model); !ok {
+		writeError(w, http.StatusNotFound, "model not found")
+		return
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "enabled boolean is required")
+		return
+	}
+	if err := g.store.SetModelEnabled(r.Context(), protocol, model, *body.Enabled); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	g.getAdminModel(w, r)
 }

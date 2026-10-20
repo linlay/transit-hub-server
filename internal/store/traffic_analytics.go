@@ -72,8 +72,9 @@ type TrafficRanking struct {
 	ChargedMicrocredits int64  `json:"charged_microcredits,string"`
 }
 type TrafficOption struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	KeyPrefix string `json:"key_prefix,omitempty"`
 }
 type TrafficAnalytics struct {
 	Items   []TrafficBucket  `json:"items"`
@@ -91,7 +92,33 @@ func (s *Store) TrafficAnalytics(ctx context.Context, query TrafficQuery) (Traff
 	if s.telemetry == nil {
 		return TrafficAnalytics{}, ErrTelemetryUnavailable
 	}
-	return s.telemetry.TrafficAnalytics(ctx, query)
+	result, err := s.telemetry.TrafficAnalytics(ctx, query)
+	if err != nil {
+		return result, err
+	}
+	// Resolve historical internal IDs to recognizable credential names and public prefixes.
+	// Include deleted credentials so retained traffic remains identifiable.
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, key_prefix FROM api_keys ORDER BY created_at DESC`)
+	if err != nil {
+		return result, err
+	}
+	defer rows.Close()
+	positions := make(map[string]int)
+	for i, option := range result.Options.Keys {
+		positions[option.ID] = i
+	}
+	for rows.Next() {
+		var option TrafficOption
+		if err := rows.Scan(&option.ID, &option.Name, &option.KeyPrefix); err != nil {
+			return result, err
+		}
+		if i, ok := positions[option.ID]; ok {
+			result.Options.Keys[i] = option
+		} else {
+			result.Options.Keys = append(result.Options.Keys, option)
+		}
+	}
+	return result, rows.Err()
 }
 
 func (t *Telemetry) TrafficAnalytics(ctx context.Context, query TrafficQuery) (TrafficAnalytics, error) {

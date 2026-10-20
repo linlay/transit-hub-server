@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -227,7 +228,7 @@ func (g *Gateway) currentAPIKeyPrices(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	allowed := g.allowedPriceKeys(key)
+	allowed := g.allowedPriceKeys(r.Context(), key)
 	items := make([]store.ModelPrice, 0, len(prices))
 	for _, price := range prices {
 		if _, ok := allowed[price.Protocol+"\x00"+price.PublicModel]; ok {
@@ -237,10 +238,10 @@ func (g *Gateway) currentAPIKeyPrices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
-func (g *Gateway) allowedPriceKeys(key store.APIKey) map[string]struct{} {
+func (g *Gateway) allowedPriceKeys(ctx context.Context, key store.APIKey) map[string]struct{} {
 	allowed := map[string]struct{}{}
 	for _, protocol := range []string{"openai", "anthropic"} {
-		for _, route := range g.allowedRoutes(protocol, key) {
+		for _, route := range g.allowedRoutes(ctx, protocol, key) {
 			allowed[route.Protocol+"\x00"+route.PublicModel] = struct{}{}
 		}
 	}

@@ -513,7 +513,14 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at TEXT NOT NULL
 		);
 
-		CREATE TABLE IF NOT EXISTS route_overrides (
+		CREATE TABLE IF NOT EXISTS model_states (
+            protocol TEXT NOT NULL,
+            public_model TEXT NOT NULL,
+            disabled INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (protocol, public_model)
+        );
+
+        CREATE TABLE IF NOT EXISTS route_overrides (
 			public_model TEXT PRIMARY KEY,
 			pool TEXT NOT NULL,
 			updated_at TEXT NOT NULL

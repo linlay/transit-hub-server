@@ -146,6 +146,7 @@ func (g *Gateway) Handler() http.Handler {
 		r.Delete("/model-prices/{id}", g.deleteModelPrice)
 		r.Get("/models", g.listAdminModels)
 		r.Get("/models/detail", g.getAdminModel)
+		r.Patch("/models/detail", g.updateAdminModel)
 		r.Get("/users", g.listAdminUsers)
 		r.Post("/users", g.createAdminUser)
 		r.Patch("/users/{id}", g.patchAdminUser)

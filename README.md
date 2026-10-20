@@ -604,6 +604,8 @@ curl -sS http://localhost:8080/api/me/prices \
 
 ## Provider 运维
 
+模型目录和详情返回 `enabled` 状态。管理员可通过 `PATCH /admin/models/detail?protocol=openai&public_model=example-chat`，提交 `{"enabled":false}` 停用模型，或提交 `{"enabled":true}` 重新启用（使用 Admin 鉴权）。状态按协议和公开模型名持久化，重启、Provider 重载后保留，未设置时默认启用。停用后模型从客户端目录和价格列表隐藏，代理请求返回 HTTP 503 `model is disabled`；管理端仍可查看并重新启用。停用不终止已在处理中的请求。
+
 管理端可读取不受客户端模型白名单限制的完整运行态模型目录。响应包含公开模型、上游映射、配置/覆盖 Pool 和有效 endpoint，但不会包含上游 API Key、账号密钥或固定 Header 值：
 
 ```bash

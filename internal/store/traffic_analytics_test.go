@@ -11,7 +11,7 @@ func TestTrafficAnalyticsFiltersAndTotals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := s.CreateAPIKey(t.Context(), CreateAPIKeyParams{Name: "b"})
+	b, err := s.CreateAPIKey(t.Context(), CreateAPIKeyParams{Name: "b", Prefix: "dk"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,6 +34,15 @@ func TestTrafficAnalyticsFiltersAndTotals(t *testing.T) {
 	}
 	if len(result.Models) != 2 || result.Models[0].Requests != 126 || result.Models[0].TotalTokens != 640 || len(result.Keys) != 2 {
 		t.Fatalf("bad rankings: %+v", result)
+	}
+	for _, option := range result.Options.Keys {
+		expected := a.APIKey
+		if option.ID == b.ID {
+			expected = b.APIKey
+		}
+		if option.KeyPrefix != expected.KeyPrefix || option.Name != expected.Name {
+			t.Fatalf("unrecognizable credential: %+v", option)
+		}
 	}
 	end := at.Add(24 * time.Hour)
 	filters := TrafficFilters{APIKeyIDs: []string{a.ID, b.ID}, Models: []string{"model-a"}, Provider: "provider-a", Status: "success", ExclusiveEnd: true}
