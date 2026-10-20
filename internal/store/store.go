@@ -130,9 +130,11 @@ type RequestLog struct {
 	CacheMissTokens     int64
 	ChargedMicrocredits int64
 	Estimated           bool
-	ErrorType           string
-	CreatedAt           time.Time
-	ModelPrice          *ModelPrice
+	// UsageSource is none, reported, missing, interrupted or undecodable.
+	UsageSource string
+	ErrorType   string
+	CreatedAt   time.Time
+	ModelPrice  *ModelPrice
 }
 
 func Open(path string) (*Store, error) {

@@ -31,6 +31,7 @@ type Gateway struct {
 	providerQuota     *providerquota.Monitor
 	client            *http.Client
 	logger            *log.Logger
+	usageAlerts       *usageAlerts
 	rateLimitLocation *time.Location
 }
 
@@ -80,6 +81,7 @@ func New(options Options) *Gateway {
 		providerQuota:     options.ProviderQuota,
 		client:            client,
 		logger:            logger,
+		usageAlerts:       newUsageAlerts(logger),
 		rateLimitLocation: rateLimitLocation,
 	}
 }
@@ -149,6 +151,7 @@ func (g *Gateway) Handler() http.Handler {
 		r.Patch("/users/{id}", g.patchAdminUser)
 		r.Delete("/users/{id}", g.deleteAdminUser)
 		r.Get("/providers/usage", g.providerUsage)
+		r.Get("/providers/usage-anomalies", g.usageAnomalies)
 		r.Get("/providers/quota", g.providerQuotaSnapshot)
 		r.Get("/providers", g.listProviders)
 		r.Post("/providers/test", g.testProviderConnectivity)

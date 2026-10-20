@@ -1,6 +1,7 @@
 name: deepseek
 protocol: openai
 base_url: https://api.deepseek.com
+requestIdHeader: x-ds-trace-id
 default_pool: primary
 headers: {}
 quota:

@@ -106,6 +106,24 @@ requestIdHeader: X-Babelark-Request-Id
 
 网关在 JSON、SSE 和上游错误响应中统一以 `X-Request-Id` 返回该值，并记录到请求日志和连通性测试结果的 `upstream_request_id`。指定头缺失时回退到上游 `X-Request-Id`；均缺失时留空，不使用客户端传入或网关生成的 ID 冒充上游 ID。配置指定的来源头在提取后会从对外响应中移除，仅通过 `X-Request-Id` 提供该标识；来源本身为 `X-Request-Id` 时保留。其他响应头继续透传。浏览器可跨域读取 `X-Request-Id`。客户端应从该响应头填写 `usage.upstreamRequestId` 及错误诊断，不依赖响应体中的 `usage`。配置修改后调用 `POST /admin/providers/reload` 或重启；日志库启动时自动补充新字段，历史记录为空。
 
+Usage 拦截与映射：网关原样透传上游响应（状态、头、字节，包括 gzip 压缩体），同时在旁路解压一份副本，按端点协议提取 usage。客户端 `Accept-Encoding` 中网关无法解码的编码（如 br、zstd）会在转发上游前去掉；只剩这类编码时去掉整个头，由网关的 HTTP 客户端自行协商 gzip 并以明文返回客户端。usage 在响应中的位置由协议决定：Chat Completions 取最后一个带 `usage` 的 chunk，Responses 取终态事件的 `response.usage`，Anthropic 取 `message_start` 的输入与缓存和 `message_delta` 的累计输出，非流式取顶层 `usage`。各计数器读取哪个字段可在 provider 或模型上按端点声明，未声明的字段使用协议默认值，模型级覆盖 provider 级：
+
+```yaml
+usage:
+  openai_chat_completions:
+    cacheHit: prompt_cache_hit_tokens        # 单个路径
+    cacheMiss: [prompt_cache_miss_tokens]    # 或按顺序尝试的路径列表
+models:
+  - public: some-model
+    upstream: some-model
+    usage:
+      openai_chat_completions:
+        cacheHit: usage_details.cached       # 仅此模型
+        cacheMiss: []                        # 空列表表示上游不报告该计数
+```
+
+可用字段为 `input`、`output`、`total`、`cacheHit`、`cacheMiss`、`cacheWrite`、`inputExcludesCache`（输入是否不含缓存读写，Anthropic 默认 true），路径相对 usage 对象、以 `.` 分隔；未知字段或协议不支持的端点会拒绝加载。每条请求日志记录 `usage_source`：`reported`（读取到完整 usage）、`missing`（响应正常结束但没有 usage）、`interrupted`（客户端断开、上游中断或带内错误事件导致未完成）、`undecodable`（无法解码的内容编码）、`none`（失败请求不计 token；按张计费的图片模型未返回 usage 时也记为 none）。非 `reported` 的成功请求按请求体字节数和已转发的可见输出文本估算并标记 `estimated`；Anthropic 中断时输入和缓存使用 `message_start` 的上游值。`missing` 与 `undecodable` 说明解析或映射与上游不符，会以 `ALERT usage` 日志告警（同一 provider、模型、端点、来源每 5 分钟最多一条，附被抑制次数），并可通过 `GET /admin/providers/usage-anomalies?from=&to=` 按 provider、模型和来源汇总查询。
+
 BabelArk 的 Claude Haiku / Opus / Sonnet 5.5 使用独立的 `configs/providers/babelark-anthropic.example.yaml`，复用 `BABELARK_API_KEY`，通过 `/v1/messages` 调用。公开模型名、Credits 价格导入和 adaptive thinking 请求示例见 [Claude 5.5 接入](docs/babelark-claude-5_5.md)。
 
 可选的 `quota` 块会按账号定时查询上游额度，并把配置明确引用的响应字段渲染为文字摘要。不同厂商可以自由定义标题和行，不需要统一成固定的小时、每日、每周、次数或余额结构。`items_path` 和字段路径使用点分隔的对象路径；根响应本身是数组或单个额度对象时可省略 `items_path`。例如 MiniMax：

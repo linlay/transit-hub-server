@@ -35,10 +35,22 @@ var hopByHopHeaders = map[string]struct{}{
 }
 
 type copyResult struct {
-	Usage  usage.Tokens
-	Sample []byte
-	Bytes  int64
+	Observation usage.Observation
+	// Complete reports that the upstream body reached EOF and the client received all of it.
+	Complete    bool
+	Undecodable bool
+	DecodeErr   string
+	Bytes       int64
 }
+
+// Usage sources describe where a request log's token counts came from.
+const (
+	usageSourceNone        = "none"        // no upstream response usage applies
+	usageSourceReported    = "reported"    // complete usage parsed from the response
+	usageSourceMissing     = "missing"     // the response completed without usage
+	usageSourceInterrupted = "interrupted" // the response ended before usage arrived
+	usageSourceUndecodable = "undecodable" // the content coding could not be decoded
+)
 
 type observedUsage struct {
 	CacheWriteTokens int64
@@ -47,6 +59,7 @@ type observedUsage struct {
 	CacheHitTokens   int64
 	CacheMissTokens  int64
 	Estimated        bool
+	Source           string
 }
 
 func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
@@ -76,13 +89,12 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		route, ok := g.registry.Resolve(protocol, envelope.Model)
 		if !ok {
 			g.logCompletedRequest(r, key, store.RequestLog{
-				Protocol:      protocol,
-				PublicModel:   envelope.Model,
-				StatusCode:    http.StatusNotFound,
-				Latency:       time.Since(started),
-				RequestTokens: usage.EstimateTokens(body),
-				Estimated:     true,
-				ErrorType:     "route_not_found",
+				Protocol:    protocol,
+				PublicModel: envelope.Model,
+				StatusCode:  http.StatusNotFound,
+				Latency:     time.Since(started),
+				UsageSource: usageSourceNone,
+				ErrorType:   "route_not_found",
 			})
 			writeError(w, http.StatusNotFound, "model route not found")
 			return
@@ -96,8 +108,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 				Pool:          route.PoolName,
 				StatusCode:    http.StatusForbidden,
 				Latency:       time.Since(started),
-				RequestTokens: usage.EstimateTokens(body),
-				Estimated:     true,
+				UsageSource:   usageSourceNone,
 				ErrorType:     "model_not_allowed",
 			})
 			writeError(w, http.StatusForbidden, "model not allowed for api key")
@@ -112,8 +123,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 				Pool:          route.PoolName,
 				StatusCode:    http.StatusBadRequest,
 				Latency:       time.Since(started),
-				RequestTokens: usage.EstimateTokens(body),
-				Estimated:     true,
+				UsageSource:   usageSourceNone,
 				ErrorType:     "model_type_not_supported",
 			})
 			writeError(w, http.StatusBadRequest, "model type not supported for endpoint")
@@ -158,8 +168,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 				Pool:          route.PoolName,
 				StatusCode:    http.StatusServiceUnavailable,
 				Latency:       time.Since(started),
-				RequestTokens: usage.EstimateTokens(body),
-				Estimated:     true,
+				UsageSource:   usageSourceNone,
 				ErrorType:     "no_healthy_account",
 				ModelPrice:    modelPrice,
 			})
@@ -209,8 +218,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 				Account:       account.Name,
 				StatusCode:    http.StatusBadGateway,
 				Latency:       time.Since(started),
-				RequestTokens: usage.EstimateTokens(body),
-				Estimated:     true,
+				UsageSource:   usageSourceNone,
 				ErrorType:     "upstream_error",
 				ModelPrice:    modelPrice,
 			})
@@ -232,18 +240,28 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		}
 		w.WriteHeader(resp.StatusCode)
 
-		result, copyErr := copyResponse(w, resp.Body, upstreamBody.Envelope.Stream || isEventStream(resp.Header))
+		stream := upstreamBody.Envelope.Stream || isEventStream(resp.Header)
+		parser := usage.NewParser(endpointKey, route.UsageMapping(endpointKey), stream)
+		result, copyErr := copyResponse(w, resp, parser, stream)
 		if copyErr != nil {
 			g.logger.Printf("copy upstream response failed: provider=%s upstream_request_id=%q error=%v", route.ProviderName, upstreamRequestID, copyErr)
 		}
 
-		observed := observedTokens(body, result.Sample, upstreamBody.Envelope.Stream || isEventStream(resp.Header))
-		if result.Usage.OK {
-			observed = observedUsage{RequestTokens: result.Usage.Request, ResponseTokens: result.Usage.Response, CacheHitTokens: result.Usage.CacheHit, CacheMissTokens: result.Usage.CacheMiss, CacheWriteTokens: result.Usage.CacheWrite}
+		observed := resolveObservedUsage(body, resp.StatusCode, result)
+		if modelPrice != nil && modelPrice.Billing.Mode == "image" && observed.Source != usageSourceReported {
+			// Per-image billing does not depend on token usage, so its absence is expected.
+			observed.Source = usageSourceNone
 		}
-		if copyErr != nil && observed.ResponseTokens == 0 && result.Bytes > 0 && endpointKey != "openai_responses" {
-			observed.ResponseTokens = usage.EstimateTokens(result.Sample)
-			observed.Estimated = true
+		if observed.Source == usageSourceMissing || observed.Source == usageSourceUndecodable {
+			g.usageAlerts.report(usageAnomaly{
+				Source:            observed.Source,
+				Provider:          route.ProviderName,
+				PublicModel:       route.PublicModel,
+				Endpoint:          endpointKey,
+				ContentEncoding:   resp.Header.Get("Content-Encoding"),
+				UpstreamRequestID: upstreamRequestID,
+				DecodeErr:         result.DecodeErr,
+			})
 		}
 		if route.Type == config.ModelTypeEmbedding {
 			if observed.RequestTokens == 0 {
@@ -256,11 +274,11 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		// Byte estimates cannot represent their token usage.
 		usageUnavailable := imageTokenUsageUnavailable || (endpointKey == "openai_responses" && observed.Estimated)
 		if usageUnavailable {
-			observed = observedUsage{}
+			observed = observedUsage{Source: observed.Source}
 		}
-		imageCount := responseImageCount(result.Sample)
+		imageCount := responseImageCount(parser.Body())
 		imageEstimated := false
-		if modelPrice != nil && modelPrice.Billing.Mode == "image" && imageCount == 0 && copyErr == nil && result.Bytes > responseSampleLimit && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if modelPrice != nil && modelPrice.Billing.Mode == "image" && imageCount == 0 && copyErr == nil && parser.DecodedBytes() > responseSampleLimit && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			imageCount = billingRequestedImageCount(parsedBody)
 			imageEstimated = true
 		}
@@ -269,7 +287,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			imageCost = store.ImageCost(imageCount, imageUnit)
 		}
 		if modelPrice != nil && modelPrice.Billing.Mode == "image" {
-			observed = observedUsage{Estimated: imageEstimated}
+			observed = observedUsage{Estimated: imageEstimated, Source: observed.Source}
 		}
 		errorType := ""
 		if copyErr != nil {
@@ -296,6 +314,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			UsageUnavailable:    usageUnavailable,
 			ChargedMicrocredits: imageCost,
 			Estimated:           observed.Estimated,
+			UsageSource:         observed.Source,
 			ErrorType:           errorType,
 			ModelPrice:          modelPrice,
 		})
@@ -428,6 +447,14 @@ func (g *Gateway) buildUpstreamRequest(r *http.Request, route provider.Route, ac
 	if body.ContentType != "" {
 		req.Header.Set("Content-Type", body.ContentType)
 	}
+	// Without an explicit header the transport negotiates gzip and decodes it.
+	if accepted := req.Header.Get("Accept-Encoding"); accepted != "" {
+		if filtered := decodableAcceptEncoding(accepted); filtered != "" {
+			req.Header.Set("Accept-Encoding", filtered)
+		} else {
+			req.Header.Del("Accept-Encoding")
+		}
+	}
 
 	applyConfiguredUpstreamHeaders(req.Header, route, account)
 	req.ContentLength = int64(len(body.Body))
@@ -461,53 +488,78 @@ func endpointSupportsRoute(endpointKey string, route provider.Route) bool {
 	}
 }
 
-func observedTokens(requestBody, responseSample []byte, stream bool) observedUsage {
-	var observed usage.Tokens
-	if stream {
-		observed = usage.ExtractFromSSE(responseSample)
-	} else {
-		observed = usage.ExtractFromJSON(responseSample)
-	}
-	if observed.OK {
-		return observedUsage{
-			RequestTokens:    observed.Request,
-			ResponseTokens:   observed.Response,
-			CacheHitTokens:   observed.CacheHit,
-			CacheMissTokens:  observed.CacheMiss,
-			CacheWriteTokens: observed.CacheWrite,
-			Estimated:        false,
+// resolveObservedUsage turns the intercepted response into billing counters.
+// Upstream errors never carry usage; anything short of complete reported usage
+// is estimated from the request body and the visible output text.
+func resolveObservedUsage(requestBody []byte, statusCode int, result copyResult) observedUsage {
+	obs := result.Observation
+	if statusCode < 200 || statusCode >= 300 {
+		if obs.Final {
+			return observedUsageFromTokens(obs.Tokens, usageSourceReported)
 		}
+		return observedUsage{Source: usageSourceNone}
 	}
+	source := usageSourceInterrupted
+	switch {
+	case result.Undecodable:
+		source = usageSourceUndecodable
+	case obs.Final:
+		return observedUsageFromTokens(obs.Tokens, usageSourceReported)
+	case result.Complete && !obs.Errored:
+		source = usageSourceMissing
+	}
+	observed := observedUsage{Estimated: true, Source: source}
+	if obs.Tokens.Request > 0 {
+		// Anthropic reports input and cache counters before the first token.
+		observed.RequestTokens = obs.Tokens.Request
+		observed.CacheHitTokens = obs.Tokens.CacheHit
+		observed.CacheMissTokens = obs.Tokens.CacheMiss
+		observed.CacheWriteTokens = obs.Tokens.CacheWrite
+	} else {
+		observed.RequestTokens = usage.EstimateTokens(requestBody)
+	}
+	observed.ResponseTokens = max(obs.Tokens.Response, obs.EstimatedOutputTokens())
+	return observed
+}
+
+func observedUsageFromTokens(tokens usage.Tokens, source string) observedUsage {
 	return observedUsage{
-		RequestTokens:  usage.EstimateTokens(requestBody),
-		ResponseTokens: usage.EstimateTokens(responseSample),
-		Estimated:      true,
+		RequestTokens:    tokens.Request,
+		ResponseTokens:   tokens.Response,
+		CacheHitTokens:   tokens.CacheHit,
+		CacheMissTokens:  tokens.CacheMiss,
+		CacheWriteTokens: tokens.CacheWrite,
+		Source:           source,
 	}
 }
 
-func copyResponse(w http.ResponseWriter, body io.Reader, flush bool) (copyResult, error) {
-	var sample bytes.Buffer
-	var collector usage.StreamCollector
+// copyResponse forwards the upstream body byte for byte while a decoded copy
+// feeds the usage parser.
+func copyResponse(w http.ResponseWriter, resp *http.Response, parser *usage.Parser, flush bool) (copyResult, error) {
+	tap := newDecodingTap(resp.Header.Get("Content-Encoding"), parser.Write)
 	buffer := make([]byte, 32*1024)
 	var written int64
 	flusher, canFlush := w.(http.Flusher)
+	finish := func(complete bool, err error) (copyResult, error) {
+		decodeErr := tap.Close()
+		result := copyResult{
+			Observation: parser.Finish(complete),
+			Complete:    complete,
+			Undecodable: tap.unsupported || (complete && decodeErr != nil),
+			Bytes:       written,
+		}
+		if decodeErr != nil {
+			result.DecodeErr = decodeErr.Error()
+		}
+		return result, err
+	}
 
 	for {
-		n, readErr := body.Read(buffer)
+		n, readErr := resp.Body.Read(buffer)
 		if n > 0 {
-			chunk := buffer[:n]
-			if flush {
-				collector.Write(chunk)
-			}
-			if sample.Len() < responseSampleLimit {
-				remaining := responseSampleLimit - sample.Len()
-				if len(chunk) > remaining {
-					chunk = chunk[:remaining]
-				}
-				_, _ = sample.Write(chunk)
-			}
+			tap.Write(buffer[:n])
 			if _, err := w.Write(buffer[:n]); err != nil {
-				return copyResult{Sample: sample.Bytes(), Bytes: written, Usage: collector.Finish()}, err
+				return finish(false, err)
 			}
 			written += int64(n)
 			if flush && canFlush {
@@ -515,10 +567,10 @@ func copyResponse(w http.ResponseWriter, body io.Reader, flush bool) (copyResult
 			}
 		}
 		if readErr == io.EOF {
-			return copyResult{Sample: sample.Bytes(), Bytes: written, Usage: collector.Finish()}, nil
+			return finish(true, nil)
 		}
 		if readErr != nil {
-			return copyResult{Sample: sample.Bytes(), Bytes: written, Usage: collector.Finish()}, readErr
+			return finish(false, readErr)
 		}
 	}
 }

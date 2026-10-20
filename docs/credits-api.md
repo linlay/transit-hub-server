@@ -128,7 +128,7 @@ GET/POST `/admin/model-prices`、PATCH `/admin/model-prices/{id}`、GET `/api/me
 }
 ```
 
-输入 Token 统一包含缓存读写；普通输入、缓存命中、缓存写入互斥计算。兼容 OpenAI cached_tokens、DeepSeek cache hit/miss，以及 Anthropic cache read/write 和 SSE message_start/message_delta。OpenAI 流式请求会设置 `stream_options.include_usage=true`；SSE 用量独立扫描，不受 8 MiB 日志采样上限影响。
+输入 Token 统一包含缓存读写；普通输入、缓存命中、缓存写入互斥计算。usage 字段按端点协议的默认映射读取（OpenAI cached_tokens 与 DeepSeek cache hit/miss、Anthropic cache read/write 和 SSE message_start/message_delta、Responses 终态事件），provider 或模型可通过 YAML `usage` 按端点覆盖，见 README。OpenAI 流式请求会设置 `stream_options.include_usage=true`；压缩响应在旁路解码后解析，客户端收到的字节不变；SSE 用量逐事件扫描，不受 8 MiB 日志采样上限影响。
 
 图片示例：
 
@@ -158,11 +158,12 @@ GET/POST `/admin/model-prices`、PATCH `/admin/model-prices/{id}`、GET `/api/me
 GET `/admin/logs`、`/admin/api-keys/{id}/logs`、`/api/me/logs` 新增：
 
 - `billing_status`：charged（按已知用量）、estimated（估算）、free（显式免费）、not_charged（未计费失败）、unpriced（无价格）、unavailable（无法计量）、legacy（升级前记录）。
+- `usage_source`：reported（上游完整 usage）、missing（正常结束但缺 usage，告警）、interrupted（未完成，含客户端断开和带内错误事件）、undecodable（无法解码，告警）、none（失败请求不计 token；按张计费图片缺 usage 也记 none）；升级前记录为空。
 - `price_snapshot`：本次开始时读取的完整价格对象，缺失为 null；不含上游密钥。
 - `started_at`：请求开始 UTC 时间，旧记录为 null。
 - `cache_write_tokens`、`image_count`：计费明细。
 
-本地拒绝、连接失败、上游非 2xx 响应不扣 Credits；成功请求按 usage 优先，缺失时按字节粗估。成功流式响应中断时按已观察用量或估算扣费，不因断开全额退款。价格修改不改变已开始请求和历史消费。
+本地拒绝、连接失败、上游非 2xx 响应不扣 Credits，也不计 token；成功请求按 usage 优先，缺失时输入按请求体字节数、输出按已转发的可见文本（ASCII 约 0.3、其他字符约 0.6 token/字符）估算，不再按响应或 SSE 字节估算。成功流式响应中断时按已观察用量或估算扣费，不因断开全额退款。价格修改不改变已开始请求和历史消费。
 
 Responses `/v1/responses` 复用 openai 模型价格：非流式读取顶层 `usage`，流式读取 `response.usage`，按累计快照更新而非逐事件相加。`input_tokens_details.cached_tokens` 使用缓存价，`output_tokens` 已包含推理 token，不重复加算。显式零输入/输出用量视为已计量。
 

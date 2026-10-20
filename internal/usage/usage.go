@@ -1,12 +1,15 @@
 package usage
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"math"
 	"strings"
+	"unicode/utf8"
 )
+
+// maxEventBytes bounds one buffered SSE line and the buffered JSON body.
+const maxEventBytes = 8 * 1024 * 1024
 
 type Tokens struct {
 	Request    int64
@@ -17,6 +20,11 @@ type Tokens struct {
 	OK         bool
 }
 
+func (t Tokens) nonZero() bool {
+	return t.Request+t.Response+t.CacheHit+t.CacheMiss+t.CacheWrite > 0
+}
+
+// EstimateTokens approximates request tokens from the raw request body size.
 func EstimateTokens(data []byte) int64 {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return 0
@@ -28,182 +36,327 @@ func EstimateTokens(data []byte) int64 {
 	return estimated
 }
 
-func ExtractFromJSON(data []byte) Tokens {
-	var payload map[string]any
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return Tokens{}
-	}
-	return extractFromPayload(payload)
+// Observation is what the gateway learned from intercepting one response.
+type Observation struct {
+	Tokens Tokens
+	// Final reports that Tokens hold the complete usage defined by the protocol.
+	Final bool
+	// Errored reports an in-band upstream error event or error body.
+	Errored bool
+	// Visible output text forwarded to the client, used only for estimates.
+	OutputASCIIChars int64
+	OutputOtherChars int64
 }
 
-func ExtractFromSSE(data []byte) Tokens {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-
-	var latest Tokens
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		raw := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if raw == "" || raw == "[DONE]" {
-			continue
-		}
-		var payload map[string]any
-		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-			continue
-		}
-		if tokens := extractFromPayload(payload); tokens.OK {
-			if tokens.Request > 0 {
-				latest.Request = tokens.Request
-				latest.CacheHit = tokens.CacheHit
-				latest.CacheMiss = tokens.CacheMiss
-				latest.CacheWrite = tokens.CacheWrite
-			}
-			if tokens.Response > 0 {
-				latest.Response = tokens.Response
-			}
-			latest.OK = true
-		}
-	}
-	return latest
+// EstimatedOutputTokens approximates output tokens from forwarded text using
+// DeepSeek's published ratios (about 0.3 token per ASCII character and 0.6 per
+// CJK character). Hidden reasoning is not visible and therefore not counted.
+func (o Observation) EstimatedOutputTokens() int64 {
+	return int64(math.Ceil(0.3*float64(o.OutputASCIIChars) + 0.6*float64(o.OutputOtherChars)))
 }
 
-func extractFromPayload(payload map[string]any) Tokens {
-	if response, ok := payload["response"].(map[string]any); ok {
-		return extractFromPayload(response)
-	}
-	if message, ok := payload["message"].(map[string]any); ok {
-		return extractFromPayload(message)
-	}
-	usageValue, ok := payload["usage"]
-	if !ok || usageValue == nil {
-		return Tokens{}
-	}
-	usageMap, ok := usageValue.(map[string]any)
-	if !ok {
-		return Tokens{}
-	}
+// Parser intercepts a decoded response copy and extracts usage according to
+// the endpoint protocol. It never changes what is sent to the client.
+type Parser struct {
+	endpoint string
+	mapping  Mapping
+	stream   bool
 
-	cacheHit := number(usageMap["prompt_cache_hit_tokens"])
-	cacheMiss := number(usageMap["prompt_cache_miss_tokens"])
-	cacheWrite := number(usageMap["cache_creation_input_tokens"])
-	if hit := number(usageMap["cache_read_input_tokens"]); hit > 0 {
-		cacheHit = hit
-	}
-	if details, ok := usageMap["prompt_tokens_details"].(map[string]any); ok {
-		if hit := number(details["cached_tokens"]); hit > 0 {
-			cacheHit = hit
-		}
-	}
-	if details, ok := usageMap["input_tokens_details"].(map[string]any); ok {
-		if hit := number(details["cached_tokens"]); hit > 0 {
-			cacheHit = hit
-		}
-	}
-	request := number(usageMap["prompt_tokens"]) + number(usageMap["input_tokens"])
-	// Anthropic input_tokens excludes cache reads/writes, OpenAI prompt_tokens includes them.
-	if _, ok := usageMap["cache_read_input_tokens"]; ok {
-		request += cacheHit + cacheWrite
-	} else if _, ok := usageMap["cache_creation_input_tokens"]; ok {
-		request += cacheWrite
-	}
-	response := number(usageMap["completion_tokens"]) + number(usageMap["output_tokens"])
-	total := number(usageMap["total_tokens"])
-
-	if request == 0 && cacheHit+cacheMiss > 0 {
-		request = cacheHit + cacheMiss
-	}
-	// Explicit zero Responses usage is authoritative, unlike missing usage.
-	_, hasInput := usageMap["input_tokens"].(float64)
-	_, hasOutput := usageMap["output_tokens"].(float64)
-	if request == 0 && response == 0 && total == 0 && cacheHit == 0 && cacheMiss == 0 && !(hasInput && hasOutput) {
-		return Tokens{}
-	}
-	if total > 0 && request == 0 && response == 0 {
-		response = total
-	}
-	return Tokens{
-		Request:    request,
-		Response:   response,
-		CacheHit:   cacheHit,
-		CacheMiss:  cacheMiss,
-		CacheWrite: cacheWrite,
-		OK:         true,
-	}
-}
-
-func number(value any) int64 {
-	switch typed := value.(type) {
-	case float64:
-		if typed < 0 || typed > 1e12 {
-			return 0
-		}
-		return int64(typed)
-	case int64:
-		return max(0, min(typed, 1_000_000_000_000))
-	case json.Number:
-		n, _ := typed.Int64()
-		return n
-	default:
-		return 0
-	}
-}
-
-// StreamCollector observes every SSE event, including usage after the response
-// log sample has reached its size limit. Individual oversized events are skipped.
-type StreamCollector struct {
 	pending  []byte
 	dropping bool
-	Tokens   Tokens
+
+	body      []byte
+	truncated bool
+	decoded   int64
+
+	sawUsage   bool
+	sawNonZero bool
+	final      bool
+	obs        Observation
 }
 
-func (c *StreamCollector) Write(data []byte) {
+func NewParser(endpoint string, mapping Mapping, stream bool) *Parser {
+	return &Parser{endpoint: endpoint, mapping: mapping, stream: stream}
+}
+
+// Write consumes decoded response bytes in arrival order.
+func (p *Parser) Write(data []byte) {
+	p.decoded += int64(len(data))
+	if !p.stream {
+		if p.truncated {
+			return
+		}
+		if len(p.body)+len(data) > maxEventBytes {
+			p.truncated = true
+			p.body = append(p.body, data[:maxEventBytes-len(p.body)]...)
+			return
+		}
+		p.body = append(p.body, data...)
+		return
+	}
 	for len(data) > 0 {
 		end := bytes.IndexByte(data, '\n')
 		complete := end >= 0
 		if !complete {
 			end = len(data)
 		}
-		if !c.dropping {
-			if len(c.pending)+end > 8*1024*1024 {
-				c.pending = nil
-				c.dropping = true
+		if !p.dropping {
+			if len(p.pending)+end > maxEventBytes {
+				// Oversized events are skipped rather than half parsed.
+				p.pending = nil
+				p.dropping = true
 			} else {
-				c.pending = append(c.pending, data[:end]...)
+				p.pending = append(p.pending, data[:end]...)
 			}
 		}
 		if !complete {
 			return
 		}
-		if !c.dropping {
-			c.Tokens = mergeTokens(c.Tokens, ExtractFromSSE(c.pending))
+		if !p.dropping {
+			p.line(p.pending)
 		}
-		c.pending = c.pending[:0]
-		c.dropping = false
+		p.pending = p.pending[:0]
+		p.dropping = false
 		data = data[end+1:]
 	}
 }
-func (c *StreamCollector) Finish() Tokens {
-	if !c.dropping {
-		c.Tokens = mergeTokens(c.Tokens, ExtractFromSSE(c.pending))
+
+// Finish ends the response. complete reports that the upstream body was read
+// to EOF and fully delivered to the client.
+func (p *Parser) Finish(complete bool) Observation {
+	if p.stream {
+		if !p.dropping && len(p.pending) > 0 {
+			p.line(p.pending)
+			p.pending = nil
+		}
+		obs := p.obs
+		switch p.endpoint {
+		case EndpointResponses, EndpointAnthropicMessages:
+			obs.Final = p.final
+		default:
+			// Chat-style streams may repeat zero usage on every chunk; zeros are
+			// only authoritative once the stream completed.
+			obs.Final = p.sawNonZero || (p.sawUsage && complete)
+		}
+		return obs
 	}
-	return c.Tokens
+	obs := p.obs
+	if p.truncated {
+		return obs
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(p.body, &payload); err != nil {
+		return obs
+	}
+	if payload["error"] != nil || payload["type"] == "error" {
+		obs.Errored = true
+	}
+	usageObject, _ := payload["usage"].(map[string]any)
+	if usageObject == nil {
+		if response, ok := payload["response"].(map[string]any); ok {
+			usageObject, _ = response["usage"].(map[string]any)
+		}
+	}
+	if usageObject != nil {
+		if tokens, found := p.mapping.extract(usageObject, p.endpoint); found {
+			obs.Tokens = tokens
+			obs.Final = true
+		}
+	}
+	countJSONOutput(payload, &obs)
+	return obs
 }
-func mergeTokens(a, b Tokens) Tokens {
-	if !b.OK {
-		return a
+
+// Body returns the buffered decoded body of a non-stream response.
+func (p *Parser) Body() []byte {
+	return p.body
+}
+
+// DecodedBytes returns the number of decoded bytes observed.
+func (p *Parser) DecodedBytes() int64 {
+	return p.decoded
+}
+
+func (p *Parser) line(raw []byte) {
+	line := strings.TrimSpace(string(raw))
+	if !strings.HasPrefix(line, "data:") {
+		return
 	}
-	if b.Request > 0 {
-		a.Request = b.Request
-		a.CacheHit = b.CacheHit
-		a.CacheMiss = b.CacheMiss
-		a.CacheWrite = b.CacheWrite
+	data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if data == "" || data == "[DONE]" {
+		return
 	}
-	if b.Response > 0 {
-		a.Response = b.Response
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		return
 	}
-	a.OK = true
-	return a
+	switch p.endpoint {
+	case EndpointResponses:
+		p.responsesEvent(payload)
+	case EndpointAnthropicMessages:
+		p.anthropicEvent(payload)
+	default:
+		p.chatEvent(payload)
+	}
+}
+
+// chatEvent handles Chat Completions chunks; usage arrives in the final chunk
+// when stream_options.include_usage is set.
+func (p *Parser) chatEvent(payload map[string]any) {
+	if payload["error"] != nil {
+		p.obs.Errored = true
+	}
+	if usageObject, ok := payload["usage"].(map[string]any); ok {
+		if tokens, found := p.mapping.extract(usageObject, p.endpoint); found {
+			p.sawUsage = true
+			if tokens.nonZero() {
+				p.obs.Tokens = tokens
+				p.sawNonZero = true
+			} else if !p.sawNonZero {
+				p.obs.Tokens = tokens
+			}
+		}
+	}
+	choices, _ := payload["choices"].([]any)
+	for _, choice := range choices {
+		choiceMap, _ := choice.(map[string]any)
+		delta, _ := choiceMap["delta"].(map[string]any)
+		countMessage(delta, &p.obs)
+	}
+}
+
+// responsesEvent handles Responses API events; usage is final on terminal events.
+func (p *Parser) responsesEvent(payload map[string]any) {
+	eventType, _ := payload["type"].(string)
+	if eventType == "error" || eventType == "response.failed" {
+		p.obs.Errored = true
+	}
+	if response, ok := payload["response"].(map[string]any); ok {
+		if usageObject, ok := response["usage"].(map[string]any); ok {
+			if tokens, found := p.mapping.extract(usageObject, p.endpoint); found {
+				p.obs.Tokens = tokens
+				switch eventType {
+				case "response.completed", "response.incomplete", "response.failed":
+					p.final = true
+				}
+			}
+		}
+	}
+	if strings.HasSuffix(eventType, ".delta") {
+		if delta, ok := payload["delta"].(string); ok {
+			countText(delta, &p.obs)
+		}
+	}
+}
+
+// anthropicEvent handles Messages events: message_start carries input and cache
+// counters, message_delta carries the cumulative final output.
+func (p *Parser) anthropicEvent(payload map[string]any) {
+	eventType, _ := payload["type"].(string)
+	switch eventType {
+	case "error":
+		p.obs.Errored = true
+	case "message_start":
+		message, _ := payload["message"].(map[string]any)
+		if usageObject, ok := message["usage"].(map[string]any); ok {
+			if tokens, found := p.mapping.extract(usageObject, p.endpoint); found {
+				p.obs.Tokens = tokens
+			}
+		}
+	case "message_delta":
+		usageObject, ok := payload["usage"].(map[string]any)
+		if !ok {
+			return
+		}
+		tokens, found := p.mapping.extract(usageObject, p.endpoint)
+		if !found {
+			return
+		}
+		p.obs.Tokens.Response = tokens.Response
+		if tokens.Request > 0 {
+			p.obs.Tokens.Request = tokens.Request
+			p.obs.Tokens.CacheHit = tokens.CacheHit
+			p.obs.Tokens.CacheMiss = tokens.CacheMiss
+			p.obs.Tokens.CacheWrite = tokens.CacheWrite
+		}
+		p.obs.Tokens.OK = true
+		p.final = true
+	case "content_block_delta":
+		delta, _ := payload["delta"].(map[string]any)
+		for _, field := range []string{"text", "thinking", "partial_json"} {
+			if text, ok := delta[field].(string); ok {
+				countText(text, &p.obs)
+			}
+		}
+	}
+}
+
+func countJSONOutput(payload map[string]any, obs *Observation) {
+	choices, _ := payload["choices"].([]any)
+	for _, choice := range choices {
+		choiceMap, _ := choice.(map[string]any)
+		message, _ := choiceMap["message"].(map[string]any)
+		countMessage(message, obs)
+	}
+	content, _ := payload["content"].([]any)
+	for _, block := range content {
+		blockMap, _ := block.(map[string]any)
+		for _, field := range []string{"text", "thinking"} {
+			if text, ok := blockMap[field].(string); ok {
+				countText(text, obs)
+			}
+		}
+		if input, ok := blockMap["input"]; ok && input != nil {
+			if encoded, err := json.Marshal(input); err == nil {
+				countText(string(encoded), obs)
+			}
+		}
+	}
+}
+
+func countMessage(message map[string]any, obs *Observation) {
+	if message == nil {
+		return
+	}
+	for _, field := range []string{"content", "reasoning_content", "reasoning", "refusal"} {
+		if text, ok := message[field].(string); ok {
+			countText(text, obs)
+		}
+	}
+	toolCalls, _ := message["tool_calls"].([]any)
+	for _, call := range toolCalls {
+		callMap, _ := call.(map[string]any)
+		function, _ := callMap["function"].(map[string]any)
+		if arguments, ok := function["arguments"].(string); ok {
+			countText(arguments, obs)
+		}
+	}
+}
+
+func countText(text string, obs *Observation) {
+	for _, r := range text {
+		if r < utf8.RuneSelf {
+			obs.OutputASCIIChars++
+		} else {
+			obs.OutputOtherChars++
+		}
+	}
+}
+
+func number(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		if typed < 0 || typed > 1e12 {
+			return 0, true
+		}
+		return int64(typed), true
+	case json.Number:
+		n, err := typed.Int64()
+		if err != nil || n < 0 {
+			return 0, true
+		}
+		return n, true
+	default:
+		return 0, false
+	}
 }

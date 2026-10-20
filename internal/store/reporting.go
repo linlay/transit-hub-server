@@ -116,6 +116,7 @@ type RequestLogQuery struct {
 
 type RequestLogEntry struct {
 	UpstreamRequestID   string          `json:"upstream_request_id"`
+	UsageSource         string          `json:"usage_source"`
 	BillingStatus       string          `json:"billing_status"`
 	PriceSnapshot       json.RawMessage `json:"price_snapshot"`
 	StartedAt           *time.Time      `json:"started_at"`
@@ -485,6 +486,25 @@ func (s *Store) ProviderUsage(ctx context.Context, query ProviderUsageQuery) ([]
 		return nil, ErrTelemetryUnavailable
 	}
 	return s.telemetry.ProviderUsage(ctx, query)
+}
+
+// UsageAnomaly counts successful requests whose usage was not fully reported.
+type UsageAnomaly struct {
+	Provider     string    `json:"provider"`
+	PublicModel  string    `json:"public_model"`
+	UsageSource  string    `json:"usage_source"`
+	Requests     int64     `json:"requests"`
+	Alerting     bool      `json:"alerting"`
+	LastSeenAt   time.Time `json:"last_seen_at"`
+	LastStatus   int       `json:"last_status_code"`
+	LastUpstream string    `json:"last_upstream_request_id"`
+}
+
+func (s *Store) UsageAnomalies(ctx context.Context, query ProviderUsageQuery) ([]UsageAnomaly, error) {
+	if s.telemetry == nil {
+		return nil, ErrTelemetryUnavailable
+	}
+	return s.telemetry.UsageAnomalies(ctx, query)
 }
 
 func (s *Store) ProviderAccountUsage(ctx context.Context, query ProviderUsageQuery) ([]ProviderAccountUsage, error) {

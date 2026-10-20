@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -283,6 +284,63 @@ func TestRejectInvalidRequestIDHeader(t *testing.T) {
 	for _, name := range []string{"X-Bad Header", "X-Bad:Header", "X-Bad\r\nInjected", "请求-ID"} {
 		if err := ValidateProviderConfig(ProviderConfig{RequestIDHeader: name}); err == nil || err.Error() != "requestIdHeader must be a valid HTTP header name" {
 			t.Fatalf("invalid header %q: %v", name, err)
+		}
+	}
+}
+
+func TestLoadProviderConfigsUsageMapping(t *testing.T) {
+	base := `
+name: deepseek
+protocol: openai
+base_url: https://api.deepseek.com
+usage:
+  openai_chat_completions:
+    cacheHit: prompt_cache_hit_tokens
+    cacheMiss: [prompt_cache_miss_tokens]
+models:
+  - public: deepseek-flash
+    upstream: deepseek-flash
+    usage:
+      openai_chat_completions:
+        cacheMiss: []
+%s
+pools:
+  - name: primary
+    accounts:
+      - name: main
+        api_key: sk-test
+`
+	load := func(extra string) ([]ProviderConfig, error) {
+		dir := t.TempDir()
+		providersDir := filepath.Join(dir, "providers")
+		if err := os.MkdirAll(providersDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		raw := strings.Replace(base, "%s", extra, 1)
+		if err := os.WriteFile(filepath.Join(providersDir, "deepseek.yaml"), []byte(raw), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return LoadProviderConfigs(dir)
+	}
+	configs, err := load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := configs[0].Usage["openai_chat_completions"]
+	model := configs[0].Models[0].Usage["openai_chat_completions"]
+	if len(provider.CacheHit) != 1 || provider.CacheHit[0] != "prompt_cache_hit_tokens" || len(provider.CacheMiss) != 1 {
+		t.Fatalf("provider usage=%#v", provider)
+	}
+	if model.CacheMiss == nil || len(model.CacheMiss) != 0 || model.CacheHit != nil {
+		t.Fatalf("model usage=%#v", model)
+	}
+	for name, extra := range map[string]string{
+		"unknown field":        "  - public: other\n    upstream: other\n    usage:\n      openai_chat_completions:\n        cached: x",
+		"unsupported endpoint": "  - public: other\n    upstream: other\n    usage:\n      anthropic_messages:\n        input: input_tokens",
+		"empty path segment":   "  - public: other\n    upstream: other\n    usage:\n      openai_chat_completions:\n        input: usage..prompt",
+	} {
+		if _, err := load(extra); err == nil {
+			t.Fatalf("%s accepted", name)
 		}
 	}
 }

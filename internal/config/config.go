@@ -13,6 +13,8 @@ import (
 
 	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
+
+	"github.com/linlay/transit-hub/internal/usage"
 )
 
 type Env struct {
@@ -49,6 +51,7 @@ type ProviderConfig struct {
 	Headers         map[string]string    `yaml:"headers" json:"headers,omitempty"`
 	Endpoints       map[string]string    `yaml:"endpoints" json:"endpoints,omitempty"`
 	Quota           *ProviderQuotaConfig `yaml:"quota" json:"-"`
+	Usage           UsageConfig          `yaml:"usage" json:"usage,omitempty"`
 	Models          []ModelConfig        `yaml:"models" json:"models"`
 	Pools           []PoolConfig         `yaml:"pools" json:"pools"`
 }
@@ -76,6 +79,97 @@ type ModelConfig struct {
 	OwnedBy     string           `yaml:"owned_by" json:"owned_by,omitempty"`
 	DisplayName string           `yaml:"display_name" json:"display_name,omitempty"`
 	CreatedAt   string           `yaml:"created_at" json:"created_at,omitempty"`
+	Usage       UsageConfig      `yaml:"usage" json:"usage,omitempty"`
+}
+
+// UsageConfig overrides, per endpoint key, where response usage stores each
+// billing counter. Unset fields keep the protocol default mapping.
+type UsageConfig map[string]UsageMappingConfig
+
+type UsageMappingConfig struct {
+	Input              UsagePaths `yaml:"input" json:"input,omitempty"`
+	Output             UsagePaths `yaml:"output" json:"output,omitempty"`
+	Total              UsagePaths `yaml:"total" json:"total,omitempty"`
+	CacheHit           UsagePaths `yaml:"cacheHit" json:"cache_hit,omitempty"`
+	CacheMiss          UsagePaths `yaml:"cacheMiss" json:"cache_miss,omitempty"`
+	CacheWrite         UsagePaths `yaml:"cacheWrite" json:"cache_write,omitempty"`
+	InputExcludesCache *bool      `yaml:"inputExcludesCache" json:"input_excludes_cache,omitempty"`
+}
+
+// UsagePaths accepts one dotted path or a list tried in order; an empty list
+// declares that the counter is not reported.
+type UsagePaths []string
+
+var usageMappingFields = map[string]struct{}{
+	"input": {}, "output": {}, "total": {}, "cacheHit": {}, "cacheMiss": {}, "cacheWrite": {}, "inputExcludesCache": {},
+}
+
+func (c *UsageMappingConfig) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return errors.New("usage mapping must be a mapping")
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		if _, ok := usageMappingFields[node.Content[i].Value]; !ok {
+			return fmt.Errorf("unknown usage mapping field %q", node.Content[i].Value)
+		}
+	}
+	type plain UsageMappingConfig
+	return node.Decode((*plain)(c))
+}
+
+func (p *UsagePaths) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		*p = UsagePaths{node.Value}
+		return nil
+	case yaml.SequenceNode:
+		values := []string{}
+		if err := node.Decode(&values); err != nil {
+			return err
+		}
+		*p = values
+		return nil
+	default:
+		return errors.New("usage path must be a string or a list of strings")
+	}
+}
+
+// Override converts the configured fields into a mapping override.
+func (c UsageMappingConfig) Override() usage.MappingOverride {
+	return usage.MappingOverride{
+		Input:              c.Input,
+		Output:             c.Output,
+		Total:              c.Total,
+		CacheHit:           c.CacheHit,
+		CacheMiss:          c.CacheMiss,
+		CacheWrite:         c.CacheWrite,
+		InputExcludesCache: c.InputExcludesCache,
+	}
+}
+
+func validateUsageConfig(protocol string, cfg UsageConfig) error {
+	allowed := map[string]struct{}{}
+	for _, endpoint := range usage.ProtocolEndpoints(protocol) {
+		allowed[endpoint] = struct{}{}
+	}
+	for endpoint, mapping := range cfg {
+		if _, ok := allowed[endpoint]; !ok {
+			return fmt.Errorf("endpoint %q is not supported by protocol %q", endpoint, protocol)
+		}
+		for name, paths := range map[string]UsagePaths{
+			"input": mapping.Input, "output": mapping.Output, "total": mapping.Total,
+			"cacheHit": mapping.CacheHit, "cacheMiss": mapping.CacheMiss, "cacheWrite": mapping.CacheWrite,
+		} {
+			for _, path := range paths {
+				for _, segment := range strings.Split(path, ".") {
+					if strings.TrimSpace(segment) == "" || segment != strings.TrimSpace(segment) {
+						return fmt.Errorf("%s.%s path %q is invalid", endpoint, name, path)
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 type ImageModelConfig struct {
@@ -361,6 +455,9 @@ func ValidateProviderConfig(cfg ProviderConfig) error {
 	if _, err := url.ParseRequestURI(cfg.BaseURL); err != nil {
 		return fmt.Errorf("base_url is invalid: %w", err)
 	}
+	if err := validateUsageConfig(cfg.Protocol, cfg.Usage); err != nil {
+		return fmt.Errorf("usage %w", err)
+	}
 	if cfg.Quota != nil {
 		if err := validateProviderQuotaConfig(*cfg.Quota); err != nil {
 			return fmt.Errorf("quota %w", err)
@@ -416,6 +513,9 @@ func ValidateProviderConfig(cfg ProviderConfig) error {
 		}
 		if modelType != ModelTypeImageGeneration && model.Image.EndpointPathValue() != "" {
 			return fmt.Errorf("model %q image endpointPath requires type %q", model.Public, ModelTypeImageGeneration)
+		}
+		if err := validateUsageConfig(cfg.Protocol, model.Usage); err != nil {
+			return fmt.Errorf("model %q usage %w", model.Public, err)
 		}
 		if _, exists := seenModels[model.Public]; exists {
 			return fmt.Errorf("duplicate model mapping %q", model.Public)

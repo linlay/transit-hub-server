@@ -133,7 +133,7 @@ func TestProxyRequestIDOnInterruptedStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(logs.Items) != 1 || logs.Items[0].UpstreamRequestID != "interrupted-stream" || logs.Items[0].ErrorType != "response_copy_error" {
+	if len(logs.Items) != 1 || logs.Items[0].UpstreamRequestID != "interrupted-stream" || logs.Items[0].ErrorType != "response_copy_error" || logs.Items[0].UsageSource != usageSourceInterrupted {
 		t.Fatalf("interrupted stream diagnosis=%+v", logs.Items)
 	}
 }

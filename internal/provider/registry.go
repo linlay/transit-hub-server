@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/linlay/transit-hub/internal/config"
+	"github.com/linlay/transit-hub/internal/usage"
 )
 
 type CircuitOptions struct {
@@ -66,6 +67,17 @@ type Route struct {
 	CreatedAt         time.Time
 	Provider          *Provider
 	Pool              *Pool
+	// Usage holds merged usage mappings for endpoints with configured overrides.
+	Usage map[string]usage.Mapping
+}
+
+// UsageMapping returns the usage mapping for an endpoint: the protocol default
+// refined by provider and then model overrides.
+func (route Route) UsageMapping(endpoint string) usage.Mapping {
+	if mapping, ok := route.Usage[endpoint]; ok {
+		return mapping
+	}
+	return usage.DefaultMapping(endpoint)
 }
 
 type Snapshot struct {
@@ -502,6 +514,7 @@ func build(configs []config.ProviderConfig, options CircuitOptions) (map[string]
 				CreatedAt:         createdAt,
 				Provider:          provider,
 				Pool:              pool,
+				Usage:             mergeUsageMappings(cfg.Usage, model.Usage),
 			}
 		}
 	}
@@ -542,4 +555,21 @@ func cloneStringMap(in map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+func mergeUsageMappings(providerUsage, modelUsage config.UsageConfig) map[string]usage.Mapping {
+	if len(providerUsage) == 0 && len(modelUsage) == 0 {
+		return nil
+	}
+	merged := map[string]usage.Mapping{}
+	for _, overrides := range []config.UsageConfig{providerUsage, modelUsage} {
+		for endpoint, override := range overrides {
+			base, ok := merged[endpoint]
+			if !ok {
+				base = usage.DefaultMapping(endpoint)
+			}
+			merged[endpoint] = base.Apply(override.Override())
+		}
+	}
+	return merged
 }

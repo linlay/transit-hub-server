@@ -36,7 +36,8 @@ internal/store/
   store.go                SQLite schema、API Key、请求日志、路由覆盖。
 
 internal/usage/
-  usage.go                usage 字段提取和缺失 usage 时的 token 估算。
+  mapping.go              各端点协议的默认 usage 字段映射和 YAML 覆盖合并。
+  usage.go                按协议拦截解析响应 usage、可见输出计数和缺失时的估算。
 
 configs/
   providers/             provider 配置目录。
@@ -85,12 +86,13 @@ configs/
 - `accounts[].api_key_env`：可选的上游账号密钥环境变量名；当 `api_key` 为空时读取该变量，适合由部署环境注入的密钥。
 - `accounts[].weight`：权重；`0` 会在运行时按 `1` 处理，负数非法。
 - `accounts[].auth_header` / `auth_scheme`：覆盖上游鉴权头。OpenAI 默认 `Authorization: Bearer ...`，Anthropic 默认 `x-api-key: ...`。
+- `usage` / `models[].usage`：按端点键覆盖 usage 字段映射（`input`、`output`、`total`、`cacheHit`、`cacheMiss`、`cacheWrite`、`inputExcludesCache`），值为单个点分路径或依次尝试的路径列表，空列表表示不报告；模型级覆盖 provider 级，未知字段或协议不支持的端点拒绝加载。
 - `quota`：可选的上游额度定时查询；包含绝对 `url`、不小于 `1m` 的 `interval`、响应数组 `items_path`、模板变量到点分 JSON 路径的 `fields`，以及文字模板 `display.title`、`display.lines` 和可选 `display.value_maps`。额度查询固定使用账号 Key 的 Bearer 鉴权，管理 API 只返回渲染后的文字摘要，快照只保存在内存。
 
 ## 数据模型
 
 - `api_keys`：保存客户端 API Key 的哈希、状态、过期时间、强制过期标记、生命周期配额、固定窗口限流、已用量。
-- `request_logs`：保存每次请求的 key、协议、模型、provider、pool、account、状态码、延迟、token、错误类型。
+- `request_logs`：保存每次请求的 key、协议、模型、provider、pool、account、状态码、延迟、token、错误类型和 `usage_source`。
 - `route_overrides`：保存公开模型到 pool 的临时覆盖，用于快速切换账号池。
 
 配额规则：
@@ -98,7 +100,7 @@ configs/
 - `request_quota = 0` 表示请求数不限。
 - `token_quota = 0` 表示 token 不限。
 - `rate_limits` 支持 `1h`、`5h`、`1d`、`7d`、`30d` 固定窗口，窗口内的请求数、token 和金额额度为 `0` 时表示不限。
-- token 优先读取上游响应里的 `usage`；一般缺失时按请求和响应字节数粗略估算。Responses 从 JSON 顶层 `usage` 或 SSE 的 `response.usage` 读取；缺失或超过采样上限时不估算、不扣估算金额，token 价格请求标记 unavailable，请求数仍累计。
+- token 优先读取上游响应里的 `usage`：网关透传原始字节，在旁路解压后按端点协议解析，`usage_source` 记录来源；成功请求缺失时输入按请求体字节、输出按已转发可见文本估算，失败请求不计 token。missing/undecodable 会写 `ALERT usage` 日志，并可经 `/admin/providers/usage-anomalies` 汇总查询。Responses 从 JSON 顶层 `usage` 或 SSE 的 `response.usage` 读取；缺失或超过采样上限时不估算、不扣估算金额，token 价格请求标记 unavailable，请求数仍累计。
 
 ## 注意事项
 

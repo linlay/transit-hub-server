@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/linlay/transit-hub/internal/config"
 	"github.com/linlay/transit-hub/internal/store"
+	"github.com/linlay/transit-hub/internal/usage"
 )
 
 func TestCreditsConcurrentOverageAndBalanceWithoutTelemetry(t *testing.T) {
@@ -189,9 +191,11 @@ func TestImageBilling(t *testing.T) {
 func TestSSEUsageAfterSampleLimit(t *testing.T) {
 	// Usage in the final event must survive a response longer than the log sample.
 	body := strings.Repeat("data: {\"choices\":[]}\n\n", responseSampleLimit/20+1) + "data: {\"usage\":{\"prompt_tokens\":123,\"completion_tokens\":456}}\n\n"
-	result, err := copyResponse(httptest.NewRecorder(), strings.NewReader(body), true)
-	if err != nil || len(result.Sample) != responseSampleLimit || result.Usage.Request != 123 || result.Usage.Response != 456 {
-		t.Fatalf("late SSE usage sample=%d usage=%+v err=%v", len(result.Sample), result.Usage, err)
+	resp := &http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}
+	parser := usage.NewParser(usage.EndpointChatCompletions, usage.DefaultMapping(usage.EndpointChatCompletions), true)
+	result, err := copyResponse(httptest.NewRecorder(), resp, parser, true)
+	if err != nil || !result.Complete || !result.Observation.Final || result.Observation.Tokens.Request != 123 || result.Observation.Tokens.Response != 456 {
+		t.Fatalf("late SSE usage result=%+v err=%v", result, err)
 	}
 }
 
