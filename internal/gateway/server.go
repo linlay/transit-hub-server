@@ -52,7 +52,7 @@ func New(options Options) *Gateway {
 	if client == nil {
 		timeout := options.Env.UpstreamTimeout
 		if timeout <= 0 {
-			timeout = 5 * time.Minute
+			timeout = 10 * time.Minute
 		}
 		client = &http.Client{Timeout: timeout}
 	}

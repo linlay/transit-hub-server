@@ -186,7 +186,7 @@ func LoadEnv() (Env, error) {
 		CookieSecure:            getBoolEnv("COOKIE_SECURE", false),
 		SessionActiveWindow:     getDurationEnv("SESSION_ACTIVE_WINDOW", 5*time.Minute),
 		LogLevel:                getEnv("LOG_LEVEL", "info"),
-		UpstreamTimeout:         getDurationEnv("UPSTREAM_TIMEOUT", 5*time.Minute),
+		UpstreamTimeout:         getDurationEnv("UPSTREAM_TIMEOUT", 10*time.Minute),
 		CircuitFailureThreshold: getIntEnv("CIRCUIT_FAILURE_THRESHOLD", 3),
 		CircuitCooldown:         getDurationEnv("CIRCUIT_COOLDOWN", 30*time.Second),
 		MaxConcurrentPerKey:     getIntEnv("MAX_CONCURRENT_PER_KEY", 16),

@@ -62,7 +62,7 @@ configs/
 - `CONFIG_DIR`：配置根目录，默认 `configs`；provider 配置位于 `CONFIG_DIR/providers`。
 - `ADMIN_TOKEN`：Admin API 令牌，必填。
 - `LOG_LEVEL`：预留日志级别，默认 `info`。
-- `UPSTREAM_TIMEOUT`：上游 HTTP 超时，默认 `5m`。
+- `UPSTREAM_TIMEOUT`：上游 HTTP 超时，默认 `10m`。
 - `CIRCUIT_FAILURE_THRESHOLD`：账号连续失败多少次后打开熔断，默认 `3`，必须大于等于 1。
 - `CIRCUIT_COOLDOWN`：熔断冷却时间，默认 `30s`，必须为正 duration。
 

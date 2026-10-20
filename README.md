@@ -50,7 +50,7 @@ ADMIN_TOKEN=replace-with-a-long-random-token
 | `COOKIE_SECURE` | `false` | 管理站 Cookie 是否仅允许 HTTPS |
 | `SESSION_ACTIVE_WINDOW` | `5m` | 统计当前在线 device 的活跃窗口 |
 | `LOG_LEVEL` | `info` | 日志级别预留 |
-| `UPSTREAM_TIMEOUT` | `5m` | 上游请求超时 |
+| `UPSTREAM_TIMEOUT` | `10m` | 上游请求超时 |
 | `CIRCUIT_FAILURE_THRESHOLD` | `3` | 连续失败多少次后熔断账号 |
 | `CIRCUIT_COOLDOWN` | `30s` | 熔断冷却时间 |
 | `RATE_LIMIT_TIMEZONE` | `Asia/Shanghai` | 固定窗口限流的本地时区 |
