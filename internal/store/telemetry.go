@@ -232,13 +232,15 @@ func (t *Telemetry) writeBatch(ctx context.Context, batch []RequestLog) error {
 				api_key_id, api_key_name, key_prefix, protocol, public_model, upstream_model,
 				provider, pool, account, device_id, source, status_code, latency_ms,
 				request_tokens, response_tokens, cache_hit_tokens, cache_miss_tokens,
-				charged_microcredits, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count, upstream_request_id, usage_source
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				charged_microcredits, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count, upstream_request_id, usage_source,
+				request_bytes, output_ascii_chars, output_other_chars
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, entry.APIKeyID, entry.APIKeyName, entry.KeyPrefix, entry.Protocol, entry.PublicModel,
 			entry.UpstreamModel, entry.Provider, entry.Pool, entry.Account, deviceID, source,
 			entry.StatusCode, entry.Latency.Milliseconds(), entry.RequestTokens, entry.ResponseTokens,
 			entry.CacheHitTokens, entry.CacheMissTokens, entry.ChargedMicrocredits, boolInt(entry.Estimated),
-			entry.ErrorType, formatTime(createdAt), entry.BillingStatus, nonemptySnapshot(entry.PriceSnapshot), nullableStart(entry.StartedAt), entry.CacheWriteTokens, entry.ImageCount, entry.UpstreamRequestID, entry.UsageSource); err != nil {
+			entry.ErrorType, formatTime(createdAt), entry.BillingStatus, nonemptySnapshot(entry.PriceSnapshot), nullableStart(entry.StartedAt), entry.CacheWriteTokens, entry.ImageCount, entry.UpstreamRequestID, entry.UsageSource,
+			entry.RequestBytes, entry.OutputASCIIChars, entry.OutputOtherChars); err != nil {
 			return err
 		}
 		if deviceID == "" {
@@ -552,9 +554,10 @@ func (t *Telemetry) ProviderUsage(ctx context.Context, query ProviderUsageQuery)
 	return items, rows.Err()
 }
 
-// UsageAnomalies groups 2xx requests by provider, model and non-reported usage
-// source. Missing and undecodable usage indicate a parser or mapping problem.
-func (t *Telemetry) UsageAnomalies(ctx context.Context, query ProviderUsageQuery) ([]UsageAnomaly, error) {
+// UsageSources groups requests by provider, model and usage source. Logs from
+// before usage_source existed are excluded. Missing and undecodable usage on
+// successful requests indicate a parser or mapping problem and are alerting.
+func (t *Telemetry) UsageSources(ctx context.Context, query ProviderUsageQuery) ([]UsageSourceSummary, error) {
 	if err := t.Flush(ctx); err != nil {
 		return nil, err
 	}
@@ -563,36 +566,33 @@ func (t *Telemetry) UsageAnomalies(ctx context.Context, query ProviderUsageQuery
 		return nil, err
 	}
 	where, args := requestLogWhere("", query.From, query.To)
-	condition := "status_code BETWEEN 200 AND 299 AND usage_source IN ('missing', 'interrupted', 'undecodable')"
-	if where == "" {
-		where = "WHERE " + condition
-	} else {
-		where += " AND " + condition
-	}
+	where, args = whereWith(where, args, "usage_source <> ''")
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT provider, public_model, usage_source, COUNT(*), MAX(created_at)
+		SELECT provider, public_model, usage_source, COUNT(*),
+		       COALESCE(SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(charged_microcredits), 0), MAX(created_at)
 		FROM request_logs
 		%s
 		GROUP BY provider, public_model, usage_source
-		ORDER BY COUNT(*) DESC, provider ASC, public_model ASC
+		ORDER BY provider ASC, public_model ASC, usage_source ASC
 	`, where), args...)
 	if err != nil {
 		t.markQueryFailure(err)
 		return nil, err
 	}
 	defer rows.Close()
-	items := []UsageAnomaly{}
+	items := []UsageSourceSummary{}
 	lastSeen := []string{}
 	for rows.Next() {
-		var item UsageAnomaly
+		var item UsageSourceSummary
 		var seen string
-		if err := rows.Scan(&item.Provider, &item.PublicModel, &item.UsageSource, &item.Requests, &seen); err != nil {
+		if err := rows.Scan(&item.Provider, &item.PublicModel, &item.UsageSource, &item.Requests, &item.SuccessRequests, &item.ChargedMicrocredits, &seen); err != nil {
 			return nil, err
 		}
 		if item.LastSeenAt, err = parseTime(seen); err != nil {
 			return nil, err
 		}
-		item.Alerting = item.UsageSource != "interrupted"
+		item.Alerting = item.SuccessRequests > 0 && (item.UsageSource == "missing" || item.UsageSource == "undecodable")
 		items = append(items, item)
 		lastSeen = append(lastSeen, seen)
 	}
@@ -602,14 +602,73 @@ func (t *Telemetry) UsageAnomalies(ctx context.Context, query ProviderUsageQuery
 	for i := range items {
 		item := &items[i]
 		if err := db.QueryRowContext(ctx, `
-			SELECT status_code, upstream_request_id FROM request_logs
+			SELECT status_code, error_type, upstream_request_id FROM request_logs
 			WHERE provider = ? AND public_model = ? AND usage_source = ? AND created_at = ?
 			ORDER BY id DESC LIMIT 1
-		`, item.Provider, item.PublicModel, item.UsageSource, lastSeen[i]).Scan(&item.LastStatus, &item.LastUpstream); err != nil {
+		`, item.Provider, item.PublicModel, item.UsageSource, lastSeen[i]).Scan(&item.LastStatusCode, &item.LastErrorType, &item.LastUpstreamID); err != nil {
 			return nil, err
 		}
 	}
 	return items, nil
+}
+
+// UsageCalibrations sums reported usage against what the estimators would have
+// produced for the same successful requests: request bytes / 4 for input, and
+// 0.3 token per ASCII and 0.6 per other visible output character for output.
+func (t *Telemetry) UsageCalibrations(ctx context.Context, query ProviderUsageQuery) ([]UsageCalibration, error) {
+	if err := t.Flush(ctx); err != nil {
+		return nil, err
+	}
+	db, err := t.currentDB()
+	if err != nil {
+		return nil, err
+	}
+	where, args := requestLogWhere("", query.From, query.To)
+	where, args = whereWith(where, args, "usage_source = 'reported' AND status_code BETWEEN 200 AND 299 AND request_bytes > 0")
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT provider, public_model, COUNT(*),
+		       COALESCE(SUM(request_tokens), 0),
+		       COALESCE(SUM((request_bytes + 3) / 4), 0),
+		       COALESCE(SUM(CASE WHEN output_ascii_chars + output_other_chars > 0 THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN output_ascii_chars + output_other_chars > 0 THEN response_tokens ELSE 0 END), 0),
+		       COALESCE(SUM(CAST(0.3 * output_ascii_chars + 0.6 * output_other_chars + 0.999999 AS INTEGER)), 0)
+		FROM request_logs
+		%s
+		GROUP BY provider, public_model
+		ORDER BY COUNT(*) DESC, provider ASC, public_model ASC
+	`, where), args...)
+	if err != nil {
+		t.markQueryFailure(err)
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UsageCalibration{}
+	for rows.Next() {
+		var item UsageCalibration
+		if err := rows.Scan(&item.Provider, &item.PublicModel, &item.Samples, &item.ReportedInputTokens, &item.EstimatedInputTokens,
+			&item.OutputSamples, &item.ReportedOutputTokens, &item.EstimatedOutputTokens); err != nil {
+			return nil, err
+		}
+		item.InputRatio = tokenRatio(item.ReportedInputTokens, item.EstimatedInputTokens)
+		item.OutputRatio = tokenRatio(item.ReportedOutputTokens, item.EstimatedOutputTokens)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func whereWith(where string, args []any, condition string) (string, []any) {
+	if where == "" {
+		return "WHERE " + condition, args
+	}
+	return where + " AND " + condition, args
+}
+
+func tokenRatio(actual, estimated int64) *float64 {
+	if estimated <= 0 {
+		return nil
+	}
+	value := float64(actual) / float64(estimated)
+	return &value
 }
 
 func (t *Telemetry) ProviderAccountUsage(ctx context.Context, query ProviderUsageQuery) ([]ProviderAccountUsage, error) {
@@ -870,7 +929,7 @@ func migrateTelemetry(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	for _, column := range []string{"billing_status TEXT NOT NULL DEFAULT 'legacy'", "price_snapshot TEXT NOT NULL DEFAULT 'null'", "started_at TEXT", "cache_write_tokens INTEGER NOT NULL DEFAULT 0", "image_count INTEGER NOT NULL DEFAULT 0", "upstream_request_id TEXT NOT NULL DEFAULT ''", "usage_source TEXT NOT NULL DEFAULT ''"} {
+	for _, column := range []string{"billing_status TEXT NOT NULL DEFAULT 'legacy'", "price_snapshot TEXT NOT NULL DEFAULT 'null'", "started_at TEXT", "cache_write_tokens INTEGER NOT NULL DEFAULT 0", "image_count INTEGER NOT NULL DEFAULT 0", "upstream_request_id TEXT NOT NULL DEFAULT ''", "usage_source TEXT NOT NULL DEFAULT ''", "request_bytes INTEGER NOT NULL DEFAULT 0", "output_ascii_chars INTEGER NOT NULL DEFAULT 0", "output_other_chars INTEGER NOT NULL DEFAULT 0"} {
 		if _, err = db.Exec("ALTER TABLE request_logs ADD COLUMN " + column); err != nil && !isDuplicateColumnError(err) {
 			return err
 		}

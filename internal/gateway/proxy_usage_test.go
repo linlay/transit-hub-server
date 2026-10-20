@@ -171,21 +171,30 @@ func TestUsageAnomaliesAreEstimatedAndAlerted(t *testing.T) {
 				t.Fatalf("alerts=%q", alerts.String())
 			}
 
-			req := httptest.NewRequest(http.MethodGet, "/admin/providers/usage-anomalies", nil)
-			req.Header.Set("Authorization", "Bearer admin")
-			rec := httptest.NewRecorder()
-			app.Handler().ServeHTTP(rec, req)
-			var response struct {
-				Items []store.UsageAnomaly `json:"items"`
-			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-				t.Fatal(err)
-			}
-			if rec.Code != http.StatusOK || len(response.Items) != 1 || response.Items[0].UsageSource != tc.source || response.Items[0].Requests != 2 || response.Items[0].Alerting != (tc.source != usageSourceInterrupted) {
-				t.Fatalf("anomalies code=%d body=%s", rec.Code, rec.Body)
+			sources := adminItems[store.UsageSourceSummary](t, app, "/admin/providers/usage-sources")
+			if len(sources) != 1 || sources[0].UsageSource != tc.source || sources[0].Requests != 2 || sources[0].Alerting != (tc.source != usageSourceInterrupted) {
+				t.Fatalf("sources=%+v", sources)
 			}
 		})
 	}
+}
+
+func adminItems[T any](t *testing.T, app *Gateway, path string) []T {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	var response struct {
+		Items []T `json:"items"`
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s status=%d body=%s", path, rec.Code, rec.Body)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	return response.Items
 }
 
 func TestUpstreamErrorRecordsNoTokens(t *testing.T) {
@@ -252,5 +261,87 @@ func TestPerImageBillingWithoutUsageIsNotAnAnomaly(t *testing.T) {
 	entry := onlyLog(t, app, db)
 	if rec.Code != http.StatusOK || entry.UsageSource != usageSourceNone || entry.ImageCount != 1 || entry.ChargedMicrocredits != 2000 || alerts.Len() != 0 {
 		t.Fatalf("code=%d log=%+v alerts=%q", rec.Code, entry, alerts.String())
+	}
+}
+
+// Requests that never got an upstream response are logged for diagnosis but
+// do not consume request, token or Credits quotas.
+func TestRejectedRequestsAreLoggedWithoutUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("unexpected upstream request")
+	}))
+	defer upstream.Close()
+	app, db, plain := newTestGatewayWithKey(t, []config.ProviderConfig{openAIProvider(upstream.URL)}, store.CreateAPIKeyParams{
+		Name: "test", AllowedModels: []string{"public-model"},
+	})
+	send := func(body string) int {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+plain)
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := send(`{"model":`); code != http.StatusBadRequest {
+		t.Fatalf("invalid json status=%d", code)
+	}
+	if code := send(`{"model":"unknown-model","messages":[]}`); code != http.StatusNotFound {
+		t.Fatalf("unknown model status=%d", code)
+	}
+	// The concurrency slot is taken, so this request is rejected before upstream.
+	app.env.MaxConcurrentPerKey = 1
+	app.beginKeyRequest(mustKeyID(t, db, plain))
+	if code := send(`{"model":"public-model","messages":[]}`); code != http.StatusTooManyRequests {
+		t.Fatalf("concurrency status=%d", code)
+	}
+	if err := app.telemetry.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	logs, err := db.ListRequestLogs(t.Context(), store.RequestLogQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, item := range logs.Items {
+		if item.UsageSource != usageSourceNone || item.RequestTokens != 0 || item.BillingStatus != "not_charged" {
+			t.Fatalf("rejected log=%+v", item)
+		}
+		got[item.ErrorType] = item.StatusCode
+	}
+	want := map[string]int{"invalid_request": 400, "route_not_found": 404, "concurrency_limited": 429}
+	if len(got) != len(want) || got["invalid_request"] != 400 || got["route_not_found"] != 404 || got["concurrency_limited"] != 429 {
+		t.Fatalf("rejections=%v", got)
+	}
+	key, err := db.FindAPIKeyByPlainText(t.Context(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.UsedRequests != 0 || key.UsedTokens != 0 {
+		t.Fatalf("rejections counted: requests=%d tokens=%d", key.UsedRequests, key.UsedTokens)
+	}
+}
+
+func mustKeyID(t *testing.T, db *store.Store, plain string) string {
+	t.Helper()
+	key, err := db.FindAPIKeyByPlainText(t.Context(), plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key.ID
+}
+
+func TestUsageCalibrationComparesEstimatesWithReportedUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(deepSeekStream))
+	}))
+	defer upstream.Close()
+	app, _, plain := newTestGateway(t, []config.ProviderConfig{openAIProvider(upstream.URL)})
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, streamRequest(plain, ""))
+	items := adminItems[store.UsageCalibration](t, app, "/admin/providers/usage-calibration")
+	// Visible output is "想" + "ok": ceil(0.6 + 0.6) = 2 estimated against 200 reported.
+	if len(items) != 1 || items[0].Samples != 1 || items[0].OutputSamples != 1 || items[0].ReportedOutputTokens != 200 || items[0].EstimatedOutputTokens != 2 ||
+		items[0].OutputRatio == nil || *items[0].OutputRatio != 100 || items[0].InputRatio == nil {
+		t.Fatalf("calibration=%+v", items)
 	}
 }

@@ -132,9 +132,13 @@ type RequestLog struct {
 	Estimated           bool
 	// UsageSource is none, reported, missing, interrupted or undecodable.
 	UsageSource string
-	ErrorType   string
-	CreatedAt   time.Time
-	ModelPrice  *ModelPrice
+	// Raw estimator inputs kept to calibrate estimates against reported usage.
+	RequestBytes     int64
+	OutputASCIIChars int64
+	OutputOtherChars int64
+	ErrorType        string
+	CreatedAt        time.Time
+	ModelPrice       *ModelPrice
 }
 
 func Open(path string) (*Store, error) {

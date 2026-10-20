@@ -69,9 +69,22 @@ func (a *usageAlerts) report(anomaly usageAnomaly) {
 		anomaly.Source, anomaly.Provider, anomaly.PublicModel, anomaly.Endpoint, anomaly.ContentEncoding, anomaly.UpstreamRequestID, anomaly.DecodeErr, suppressed)
 }
 
-// usageAnomalies lists successful requests without complete reported usage,
-// grouped by provider, model and usage source.
-func (g *Gateway) usageAnomalies(w http.ResponseWriter, r *http.Request) {
+// usageSources summarizes requests by provider, model and usage source;
+// alerting rows are successful requests whose usage could not be read.
+func (g *Gateway) usageSources(w http.ResponseWriter, r *http.Request) {
+	g.usageReport(w, r, func(query store.ProviderUsageQuery) (any, error) {
+		return g.store.UsageSources(r.Context(), query)
+	})
+}
+
+// usageCalibrations compares reported usage with the estimators per model.
+func (g *Gateway) usageCalibrations(w http.ResponseWriter, r *http.Request) {
+	g.usageReport(w, r, func(query store.ProviderUsageQuery) (any, error) {
+		return g.store.UsageCalibrations(r.Context(), query)
+	})
+}
+
+func (g *Gateway) usageReport(w http.ResponseWriter, r *http.Request, load func(store.ProviderUsageQuery) (any, error)) {
 	from, to, err := parseTimeRange(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -81,7 +94,7 @@ func (g *Gateway) usageAnomalies(w http.ResponseWriter, r *http.Request) {
 		writeTelemetryUnavailable(w)
 		return
 	}
-	items, err := g.store.UsageAnomalies(r.Context(), store.ProviderUsageQuery{From: from, To: to})
+	items, err := load(store.ProviderUsageQuery{From: from, To: to})
 	if err != nil {
 		writeTelemetryUnavailable(w)
 		return

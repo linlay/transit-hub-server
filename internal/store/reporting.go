@@ -488,23 +488,47 @@ func (s *Store) ProviderUsage(ctx context.Context, query ProviderUsageQuery) ([]
 	return s.telemetry.ProviderUsage(ctx, query)
 }
 
-// UsageAnomaly counts successful requests whose usage was not fully reported.
-type UsageAnomaly struct {
-	Provider     string    `json:"provider"`
-	PublicModel  string    `json:"public_model"`
-	UsageSource  string    `json:"usage_source"`
-	Requests     int64     `json:"requests"`
-	Alerting     bool      `json:"alerting"`
-	LastSeenAt   time.Time `json:"last_seen_at"`
-	LastStatus   int       `json:"last_status_code"`
-	LastUpstream string    `json:"last_upstream_request_id"`
+// UsageSourceSummary counts requests per provider, model and usage source.
+type UsageSourceSummary struct {
+	Provider            string    `json:"provider"`
+	PublicModel         string    `json:"public_model"`
+	UsageSource         string    `json:"usage_source"`
+	Requests            int64     `json:"requests"`
+	SuccessRequests     int64     `json:"success_requests"`
+	ChargedMicrocredits int64     `json:"charged_microcredits,string"`
+	Alerting            bool      `json:"alerting"`
+	LastSeenAt          time.Time `json:"last_seen_at"`
+	LastStatusCode      int       `json:"last_status_code"`
+	LastErrorType       string    `json:"last_error_type"`
+	LastUpstreamID      string    `json:"last_upstream_request_id"`
 }
 
-func (s *Store) UsageAnomalies(ctx context.Context, query ProviderUsageQuery) ([]UsageAnomaly, error) {
+// UsageCalibration compares estimator inputs with reported usage for one model.
+type UsageCalibration struct {
+	Provider              string   `json:"provider"`
+	PublicModel           string   `json:"public_model"`
+	Samples               int64    `json:"samples"`
+	ReportedInputTokens   int64    `json:"reported_input_tokens"`
+	EstimatedInputTokens  int64    `json:"estimated_input_tokens"`
+	InputRatio            *float64 `json:"input_ratio"`
+	OutputSamples         int64    `json:"output_samples"`
+	ReportedOutputTokens  int64    `json:"reported_output_tokens"`
+	EstimatedOutputTokens int64    `json:"estimated_output_tokens"`
+	OutputRatio           *float64 `json:"output_ratio"`
+}
+
+func (s *Store) UsageSources(ctx context.Context, query ProviderUsageQuery) ([]UsageSourceSummary, error) {
 	if s.telemetry == nil {
 		return nil, ErrTelemetryUnavailable
 	}
-	return s.telemetry.UsageAnomalies(ctx, query)
+	return s.telemetry.UsageSources(ctx, query)
+}
+
+func (s *Store) UsageCalibrations(ctx context.Context, query ProviderUsageQuery) ([]UsageCalibration, error) {
+	if s.telemetry == nil {
+		return nil, ErrTelemetryUnavailable
+	}
+	return s.telemetry.UsageCalibrations(ctx, query)
 }
 
 func (s *Store) ProviderAccountUsage(ctx context.Context, query ProviderUsageQuery) ([]ProviderAccountUsage, error) {

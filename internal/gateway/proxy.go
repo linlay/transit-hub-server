@@ -70,78 +70,83 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		// Every request rejected before an upstream response is logged once with
+		// the status sent to the client, and never counts toward usage or quotas.
+		status := &statusRecorder{ResponseWriter: w}
+		w = status
+		rejected := store.RequestLog{Protocol: protocol, UsageSource: usageSourceNone}
+		defer func() {
+			if rejected.ErrorType == "" {
+				return
+			}
+			rejected.StatusCode = status.code
+			rejected.Latency = time.Since(started)
+			g.logRejectedRequest(r, key, rejected)
+		}()
+		reject := func(errorType string) {
+			if status.code == http.StatusInternalServerError {
+				errorType = "internal_error"
+			}
+			rejected.ErrorType = errorType
+		}
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "read request body failed")
+			reject("invalid_request")
 			return
 		}
 		parsedBody, err := parseProxyBody(endpointKey, r.Header.Get("Content-Type"), body)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
+			reject("invalid_request")
 			return
 		}
 		envelope := parsedBody.Envelope
+		rejected.PublicModel = envelope.Model
 		if !g.enforceAPIKeyRateLimits(w, r, key) {
+			reject("rate_limited")
 			return
 		}
 
 		route, ok := g.registry.Resolve(protocol, envelope.Model)
 		if !ok {
-			g.logCompletedRequest(r, key, store.RequestLog{
-				Protocol:    protocol,
-				PublicModel: envelope.Model,
-				StatusCode:  http.StatusNotFound,
-				Latency:     time.Since(started),
-				UsageSource: usageSourceNone,
-				ErrorType:   "route_not_found",
-			})
 			writeError(w, http.StatusNotFound, "model route not found")
+			reject("route_not_found")
 			return
 		}
+		rejected.PublicModel = route.PublicModel
+		rejected.UpstreamModel = route.UpstreamModel
+		rejected.Provider = route.ProviderName
+		rejected.Pool = route.PoolName
 		if !store.APIKeyAllowsModel(key, route.PublicModel) {
-			g.logCompletedRequest(r, key, store.RequestLog{
-				Protocol:      protocol,
-				PublicModel:   route.PublicModel,
-				UpstreamModel: route.UpstreamModel,
-				Provider:      route.ProviderName,
-				Pool:          route.PoolName,
-				StatusCode:    http.StatusForbidden,
-				Latency:       time.Since(started),
-				UsageSource:   usageSourceNone,
-				ErrorType:     "model_not_allowed",
-			})
 			writeError(w, http.StatusForbidden, "model not allowed for api key")
+			reject("model_not_allowed")
 			return
 		}
 		if !endpointSupportsRoute(endpointKey, route) {
-			g.logCompletedRequest(r, key, store.RequestLog{
-				Protocol:      protocol,
-				PublicModel:   route.PublicModel,
-				UpstreamModel: route.UpstreamModel,
-				Provider:      route.ProviderName,
-				Pool:          route.PoolName,
-				StatusCode:    http.StatusBadRequest,
-				Latency:       time.Since(started),
-				UsageSource:   usageSourceNone,
-				ErrorType:     "model_type_not_supported",
-			})
 			writeError(w, http.StatusBadRequest, "model type not supported for endpoint")
+			reject("model_type_not_supported")
 			return
 		}
 		if override, exists, err := g.store.GetRouteOverride(r.Context(), envelope.Model); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
+			reject("internal_error")
 			return
 		} else if exists {
 			if route, ok = g.registry.ApplyPoolOverride(route, override); !ok {
 				writeError(w, http.StatusBadRequest, "route override references missing pool")
+				reject("route_override_invalid")
 				return
 			}
+			rejected.Pool = route.PoolName
 		}
 		modelPrice, ok := g.requestModelPrice(w, r, key, protocol, route.PublicModel)
 		if !ok {
+			reject("price_unavailable")
 			return
 		}
+		rejected.ModelPrice = modelPrice
 
 		if !g.beginKeyRequest(key.ID) {
 			writeJSON(w, http.StatusTooManyRequests, concurrencyLimitErrorResponse{
@@ -150,40 +155,34 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 				Scope:     "api_key",
 				Retryable: true,
 			})
+			reject("concurrency_limited")
 			return
 		}
 		defer g.endKeyRequest(key.ID)
 		imageUnit, err := prepareBillingRequest(&parsedBody, modelPrice, route.Type, endpointKey)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
+			reject("invalid_request")
 			return
 		}
 		account, err := route.PickAccount()
 		if err != nil {
-			g.logCompletedRequest(r, key, store.RequestLog{
-				Protocol:      protocol,
-				PublicModel:   route.PublicModel,
-				UpstreamModel: route.UpstreamModel,
-				Provider:      route.ProviderName,
-				Pool:          route.PoolName,
-				StatusCode:    http.StatusServiceUnavailable,
-				Latency:       time.Since(started),
-				UsageSource:   usageSourceNone,
-				ErrorType:     "no_healthy_account",
-				ModelPrice:    modelPrice,
-			})
 			writeError(w, http.StatusServiceUnavailable, "no healthy upstream account")
+			reject("no_healthy_account")
 			return
 		}
+		rejected.Account = account.Name
 
 		upstreamBody, err := parsedBody.prepare(route.UpstreamModel)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
+			reject("invalid_request")
 			return
 		}
 		upstreamReq, err := g.buildUpstreamRequest(r, route, account, endpointKey, upstreamBody)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
+			reject("internal_error")
 			return
 		}
 
@@ -192,14 +191,21 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			bindings, err := g.usage.Admit(r.Context(), key, admittedAt)
 			if err != nil {
 				var violation store.RateLimitViolation
-				if errors.As(err, &violation) {
+				switch {
+				case errors.As(err, &violation):
 					retryAfter := max(1, int(time.Until(violation.ResetsAt).Seconds()))
 					w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 					writeError(w, http.StatusTooManyRequests, err.Error())
-				} else if errors.Is(err, store.ErrQuotaExhausted) || errors.Is(err, store.ErrKeyInactive) || errors.Is(err, store.ErrKeyExpired) {
+					reject("rate_limited")
+				case errors.Is(err, store.ErrQuotaExhausted):
 					writePublicKeyValidationError(w, err)
-				} else {
+					reject("quota_exhausted")
+				case errors.Is(err, store.ErrKeyInactive), errors.Is(err, store.ErrKeyExpired):
+					writePublicKeyValidationError(w, err)
+					reject("key_unusable")
+				default:
 					writeError(w, http.StatusServiceUnavailable, "usage admission unavailable")
+					reject("admission_unavailable")
 				}
 				return
 			}
@@ -209,20 +215,8 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		resp, err := g.client.Do(upstreamReq)
 		if err != nil {
 			account.Breaker.Record(false)
-			g.logCompletedRequest(r, key, store.RequestLog{
-				Protocol:      protocol,
-				PublicModel:   route.PublicModel,
-				UpstreamModel: route.UpstreamModel,
-				Provider:      route.ProviderName,
-				Pool:          route.PoolName,
-				Account:       account.Name,
-				StatusCode:    http.StatusBadGateway,
-				Latency:       time.Since(started),
-				UsageSource:   usageSourceNone,
-				ErrorType:     "upstream_error",
-				ModelPrice:    modelPrice,
-			})
 			writeError(w, http.StatusBadGateway, "upstream request failed")
+			reject("upstream_error")
 			return
 		}
 		defer resp.Body.Close()
@@ -315,6 +309,9 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			ChargedMicrocredits: imageCost,
 			Estimated:           observed.Estimated,
 			UsageSource:         observed.Source,
+			RequestBytes:        int64(len(body)),
+			OutputASCIIChars:    result.Observation.OutputASCIIChars,
+			OutputOtherChars:    result.Observation.OutputOtherChars,
 			ErrorType:           errorType,
 			ModelPrice:          modelPrice,
 		})
@@ -647,7 +644,47 @@ func isEventStream(headers http.Header) bool {
 	return strings.Contains(strings.ToLower(headers.Get("Content-Type")), "text/event-stream")
 }
 
+// statusRecorder remembers the status sent to the client for rejection logs.
+type statusRecorder struct {
+	http.ResponseWriter
+	code int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if s.code == 0 {
+		s.code = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(data []byte) (int, error) {
+	if s.code == 0 {
+		s.code = http.StatusOK
+	}
+	return s.ResponseWriter.Write(data)
+}
+
+func (s *statusRecorder) Flush() {
+	if flusher, ok := s.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
+}
+
+// logRejectedRequest records a request that got no upstream response. It is
+// kept for diagnosis only and never counts toward usage, quotas or windows.
+func (g *Gateway) logRejectedRequest(r *http.Request, key store.APIKey, logEntry store.RequestLog) {
+	g.recordRequest(r, key, logEntry, false)
+}
+
 func (g *Gateway) logCompletedRequest(r *http.Request, key store.APIKey, logEntry store.RequestLog) {
+	g.recordRequest(r, key, logEntry, true)
+}
+
+func (g *Gateway) recordRequest(r *http.Request, key store.APIKey, logEntry store.RequestLog, countUsage bool) {
 	if key.ID == "" {
 		return
 	}
@@ -695,7 +732,7 @@ func (g *Gateway) logCompletedRequest(r *http.Request, key store.APIKey, logEntr
 	} else if logEntry.StatusCode >= 200 && logEntry.StatusCode < 300 {
 		logEntry.BillingStatus = "unpriced"
 	}
-	if g.usage != nil {
+	if g.usage != nil && countUsage {
 		bindings, _ := r.Context().Value(usageWindowsContextKey{}).(store.WindowBindings)
 		g.usage.Record(key.ID, logEntry.RequestTokens, logEntry.ResponseTokens, logEntry.ChargedMicrocredits, logEntry.StartedAt, bindings)
 	}

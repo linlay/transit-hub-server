@@ -122,7 +122,9 @@ models:
         cacheMiss: []                        # 空列表表示上游不报告该计数
 ```
 
-可用字段为 `input`、`output`、`total`、`cacheHit`、`cacheMiss`、`cacheWrite`、`inputExcludesCache`（输入是否不含缓存读写，Anthropic 默认 true），路径相对 usage 对象、以 `.` 分隔；未知字段或协议不支持的端点会拒绝加载。每条请求日志记录 `usage_source`：`reported`（读取到完整 usage）、`missing`（响应正常结束但没有 usage）、`interrupted`（客户端断开、上游中断或带内错误事件导致未完成）、`undecodable`（无法解码的内容编码）、`none`（失败请求不计 token；按张计费的图片模型未返回 usage 时也记为 none）。非 `reported` 的成功请求按请求体字节数和已转发的可见输出文本估算并标记 `estimated`；Anthropic 中断时输入和缓存使用 `message_start` 的上游值。`missing` 与 `undecodable` 说明解析或映射与上游不符，会以 `ALERT usage` 日志告警（同一 provider、模型、端点、来源每 5 分钟最多一条，附被抑制次数），并可通过 `GET /admin/providers/usage-anomalies?from=&to=` 按 provider、模型和来源汇总查询。
+可用字段为 `input`、`output`、`total`、`cacheHit`、`cacheMiss`、`cacheWrite`、`inputExcludesCache`（输入是否不含缓存读写，Anthropic 默认 true），路径相对 usage 对象、以 `.` 分隔；未知字段或协议不支持的端点会拒绝加载。每条请求日志记录 `usage_source`：`reported`（读取到完整 usage）、`missing`（响应正常结束但没有 usage）、`interrupted`（客户端断开、上游中断或带内错误事件导致未完成）、`undecodable`（无法解码的内容编码）、`none`（失败请求不计 token；按张计费的图片模型未返回 usage 时也记为 none）。非 `reported` 的成功请求按请求体字节数和已转发的可见输出文本估算并标记 `estimated`；Anthropic 中断时输入和缓存使用 `message_start` 的上游值。`missing` 与 `undecodable` 说明解析或映射与上游不符，会以 `ALERT usage` 日志告警（同一 provider、模型、端点、来源每 5 分钟最多一条，附被抑制次数）。`GET /admin/providers/usage-sources?from=&to=` 按 provider、模型和来源汇总请求数、扣费和最近一次状态，`alerting` 标出成功请求中的 missing/undecodable；`GET /admin/providers/usage-calibration?from=&to=` 对 `reported` 请求比较上游用量与估算值（输入为请求体字节 ÷ 4，输出为 ASCII 0.3、其他字符 0.6 token/字符），用于判断估算系数是否需要按模型调整。
+
+没有拿到上游响应的请求（参数错误、模型未找到或无权限、限流、并发超限、额度不足、无健康账号、连接上游失败等）都会写入请求日志，`error_type` 记录原因、`usage_source` 为 `none`，但不计入 Key 的请求数、token、金额和周期窗口。拿到上游响应的请求（含上游 4xx/5xx）照常计入请求数；上游非 2xx 不计 token、不扣费。
 
 BabelArk 的 Claude Haiku / Opus / Sonnet 5.5 使用独立的 `configs/providers/babelark-anthropic.example.yaml`，复用 `BABELARK_API_KEY`，通过 `/v1/messages` 调用。公开模型名、Credits 价格导入和 adaptive thinking 请求示例见 [Claude 5.5 接入](docs/babelark-claude-5_5.md)。
 

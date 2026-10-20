@@ -163,7 +163,7 @@ GET `/admin/logs`、`/admin/api-keys/{id}/logs`、`/api/me/logs` 新增：
 - `started_at`：请求开始 UTC 时间，旧记录为 null。
 - `cache_write_tokens`、`image_count`：计费明细。
 
-本地拒绝、连接失败、上游非 2xx 响应不扣 Credits，也不计 token；成功请求按 usage 优先，缺失时输入按请求体字节数、输出按已转发的可见文本（ASCII 约 0.3、其他字符约 0.6 token/字符）估算，不再按响应或 SSE 字节估算。成功流式响应中断时按已观察用量或估算扣费，不因断开全额退款。价格修改不改变已开始请求和历史消费。
+本地拒绝、连接失败、上游非 2xx 响应不扣 Credits，也不计 token；其中未拿到上游响应的请求（本地拒绝与连接失败）只写日志，不计入请求数和周期窗口；成功请求按 usage 优先，缺失时输入按请求体字节数、输出按已转发的可见文本（ASCII 约 0.3、其他字符约 0.6 token/字符）估算，不再按响应或 SSE 字节估算。成功流式响应中断时按已观察用量或估算扣费，不因断开全额退款。价格修改不改变已开始请求和历史消费。
 
 Responses `/v1/responses` 复用 openai 模型价格：非流式读取顶层 `usage`，流式读取 `response.usage`，按累计快照更新而非逐事件相加。`input_tokens_details.cached_tokens` 使用缓存价，`output_tokens` 已包含推理 token，不重复加算。显式零输入/输出用量视为已计量。
 

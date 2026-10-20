@@ -100,7 +100,7 @@ configs/
 - `request_quota = 0` 表示请求数不限。
 - `token_quota = 0` 表示 token 不限。
 - `rate_limits` 支持 `1h`、`5h`、`1d`、`7d`、`30d` 固定窗口，窗口内的请求数、token 和金额额度为 `0` 时表示不限。
-- token 优先读取上游响应里的 `usage`：网关透传原始字节，在旁路解压后按端点协议解析，`usage_source` 记录来源；成功请求缺失时输入按请求体字节、输出按已转发可见文本估算，失败请求不计 token。missing/undecodable 会写 `ALERT usage` 日志，并可经 `/admin/providers/usage-anomalies` 汇总查询。Responses 从 JSON 顶层 `usage` 或 SSE 的 `response.usage` 读取；缺失或超过采样上限时不估算、不扣估算金额，token 价格请求标记 unavailable，请求数仍累计。
+- token 优先读取上游响应里的 `usage`：网关透传原始字节，在旁路解压后按端点协议解析，`usage_source` 记录来源；成功请求缺失时输入按请求体字节、输出按已转发可见文本估算，失败请求不计 token。missing/undecodable 会写 `ALERT usage` 日志，`/admin/providers/usage-sources` 与 `/admin/providers/usage-calibration` 提供来源汇总和估算校准。未拿到上游响应的请求只写日志（`error_type` 记录原因），不计入请求数、token、金额和窗口。Responses 从 JSON 顶层 `usage` 或 SSE 的 `response.usage` 读取；缺失或超过采样上限时不估算、不扣估算金额，token 价格请求标记 unavailable，请求数仍累计。
 
 ## 注意事项
 
