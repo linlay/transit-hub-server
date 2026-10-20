@@ -108,6 +108,7 @@ configs/
 - `*.example.yaml` 是模板，不会被运行时加载。修改真实 provider 配置后，需要重启服务或调用 `POST /admin/providers/reload`。
 - Admin API 支持 `Authorization: Bearer $ADMIN_TOKEN` 或 `x-admin-token: $ADMIN_TOKEN`。
 - 公开代理接口支持 `Authorization: Bearer <client-key>` 或 `x-api-key: <client-key>`。
+- 员工直连由 `EMPLOYEE_AUTH_CONFIG_PATH`（默认 `configs/employee-auth/config.yaml`）独立控制，`subject_claim` 默认 `staffuserid`。模型与 `/api/me` 系列可直接验签员工 Bearer JWT；仅使用已验证身份，计量记录按 issuer + claim + subject 唯一绑定，不发放或存储客户端 Key。用量、限流、并发、价格和日志复用 `source=employee` 的内部计量 ID；刷新 Token、换设备、禁用/删除后不得自动重置额度或重建身份。详情保留只读 `employee_identity`。
 - `/v1/images/edits` 支持 JSON 和 multipart/form-data；`/v1/images/variations` 的标准请求格式为 multipart/form-data。multipart 代理只改写普通 `model` 字段，不会把图片或 mask 转成 JSON/base64。
 - 创建客户端 API Key 时，明文 key 只会在创建接口响应里返回一次。
 - 当前路由覆盖以公开模型名为 key；同名公开模型跨协议使用时需要谨慎，因为覆盖存储没有协议维度。

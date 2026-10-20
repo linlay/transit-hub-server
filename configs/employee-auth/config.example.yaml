@@ -1,0 +1,17 @@
+# Copy to config.yaml, provide the identity center's public key, then restart.
+# This directly authenticates model requests; it never issues an API key.
+enabled: false
+public_key_path: public.pem
+algorithm: RS256
+issuer: https://identity.example.com
+audience: transit-hub
+# Stable employee identity from the verified JWT payload. Dotted paths supported.
+subject_claim: staffuserid
+required_scope: ""
+allowed_models:
+  - example-chat
+# Defaults for a new employee accounting record. 0 = unlimited.
+request_quota: 500
+token_quota: 2000000
+quota_microcredits: 0
+rate_limits: []

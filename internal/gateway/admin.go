@@ -16,6 +16,7 @@ import (
 )
 
 type apiKeyResponse struct {
+	EmployeeIdentity          *store.EmployeeIdentity `json:"employee_identity,omitempty"`
 	DeviceBinding             *store.DeviceBinding    `json:"device_binding,omitempty"`
 	ID                        string                  `json:"id"`
 	Name                      string                  `json:"name"`
@@ -184,13 +185,14 @@ func (g *Gateway) createAPIKey(w http.ResponseWriter, r *http.Request) {
 func (g *Gateway) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 	limit, offset := pagination(r, 50, 200)
 	result, err := g.store.SearchAPIKeys(r.Context(), store.APIKeyListParams{
-		Search:         r.URL.Query().Get("search"),
-		Status:         r.URL.Query().Get("status"),
-		Source:         r.URL.Query().Get("source"),
-		IssuerJTI:      r.URL.Query().Get("issuer_jti"),
-		IncludeDeleted: parseBoolQuery(r, "include_deleted"),
-		Limit:          limit,
-		Offset:         offset,
+		ExcludeEmployee: r.URL.Query().Get("source") != "employee",
+		Search:          r.URL.Query().Get("search"),
+		Status:          r.URL.Query().Get("status"),
+		Source:          r.URL.Query().Get("source"),
+		IssuerJTI:       r.URL.Query().Get("issuer_jti"),
+		IncludeDeleted:  parseBoolQuery(r, "include_deleted"),
+		Limit:           limit,
+		Offset:          offset,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -390,6 +392,7 @@ func (g *Gateway) clearRoutePool(w http.ResponseWriter, r *http.Request) {
 
 func toAPIKeyResponse(key store.APIKey) apiKeyResponse {
 	return apiKeyResponse{
+		EmployeeIdentity:      key.EmployeeIdentity,
 		DeviceBinding:         key.DeviceBinding,
 		ID:                    key.ID,
 		Name:                  key.Name,

@@ -29,10 +29,10 @@ var rateLimitWindowOrder = map[string]int{
 }
 
 type RateLimit struct {
-	Window            string `json:"window"`
-	RequestQuota      int64  `json:"request_quota"`
-	TokenQuota        int64  `json:"token_quota"`
-	QuotaMicrocredits int64  `json:"quota_microcredits,string"`
+	Window            string `json:"window" yaml:"window"`
+	RequestQuota      int64  `json:"request_quota" yaml:"request_quota"`
+	TokenQuota        int64  `json:"token_quota" yaml:"token_quota"`
+	QuotaMicrocredits int64  `json:"quota_microcredits,string" yaml:"quota_microcredits"`
 }
 
 type RateLimitStatus struct {

@@ -28,6 +28,7 @@ type Env struct {
 	ConfigDir               string
 	IssuerConfigPath        string
 	AccessKeyConfigPath     string
+	EmployeeAuthConfigPath  string
 	AdminToken              string
 	AdminUsername           string
 	AdminPassword           string
@@ -275,6 +276,7 @@ func LoadEnv() (Env, error) {
 		TelemetryRetention:      getDurationEnv("TELEMETRY_RETENTION", 720*time.Hour),
 		ConfigDir:               configDir,
 		AccessKeyConfigPath:     getEnv("ACCESS_KEY_CONFIG_PATH", filepath.Join(configDir, "access-key", "config.yaml")),
+		EmployeeAuthConfigPath:  getEnv("EMPLOYEE_AUTH_CONFIG_PATH", filepath.Join(configDir, "employee-auth", "config.yaml")),
 		IssuerConfigPath:        getEnv("ISSUER_CONFIG_PATH", filepath.Join(configDir, "issuer", "config.yaml")),
 		AdminToken:              os.Getenv("ADMIN_TOKEN"),
 		AdminUsername:           getEnv("ADMIN_USERNAME", "admin"),

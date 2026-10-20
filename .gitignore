@@ -44,3 +44,7 @@ configs/access-key/*
 # Native billing migration backups and Python bytecode
 /backups/native-credits-*/
 __pycache__/
+
+configs/employee-auth/*
+!configs/employee-auth/
+!configs/employee-auth/*.example.yaml

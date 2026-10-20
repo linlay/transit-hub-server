@@ -10,13 +10,14 @@ import (
 )
 
 type APIKeyListParams struct {
-	Search         string
-	Status         string
-	Source         string
-	IssuerJTI      string
-	IncludeDeleted bool
-	Limit          int
-	Offset         int
+	Search          string
+	Status          string
+	Source          string
+	ExcludeEmployee bool
+	IssuerJTI       string
+	IncludeDeleted  bool
+	Limit           int
+	Offset          int
 }
 
 type APIKeyListResult struct {
@@ -49,14 +50,22 @@ func (s *Store) SearchAPIKeys(ctx context.Context, params APIKeyListParams) (API
 	}
 
 	where := []string{}
+	if params.ExcludeEmployee {
+		where = append(where, "source != 'employee'")
+	}
 	args := []any{}
 	if !params.IncludeDeleted {
 		where = append(where, "deleted_at IS NULL")
 	}
 	if search := strings.TrimSpace(params.Search); search != "" {
-		where = append(where, "(name LIKE ? OR description LIKE ? OR id LIKE ? OR key_prefix LIKE ?)")
+		clause := "(name LIKE ? OR description LIKE ? OR id LIKE ? OR key_prefix LIKE ?)"
 		like := "%" + search + "%"
 		args = append(args, like, like, like, like)
+		if params.Source == "employee" {
+			clause = "(" + clause + " OR id IN (SELECT api_key_id FROM employee_identities WHERE subject LIKE ?))"
+			args = append(args, like)
+		}
+		where = append(where, clause)
 	}
 	if status := strings.ToLower(strings.TrimSpace(params.Status)); status != "" && status != "all" {
 		where = append(where, "status = ?")
@@ -116,6 +125,17 @@ func (s *Store) SearchAPIKeys(ctx context.Context, params APIKeyListParams) (API
 	}
 	if err := rows.Err(); err != nil {
 		return APIKeyListResult{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return APIKeyListResult{}, err
+	}
+	for i := range items {
+		if items[i].Source == "employee" {
+			items[i].EmployeeIdentity, err = s.employeeIdentity(ctx, items[i].ID)
+			if err != nil {
+				return APIKeyListResult{}, err
+			}
+		}
 	}
 	return APIKeyListResult{Items: items, Total: total, Limit: limit, Offset: offset}, nil
 }

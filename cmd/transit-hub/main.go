@@ -12,6 +12,7 @@ import (
 
 	"github.com/linlay/transit-hub/internal/accesskey"
 	"github.com/linlay/transit-hub/internal/config"
+	"github.com/linlay/transit-hub/internal/employeeauth"
 	"github.com/linlay/transit-hub/internal/gateway"
 	"github.com/linlay/transit-hub/internal/issuer"
 	"github.com/linlay/transit-hub/internal/provider"
@@ -106,7 +107,12 @@ func main() {
 	if err != nil {
 		logger.Fatalf("load access key config: %v", err)
 	}
+	employeeAuth, err := employeeauth.Load(env.EmployeeAuthConfigPath)
+	if err != nil {
+		logger.Fatalf("load employee auth config: %v", err)
+	}
 	app := gateway.New(gateway.Options{
+		EmployeeAuth:  employeeAuth,
 		AccessKeys:    accessKeys,
 		Env:           env,
 		Store:         db,

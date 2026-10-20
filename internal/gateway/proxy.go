@@ -383,6 +383,9 @@ func (g *Gateway) lookupPublicKey(w http.ResponseWriter, r *http.Request) (store
 		return store.APIKey{}, false
 	}
 	key, err := g.store.FindAPIKeyByPlainText(r.Context(), token)
+	if errors.Is(err, store.ErrKeyNotFound) && g.employeeAuth != nil && bearerToken(r.Header.Get("Authorization")) != "" && strings.Count(token, ".") == 2 {
+		return g.lookupEmployeeKey(w, r, token)
+	}
 	if errors.Is(err, store.ErrKeyNotFound) {
 		writeError(w, http.StatusUnauthorized, "invalid api key")
 		return store.APIKey{}, false

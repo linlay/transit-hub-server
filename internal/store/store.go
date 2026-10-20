@@ -44,28 +44,29 @@ type DeviceBinding struct {
 }
 
 type APIKey struct {
-	UsedMicrocredits  int64          `json:"used_microcredits,string"`
-	DeviceBinding     *DeviceBinding `json:"device_binding,omitempty"`
-	ID                string         `json:"id"`
-	Name              string         `json:"name"`
-	Description       string         `json:"description"`
-	KeyPrefix         string         `json:"key_prefix"`
-	Source            string         `json:"source"`
-	IssuerJTI         string         `json:"issuer_jti,omitempty"`
-	Status            string         `json:"status"`
-	ExpiresAt         *time.Time     `json:"expires_at,omitempty"`
-	ForcedExpired     bool           `json:"forced_expired"`
-	RequestQuota      int64          `json:"request_quota"`
-	TokenQuota        int64          `json:"token_quota"`
-	QuotaMicrocredits int64          `json:"quota_microcredits,string"`
-	AllowedModels     []string       `json:"allowed_models"`
-	RateLimits        []RateLimit    `json:"rate_limits"`
-	UsedRequests      int64          `json:"used_requests"`
-	UsedTokens        int64          `json:"used_tokens"`
-	LastUsedAt        *time.Time     `json:"last_used_at,omitempty"`
-	DeletedAt         *time.Time     `json:"deleted_at,omitempty"`
-	CreatedAt         time.Time      `json:"created_at"`
-	UpdatedAt         time.Time      `json:"updated_at"`
+	EmployeeIdentity  *EmployeeIdentity `json:"employee_identity,omitempty"`
+	UsedMicrocredits  int64             `json:"used_microcredits,string"`
+	DeviceBinding     *DeviceBinding    `json:"device_binding,omitempty"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	Description       string            `json:"description"`
+	KeyPrefix         string            `json:"key_prefix"`
+	Source            string            `json:"source"`
+	IssuerJTI         string            `json:"issuer_jti,omitempty"`
+	Status            string            `json:"status"`
+	ExpiresAt         *time.Time        `json:"expires_at,omitempty"`
+	ForcedExpired     bool              `json:"forced_expired"`
+	RequestQuota      int64             `json:"request_quota"`
+	TokenQuota        int64             `json:"token_quota"`
+	QuotaMicrocredits int64             `json:"quota_microcredits,string"`
+	AllowedModels     []string          `json:"allowed_models"`
+	RateLimits        []RateLimit       `json:"rate_limits"`
+	UsedRequests      int64             `json:"used_requests"`
+	UsedTokens        int64             `json:"used_tokens"`
+	LastUsedAt        *time.Time        `json:"last_used_at,omitempty"`
+	DeletedAt         *time.Time        `json:"deleted_at,omitempty"`
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
 }
 
 type CreateAPIKeyParams struct {
@@ -197,8 +198,8 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 		return CreatedAPIKey{}, errors.New("quotas must be >= 0")
 	}
 	source := strings.ToLower(strings.TrimSpace(params.Source))
-	if source != "admin" && source != "jwt" && source != "access_token" {
-		return CreatedAPIKey{}, errors.New("source must be admin, jwt or access_token")
+	if source != "admin" && source != "jwt" && source != "access_token" && source != "employee" {
+		return CreatedAPIKey{}, errors.New("source must be admin, jwt, access_token or employee")
 	}
 	allowedModels := NormalizeAllowedModels(params.AllowedModels)
 	allowedModelsJSON, err := encodeAllowedModels(allowedModels)
@@ -214,9 +215,12 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 		return CreatedAPIKey{}, err
 	}
 
-	plain, err := GeneratePlainAPIKey(params.Prefix)
-	if err != nil {
-		return CreatedAPIKey{}, err
+	var plain string
+	if source != "employee" {
+		plain, err = GeneratePlainAPIKey(params.Prefix)
+		if err != nil {
+			return CreatedAPIKey{}, err
+		}
 	}
 	now := time.Now().UTC()
 	key := APIKey{
@@ -237,6 +241,12 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
+	keyHash := HashKey(plain)
+	if source == "employee" {
+		// This is an accounting identity, never a usable API secret/hash.
+		keyHash = "employee:" + key.ID
+		key.KeyPrefix = ""
+	}
 
 	exec := func(query string, args ...any) (sql.Result, error) {
 		if tx != nil {
@@ -249,7 +259,7 @@ func (s *Store) createAPIKeyInTx(ctx context.Context, tx *sql.Tx, params CreateA
 			id, key_hash, key_prefix, name, description, source, issuer_jti, status, expires_at, forced_expired,
 			request_quota, token_quota, quota_microcredits, allowed_models, rate_limits, used_requests, used_tokens, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
-	`, key.ID, HashKey(plain), key.KeyPrefix, key.Name, key.Description, key.Source, key.IssuerJTI, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, key.QuotaMicrocredits, allowedModelsJSON, rateLimitsJSON, formatTime(key.CreatedAt), formatTime(key.UpdatedAt))
+	`, key.ID, keyHash, key.KeyPrefix, key.Name, key.Description, key.Source, key.IssuerJTI, key.Status, nullableTime(key.ExpiresAt), boolInt(key.ForcedExpired), key.RequestQuota, key.TokenQuota, key.QuotaMicrocredits, allowedModelsJSON, rateLimitsJSON, formatTime(key.CreatedAt), formatTime(key.UpdatedAt))
 	if err != nil {
 		return CreatedAPIKey{}, err
 	}
@@ -288,6 +298,9 @@ func (s *Store) GetAPIKey(ctx context.Context, id string) (APIKey, error) {
 		WHERE id = ?
 	`, id)
 	key, err := scanAPIKey(row)
+	if err == nil && key.Source == "employee" {
+		key.EmployeeIdentity, err = s.employeeIdentity(ctx, id)
+	}
 	if err == nil && key.Source == "access_token" {
 		var binding DeviceBinding
 		err = s.db.QueryRowContext(ctx, `SELECT auth_issuer,auth_subject,device_id FROM device_key_bindings WHERE api_key_id=?`, id).Scan(&binding.Issuer, &binding.Subject, &binding.DeviceID)
@@ -303,7 +316,7 @@ func (s *Store) FindAPIKeyByPlainText(ctx context.Context, plain string) (APIKey
 		SELECT id, name, description, key_prefix, source, issuer_jti, status, expires_at, forced_expired, request_quota, token_quota, quota_microcredits,
 		       allowed_models, rate_limits, used_requests, used_tokens, last_used_at, deleted_at, created_at, updated_at
 		FROM api_keys
-		WHERE key_hash = ? AND deleted_at IS NULL
+		WHERE key_hash = ? AND deleted_at IS NULL AND source != 'employee'
 	`, HashKey(plain))
 	key, err := scanAPIKey(row)
 	if errors.Is(err, ErrNotFound) {
@@ -490,6 +503,16 @@ func (s *Store) migrate(ctx context.Context) error {
  key_ciphertext BLOB,
  PRIMARY KEY(auth_issuer,auth_subject,device_id)
  );
+
+ CREATE TABLE IF NOT EXISTS employee_identities (
+ issuer TEXT NOT NULL,
+ subject_claim TEXT NOT NULL,
+ subject TEXT NOT NULL,
+ api_key_id TEXT NOT NULL DEFAULT '',
+ PRIMARY KEY(issuer,subject_claim,subject)
+ );
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_identity_key
+	ON employee_identities(api_key_id) WHERE api_key_id != '';
 
  CREATE TABLE IF NOT EXISTS api_keys (
 			id TEXT PRIMARY KEY,

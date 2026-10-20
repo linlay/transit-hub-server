@@ -12,6 +12,7 @@ import (
 
 	"github.com/linlay/transit-hub/internal/accesskey"
 	"github.com/linlay/transit-hub/internal/config"
+	"github.com/linlay/transit-hub/internal/employeeauth"
 	"github.com/linlay/transit-hub/internal/issuer"
 	"github.com/linlay/transit-hub/internal/provider"
 	"github.com/linlay/transit-hub/internal/providerquota"
@@ -19,6 +20,7 @@ import (
 )
 
 type Gateway struct {
+	employeeAuth      *employeeauth.Service
 	concurrentMu      sync.Mutex
 	concurrent        map[string]int
 	accessKeys        *accesskey.Service
@@ -36,6 +38,7 @@ type Gateway struct {
 }
 
 type Options struct {
+	EmployeeAuth  *employeeauth.Service
 	AccessKeys    *accesskey.Service
 	Env           config.Env
 	Store         *store.Store
@@ -71,6 +74,7 @@ func New(options Options) *Gateway {
 		rateLimitLocation = time.UTC
 	}
 	return &Gateway{
+		employeeAuth:      options.EmployeeAuth,
 		accessKeys:        options.AccessKeys,
 		env:               options.Env,
 		store:             options.Store,
@@ -128,6 +132,8 @@ func (g *Gateway) Handler() http.Handler {
 		r.Get("/sessions", g.sessions)
 		r.Post("/api-keys", g.createAPIKey)
 		r.Get("/api-keys", g.listAPIKeys)
+		r.Get("/employee-keys", g.listEmployeeKeys)
+		r.Get("/employee-auth", g.employeeAuthSettings)
 		r.Post("/api-keys/batch", g.batchAPIKeys)
 		r.Get("/api-keys/{id}", g.getAPIKey)
 		r.Patch("/api-keys/{id}", g.patchAPIKey)

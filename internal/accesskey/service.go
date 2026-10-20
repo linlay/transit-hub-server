@@ -82,19 +82,14 @@ func Load(path string) (*Service, error) {
 	}
 	return New(cfg)
 }
-func New(cfg Config) (*Service, error) {
+
+// NewVerifier creates an offline JWT verifier without device-key issuance or encryption.
+func NewVerifier(cfg Config) (*Service, error) {
 	if cfg.Algorithm != "RS256" || cfg.Issuer == "" || cfg.Audience == "" || cfg.PublicKeyPath == "" {
-		return nil, errors.New("bind-apikey requires RS256, public_key_path, issuer and audience")
+		return nil, errors.New("access token requires RS256, public_key_path, issuer and audience")
 	}
 	if cfg.SubjectClaim == "" {
 		cfg.SubjectClaim = "sub"
-	}
-	if len(cfg.AllowedModels) == 0 || cfg.RequestQuota < 0 || cfg.TokenQuota < 0 || cfg.QuotaMicrocredits < 0 {
-		return nil, errors.New("bind-apikey requires allowed_models and nonnegative quotas")
-	}
-	ttl, err := time.ParseDuration(cfg.APIKeyTTL)
-	if err != nil || ttl <= 0 {
-		return nil, errors.New("bind-apikey requires positive api_key_ttl")
 	}
 	data, err := os.ReadFile(cfg.PublicKeyPath)
 	if err != nil {
@@ -113,7 +108,22 @@ func New(cfg Config) (*Service, error) {
 	if public == nil || public.N.BitLen() < 2048 {
 		return nil, errors.New("access token public key must be RSA >= 2048 bits")
 	}
-	svc := &Service{Config: cfg, public: public, keys: map[string]cipher.AEAD{}, TTL: ttl}
+	return &Service{Config: cfg, public: public}, nil
+}
+func New(cfg Config) (*Service, error) {
+	svc, err := NewVerifier(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if len(cfg.AllowedModels) == 0 || cfg.RequestQuota < 0 || cfg.TokenQuota < 0 || cfg.QuotaMicrocredits < 0 {
+		return nil, errors.New("bind-apikey requires allowed_models and nonnegative quotas")
+	}
+	ttl, err := time.ParseDuration(cfg.APIKeyTTL)
+	if err != nil || ttl <= 0 {
+		return nil, errors.New("bind-apikey requires positive api_key_ttl")
+	}
+	svc.keys = map[string]cipher.AEAD{}
+	svc.TTL = ttl
 	for id, env := range cfg.EncryptionKeyEnvs {
 		raw, err := base64.StdEncoding.DecodeString(os.Getenv(env))
 		if err != nil || len(raw) != 32 || id == "" {

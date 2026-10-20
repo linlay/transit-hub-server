@@ -382,7 +382,26 @@ curl -sS -X DELETE http://localhost:8080/admin/jwt-grants/jti_xxx \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-## 使用登录身份与设备绑定 API Key
+## 员工 access token 直接调用模型
+
+员工认证密钥与 API Key / JWT Grant 独立。启用后，模型接口接受 `Authorization: Bearer <access_token>`，使用认证中心 RSA 公钥离线验证 RS256 签名、issuer、audience、有效期和可选 scope；不领取、不生成 API Key。`/v1/models`、`/anthropic/v1/models`、`/api/me` 及其用量、余额、日志等接口也接受该 token。
+
+将 `configs/employee-auth/config.example.yaml` 复制为同目录 `config.yaml`，设置 `enabled: true`、认证中心 `public_key_path`、`issuer`、`audience`、`allowed_models`。`subject_claim` 默认 `staffuserid`，支持 `user.staffuserid` 等对象路径，必须指向 JWT payload 中稳定、非空的字符串。字段只从验签后的 JWT 获取，客户端不能另行指定员工身份。配置路径可由 `EMPLOYEE_AUTH_CONFIG_PATH` 覆盖；公钥路径相对配置文件解析。缺少配置或关闭开关时不接受员工 token，已启用但配置非法则启动失败；修改配置后重启服务。
+
+```bash
+curl https://your-transit-hub/v1/chat/completions \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"example-chat","messages":[{"role":"user","content":"你好"}]}'
+```
+
+员工首次通过认证访问时自动建立内部计量记录（`source: employee`），不保存 access token，也不产生可用 API 密钥。身份命名空间为 `(issuer, subject_claim, 身份属性值)`：同一员工刷新 token、变更设备或重启服务均复用记录，累计请求数、token、Credits、固定窗口限流、并发限制和请求日志沿用同一计量 ID。首次创建应用配置中的模型与额度策略；后续重复访问不覆盖管理员调整，不重置已用量。修改签发方或身份字段会建立新命名空间，已有记录和用量不会自动迁移。
+
+管理后台「员工认证密钥」位于「授权型密钥」上方，提供员工列表、身份字段、用量、权限、限额和日志详情。`GET /admin/employee-auth` 返回启用状态及公开验证策略（不含密钥或文件路径）；`GET /admin/employee-keys` 返回员工计量记录，详情、编辑、用量、日志复用 `/admin/api-keys/{id}` 系列。普通 `/admin/api-keys` 列表排除员工记录，可显式使用 `source=employee` 查询。禁用或软删除员工记录后，新 token 不会自动重建授权；身份绑定予以保留。认证中心登出不自动撤销仍有效的 JWT，离线验签遵循 token 到期时间，必要时在后台禁用对应员工。
+
+Desktop 现有版本仍使用 `/api/bind-apikey` 换取设备 Key；本次服务端与管理网站改造没有修改 Desktop / Agent Platform 的 token 传递链路。
+
+## 使用登录身份与设备绑定 API Key（旧接入方式）
 
 `POST /api/bind-apikey` 与原有 `/api/apply-apikey` 独立：前者验证外部登录 access token，后者继续验证本服务签发的 Grant JWT。新路径不创建 Grant、不依赖 Grant issuer 的私钥，也不需要 provider-register 登记 JWT。
 
