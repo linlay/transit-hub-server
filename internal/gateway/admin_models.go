@@ -139,6 +139,14 @@ func adminModelFromRoute(route provider.Route, overridePool string) adminModelRe
 }
 
 func adminModelEndpoint(route provider.Route) (string, string) {
+	if route.Type == config.ModelTypeTTS {
+		switch route.Protocol {
+		case "minimax_tts":
+			return "minimax_tts", "/minimax/v1/t2a_v2"
+		case "dashscope_tts":
+			return "dashscope_tts", "/bailian/v1/services/aigc/multimodal-generation/generation"
+		}
+	}
 	if route.Protocol == "anthropic" {
 		if route.Type == config.ModelTypeChat {
 			return "anthropic_messages", "/v1/messages"

@@ -16,6 +16,10 @@ const (
 // ProtocolEndpoints lists the endpoints whose usage a provider protocol can report.
 func ProtocolEndpoints(protocol string) []string {
 	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "minimax_tts":
+		return []string{EndpointMiniMaxTTS}
+	case "dashscope_tts":
+		return []string{EndpointDashScopeTTS}
 	case "anthropic":
 		return []string{EndpointAnthropicMessages}
 	case "openai":
@@ -55,6 +59,8 @@ type MappingOverride struct {
 // DefaultMapping returns the standard usage fields of an endpoint protocol.
 func DefaultMapping(endpoint string) Mapping {
 	switch endpoint {
+	case EndpointMiniMaxTTS, EndpointDashScopeTTS:
+		return Mapping{}
 	case EndpointAnthropicMessages:
 		return Mapping{
 			Input:              paths("input_tokens"),

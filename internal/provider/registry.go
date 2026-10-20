@@ -416,6 +416,18 @@ func (provider *Provider) EndpointPath(key, fallback string) string {
 	if endpoint := strings.TrimSpace(provider.Endpoints[key]); endpoint != "" {
 		return endpoint
 	}
+	switch key {
+	case usage.EndpointMiniMaxTTS:
+		if strings.TrimRight(provider.BaseURL.Path, "/") == "/v1" {
+			return "/t2a_v2"
+		}
+		return "/v1/t2a_v2"
+	case usage.EndpointDashScopeTTS:
+		if strings.TrimRight(provider.BaseURL.Path, "/") == "/api/v1" {
+			return "/services/aigc/multimodal-generation/generation"
+		}
+		return "/api/v1/services/aigc/multimodal-generation/generation"
+	}
 	return fallback
 }
 

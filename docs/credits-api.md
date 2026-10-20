@@ -203,3 +203,11 @@ python3 scripts/migrate_native_credits.py --db data/transit-hub.db --db data/tra
 ### Token 阶梯价格
 
 `billing.token_tiers` 可配置按总输入 tokens 选择的整请求价格，阈值严格递增；仅在输入数量大于 `above_input_tokens` 时应用。字段为 `input_microcredits_per_1m_tokens`、`output_microcredits_per_1m_tokens` 和可选 `input_cache_hit_microcredits_per_1m_tokens`。不是累进分段计费，缓存输入也计入阈值；缓存单价未设置时回退到该阶梯输入价。管理页展示并在编辑基础价时保留阶梯配置。
+
+## TTS 字符计费
+
+`billing.mode="characters"` 新增 `microcredits_per_10k_characters`，值为每万上游计费字符的 micro-Credits 整数字符串。要求正费率，不能与 token 或图片价格混用；零价须显式 `free`。支持 `protocol="dashscope_tts"`、`"minimax_tts"`，仅适用于 `type: tts`。
+
+金额为 `characters × microcredits_per_10k_characters / 10000`，大整数计算后一次四舍五入到 micro-Credits，溢出饱和。字符数不计 token，只累计请求数和金额。请求日志和 `/api/me/logs` 增加 `characters`；`/api/me/prices` 按授权包含两种 TTS 协议价格。旧日志 characters 为 0，价格继续保存于现有 billing JSON，不改生命周期金额权威计数。
+
+字段缺失、响应中断、不可解码或非法用量标记 unavailable，不估算、不扣估算金额；上游业务错误即使 HTTP 200 也不收费。详情、费率 JSON 示例与 Platform 配置见 [TTS 接入](tts.md)。

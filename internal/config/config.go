@@ -148,6 +148,9 @@ func (c UsageMappingConfig) Override() usage.MappingOverride {
 }
 
 func validateUsageConfig(protocol string, cfg UsageConfig) error {
+	if len(cfg) > 0 && (strings.EqualFold(protocol, "minimax_tts") || strings.EqualFold(protocol, "dashscope_tts")) {
+		return errors.New("tts character usage is protocol-defined; token usage overrides are unsupported")
+	}
 	allowed := map[string]struct{}{}
 	for _, endpoint := range usage.ProtocolEndpoints(protocol) {
 		allowed[endpoint] = struct{}{}
@@ -215,6 +218,7 @@ type issuerConfigFile struct {
 }
 
 const (
+	ModelTypeTTS                 = "tts"
 	ModelTypeChat                = "chat"
 	ModelTypeEmbedding           = "embedding"
 	ModelTypeImageGeneration     = "image-generation"
@@ -243,10 +247,10 @@ func NormalizeModelType(value string) (string, error) {
 		return ModelTypeChat, nil
 	}
 	switch normalized {
-	case ModelTypeChat, ModelTypeEmbedding, ModelTypeImageGeneration:
+	case ModelTypeChat, ModelTypeEmbedding, ModelTypeImageGeneration, ModelTypeTTS:
 		return normalized, nil
 	default:
-		return "", fmt.Errorf("must be %s, %s, or %s", ModelTypeChat, ModelTypeEmbedding, ModelTypeImageGeneration)
+		return "", fmt.Errorf("must be %s, %s, %s, or %s", ModelTypeChat, ModelTypeEmbedding, ModelTypeImageGeneration, ModelTypeTTS)
 	}
 }
 
@@ -445,9 +449,9 @@ func ValidateProviderConfig(cfg ProviderConfig) error {
 		return errors.New("name is required")
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.Protocol)) {
-	case "openai", "anthropic":
+	case "openai", "anthropic", "minimax_tts", "dashscope_tts":
 	default:
-		return fmt.Errorf("protocol must be openai or anthropic")
+		return fmt.Errorf("protocol must be openai, anthropic, minimax_tts or dashscope_tts")
 	}
 	if strings.TrimSpace(cfg.BaseURL) == "" {
 		return errors.New("base_url is required")
@@ -510,6 +514,10 @@ func ValidateProviderConfig(cfg ProviderConfig) error {
 		modelType, err := NormalizeModelType(model.Type)
 		if err != nil {
 			return fmt.Errorf("model %q type %w", model.Public, err)
+		}
+		ttsProtocol := strings.EqualFold(cfg.Protocol, "minimax_tts") || strings.EqualFold(cfg.Protocol, "dashscope_tts")
+		if (modelType == ModelTypeTTS) != ttsProtocol {
+			return fmt.Errorf("model %q tts type requires a tts protocol and vice versa", model.Public)
 		}
 		if modelType != ModelTypeImageGeneration && model.Image.EndpointPathValue() != "" {
 			return fmt.Errorf("model %q image endpointPath requires type %q", model.Public, ModelTypeImageGeneration)

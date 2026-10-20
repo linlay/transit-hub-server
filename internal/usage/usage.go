@@ -38,7 +38,10 @@ func EstimateTokens(data []byte) int64 {
 
 // Observation is what the gateway learned from intercepting one response.
 type Observation struct {
-	Tokens Tokens
+	Characters        int64
+	UpstreamRequestID string
+	ProviderCode      string
+	Tokens            Tokens
 	// Final reports that Tokens hold the complete usage defined by the protocol.
 	Final bool
 	// Errored reports an in-band upstream error event or error body.
@@ -58,6 +61,7 @@ func (o Observation) EstimatedOutputTokens() int64 {
 // Parser intercepts a decoded response copy and extracts usage according to
 // the endpoint protocol. It never changes what is sent to the client.
 type Parser struct {
+	tts      *ttsCollector
 	endpoint string
 	mapping  Mapping
 	stream   bool
@@ -76,12 +80,20 @@ type Parser struct {
 }
 
 func NewParser(endpoint string, mapping Mapping, stream bool) *Parser {
-	return &Parser{endpoint: endpoint, mapping: mapping, stream: stream}
+	p := &Parser{endpoint: endpoint, mapping: mapping, stream: stream}
+	if IsTTSEndpoint(endpoint) {
+		p.tts = &ttsCollector{}
+	}
+	return p
 }
 
 // Write consumes decoded response bytes in arrival order.
 func (p *Parser) Write(data []byte) {
 	p.decoded += int64(len(data))
+	if p.tts != nil {
+		p.tts.write(data)
+		return
+	}
 	if !p.stream {
 		if p.truncated {
 			return
@@ -124,6 +136,9 @@ func (p *Parser) Write(data []byte) {
 // Finish ends the response. complete reports that the upstream body was read
 // to EOF and fully delivered to the client.
 func (p *Parser) Finish(complete bool) Observation {
+	if p.tts != nil {
+		return p.tts.finish(p.endpoint, complete && !p.stream)
+	}
 	if p.stream {
 		if !p.dropping && len(p.pending) > 0 {
 			p.line(p.pending)

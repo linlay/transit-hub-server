@@ -686,3 +686,7 @@ make tidy
 ### Traffic 使用分析
 
 `GET /admin/traffic/analytics` 提供按时间、API Key、模型、Provider 和请求结果筛选的汇总、趋势及排行；`GET /admin/logs` 支持同一组筛选并分页。参数、时区、失败口径和验证方式见 [Traffic 分析接口](docs/traffic-analytics.md)。
+
+## TTS 原生透传
+
+新增 `POST /bailian/v1/services/aigc/multimodal-generation/generation`、`POST /minimax/v1/t2a_v2`，使用 `dashscope_tts` / `minimax_tts` 协议与 `type: tts`。同步非流式请求只改写模型与鉴权，响应原样返回；按上游计费字符使用 Credits 计价。配置模板、字符费率、请求示例及 Agent Platform 接入见 [TTS 接入](docs/tts.md)。

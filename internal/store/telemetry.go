@@ -233,14 +233,14 @@ func (t *Telemetry) writeBatch(ctx context.Context, batch []RequestLog) error {
 				provider, pool, account, device_id, source, status_code, latency_ms,
 				request_tokens, response_tokens, cache_hit_tokens, cache_miss_tokens,
 				charged_microcredits, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count, upstream_request_id, usage_source,
-				request_bytes, output_ascii_chars, output_other_chars
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				request_bytes, output_ascii_chars, output_other_chars, characters
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, entry.APIKeyID, entry.APIKeyName, entry.KeyPrefix, entry.Protocol, entry.PublicModel,
 			entry.UpstreamModel, entry.Provider, entry.Pool, entry.Account, deviceID, source,
 			entry.StatusCode, entry.Latency.Milliseconds(), entry.RequestTokens, entry.ResponseTokens,
 			entry.CacheHitTokens, entry.CacheMissTokens, entry.ChargedMicrocredits, boolInt(entry.Estimated),
 			entry.ErrorType, formatTime(createdAt), entry.BillingStatus, nonemptySnapshot(entry.PriceSnapshot), nullableStart(entry.StartedAt), entry.CacheWriteTokens, entry.ImageCount, entry.UpstreamRequestID, entry.UsageSource,
-			entry.RequestBytes, entry.OutputASCIIChars, entry.OutputOtherChars); err != nil {
+			entry.RequestBytes, entry.OutputASCIIChars, entry.OutputOtherChars, entry.Characters); err != nil {
 			return err
 		}
 		if deviceID == "" {
@@ -458,7 +458,7 @@ func (t *Telemetry) ListRequestLogs(ctx context.Context, query RequestLogQuery) 
 		SELECT id, api_key_id, api_key_name, protocol, public_model, upstream_model,
 		       provider, pool, account, device_id, source, status_code, latency_ms,
 		       request_tokens, response_tokens, cache_hit_tokens, cache_miss_tokens,
-		       charged_microcredits, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count, upstream_request_id, usage_source
+		       charged_microcredits, estimated, error_type, created_at, billing_status, price_snapshot, started_at, cache_write_tokens, image_count, upstream_request_id, usage_source, characters
 		FROM request_logs
 		%s
 		ORDER BY created_at DESC, id DESC
@@ -480,7 +480,7 @@ func (t *Telemetry) ListRequestLogs(ctx context.Context, query RequestLogQuery) 
 			&item.PublicModel, &item.UpstreamModel, &item.Provider, &item.Pool, &item.Account,
 			&item.DeviceID, &item.Source, &item.StatusCode, &item.LatencyMS, &item.RequestTokens,
 			&item.ResponseTokens, &item.CacheHitTokens, &item.CacheMissTokens, &item.ChargedMicrocredits,
-			&estimated, &item.ErrorType, &createdAt, &item.BillingStatus, &snapshot, &started, &item.CacheWriteTokens, &item.ImageCount, &item.UpstreamRequestID, &item.UsageSource); err != nil {
+			&estimated, &item.ErrorType, &createdAt, &item.BillingStatus, &snapshot, &started, &item.CacheWriteTokens, &item.ImageCount, &item.UpstreamRequestID, &item.UsageSource, &item.Characters); err != nil {
 			return RequestLogListResult{}, err
 		}
 		item.PriceSnapshot = []byte(snapshot)
@@ -569,7 +569,7 @@ func (t *Telemetry) UsageSources(ctx context.Context, query ProviderUsageQuery) 
 	where, args = whereWith(where, args, "usage_source <> ''")
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT provider, public_model, usage_source, COUNT(*),
-		       COALESCE(SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN status_code BETWEEN 200 AND 299 AND error_type <> 'upstream_business_error' THEN 1 ELSE 0 END), 0),
 		       COALESCE(SUM(charged_microcredits), 0), MAX(created_at)
 		FROM request_logs
 		%s
@@ -624,7 +624,7 @@ func (t *Telemetry) UsageCalibrations(ctx context.Context, query ProviderUsageQu
 		return nil, err
 	}
 	where, args := requestLogWhere("", query.From, query.To)
-	where, args = whereWith(where, args, "usage_source = 'reported' AND status_code BETWEEN 200 AND 299 AND request_bytes > 0")
+	where, args = whereWith(where, args, "usage_source = 'reported' AND status_code BETWEEN 200 AND 299 AND request_bytes > 0 AND protocol NOT IN ('minimax_tts', 'dashscope_tts')")
 	rows, err := db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT provider, public_model, COUNT(*),
 		       COALESCE(SUM(request_tokens), 0),
@@ -929,7 +929,7 @@ func migrateTelemetry(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	for _, column := range []string{"billing_status TEXT NOT NULL DEFAULT 'legacy'", "price_snapshot TEXT NOT NULL DEFAULT 'null'", "started_at TEXT", "cache_write_tokens INTEGER NOT NULL DEFAULT 0", "image_count INTEGER NOT NULL DEFAULT 0", "upstream_request_id TEXT NOT NULL DEFAULT ''", "usage_source TEXT NOT NULL DEFAULT ''", "request_bytes INTEGER NOT NULL DEFAULT 0", "output_ascii_chars INTEGER NOT NULL DEFAULT 0", "output_other_chars INTEGER NOT NULL DEFAULT 0"} {
+	for _, column := range []string{"characters INTEGER NOT NULL DEFAULT 0", "billing_status TEXT NOT NULL DEFAULT 'legacy'", "price_snapshot TEXT NOT NULL DEFAULT 'null'", "started_at TEXT", "cache_write_tokens INTEGER NOT NULL DEFAULT 0", "image_count INTEGER NOT NULL DEFAULT 0", "upstream_request_id TEXT NOT NULL DEFAULT ''", "usage_source TEXT NOT NULL DEFAULT ''", "request_bytes INTEGER NOT NULL DEFAULT 0", "output_ascii_chars INTEGER NOT NULL DEFAULT 0", "output_other_chars INTEGER NOT NULL DEFAULT 0"} {
 		if _, err = db.Exec("ALTER TABLE request_logs ADD COLUMN " + column); err != nil && !isDuplicateColumnError(err) {
 			return err
 		}

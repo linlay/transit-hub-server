@@ -51,6 +51,15 @@ func (g *Gateway) endKeyRequest(id string) {
 }
 
 func prepareBillingRequest(body *parsedProxyBody, price *store.ModelPrice, modelType, endpointKey string) (int64, error) {
+	if modelType == "tts" {
+		if price != nil && price.Billing.Mode != "characters" && price.Billing.Mode != "free" {
+			return 0, errors.New("tts model requires characters or free billing")
+		}
+		return 0, nil
+	}
+	if price != nil && price.Billing.Mode == "characters" {
+		return 0, errors.New("characters billing requires a tts model")
+	}
 	if price == nil {
 		return 0, nil
 	}

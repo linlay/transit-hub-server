@@ -115,6 +115,7 @@ type RequestLogQuery struct {
 }
 
 type RequestLogEntry struct {
+	Characters          int64           `json:"characters"`
 	UpstreamRequestID   string          `json:"upstream_request_id"`
 	UsageSource         string          `json:"usage_source"`
 	BillingStatus       string          `json:"billing_status"`
@@ -237,6 +238,7 @@ func (s *Store) UpsertModelPrice(ctx context.Context, params ModelPriceParams) (
 	if params.Billing != nil {
 		billing = *params.Billing
 	}
+	params.Protocol = protocol
 	if err := validateBilling(billing, params); err != nil {
 		return ModelPrice{}, err
 	}
@@ -295,6 +297,7 @@ func (s *Store) UpdateModelPrice(ctx context.Context, id string, params ModelPri
 	if params.Billing != nil {
 		billing = *params.Billing
 	}
+	params.Protocol = protocol
 	if err := validateBilling(billing, params); err != nil {
 		return ModelPrice{}, err
 	}

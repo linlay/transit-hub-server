@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/linlay/transit-hub/internal/provider"
+	"github.com/linlay/transit-hub/internal/usage"
 )
 
 const connectivityErrorSampleLimit = 4 * 1024
@@ -100,7 +101,23 @@ func (g *Gateway) testProviderConnectivity(w http.ResponseWriter, r *http.Reques
 	result.UpstreamRequestID = upstreamResponseRequestID(resp.Header, route.Provider.RequestIDHeader)
 	result.StatusCode = resp.StatusCode
 	result.OK = resp.StatusCode >= 200 && resp.StatusCode < 400
-	if !result.OK {
+	if usage.IsTTSEndpoint(endpointKey) {
+		parser := usage.NewParser(endpointKey, route.UsageMapping(endpointKey), false)
+		copied, copyErr := copyResponse(discardProbeResponse{headers: make(http.Header)}, resp, parser, false)
+		if result.UpstreamRequestID == "" {
+			result.UpstreamRequestID = copied.Observation.UpstreamRequestID
+		}
+		if copyErr != nil || copied.Undecodable {
+			result.OK = false
+			result.Error = "could not read TTS provider response"
+		} else if copied.Observation.Errored {
+			result.OK = false
+			result.Error = "TTS provider error code " + copied.Observation.ProviderCode
+		} else if !copied.Observation.Final {
+			result.OK = false
+			result.Error = "TTS provider response has no valid character usage"
+		}
+	} else if !result.OK {
 		sample, readErr := io.ReadAll(io.LimitReader(resp.Body, connectivityErrorSampleLimit))
 		if readErr != nil {
 			result.Error = readErr.Error()
@@ -108,6 +125,7 @@ func (g *Gateway) testProviderConnectivity(w http.ResponseWriter, r *http.Reques
 			result.Error = summarizeConnectivityError(resp.StatusCode, sample)
 		}
 	}
+	result.LatencyMS = time.Since(started).Milliseconds()
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -125,6 +143,12 @@ func (g *Gateway) buildConnectivityRequest(r *http.Request, route provider.Route
 
 func connectivityProbeBody(route provider.Route) ([]byte, string, string, error) {
 	switch route.Protocol {
+	case usage.EndpointMiniMaxTTS:
+		body, err := json.Marshal(map[string]any{"model": route.UpstreamModel, "text": "hello", "stream": false, "output_format": "hex", "voice_setting": map[string]any{"voice_id": "male-qn-qingse"}})
+		return body, usage.EndpointMiniMaxTTS, "/v1/t2a_v2", err
+	case usage.EndpointDashScopeTTS:
+		body, err := json.Marshal(map[string]any{"model": route.UpstreamModel, "input": map[string]any{"text": "hello", "voice": "Cherry"}})
+		return body, usage.EndpointDashScopeTTS, "/api/v1/services/aigc/multimodal-generation/generation", err
 	case "openai":
 		body, err := json.Marshal(map[string]any{
 			"model": route.UpstreamModel,
@@ -195,3 +219,10 @@ func summarizeConnectivityError(statusCode int, sample []byte) string {
 	}
 	return text
 }
+
+// Admin probes discard audio while still observing the complete response metadata.
+type discardProbeResponse struct{ headers http.Header }
+
+func (w discardProbeResponse) Header() http.Header            { return w.headers }
+func (w discardProbeResponse) WriteHeader(int)                {}
+func (w discardProbeResponse) Write(data []byte) (int, error) { return len(data), nil }

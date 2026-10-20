@@ -104,6 +104,7 @@ type APIKeyPatch struct {
 }
 
 type RequestLog struct {
+	Characters          int64
 	UpstreamRequestID   string
 	UsageUnavailable    bool // Image token billing must never estimate from base64 bytes.
 	BillingStatus       string

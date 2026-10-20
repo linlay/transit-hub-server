@@ -53,6 +53,7 @@ const (
 )
 
 type observedUsage struct {
+	Characters       int64
 	CacheWriteTokens int64
 	RequestTokens    int64
 	ResponseTokens   int64
@@ -104,6 +105,11 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		}
 		envelope := parsedBody.Envelope
 		rejected.PublicModel = envelope.Model
+		if usage.IsTTSEndpoint(endpointKey) && (envelope.Stream || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-DashScope-SSE")), "enable") || strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream")) {
+			writeError(w, http.StatusBadRequest, "tts currently supports non-streaming synthesis only")
+			reject("invalid_request")
+			return
+		}
 		if !g.enforceAPIKeyRateLimits(w, r, key) {
 			reject("rate_limited")
 			return
@@ -233,7 +239,9 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		defer resp.Body.Close()
 
 		upstreamHealthy := resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500
-		account.Breaker.Record(upstreamHealthy)
+		if !usage.IsTTSEndpoint(endpointKey) {
+			account.Breaker.Record(upstreamHealthy)
+		}
 
 		copyResponseHeaders(w.Header(), resp.Header)
 		upstreamRequestID := upstreamResponseRequestID(resp.Header, route.Provider.RequestIDHeader)
@@ -252,7 +260,16 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			g.logger.Printf("copy upstream response failed: provider=%s upstream_request_id=%q error=%v", route.ProviderName, upstreamRequestID, copyErr)
 		}
 
-		observed := resolveObservedUsage(body, resp.StatusCode, result)
+		observed := observedUsage{}
+		if usage.IsTTSEndpoint(endpointKey) {
+			observed = resolveTTSUsage(resp.StatusCode, result)
+			account.Breaker.Record(upstreamHealthy && !usage.TTSRetryableFailure(endpointKey, result.Observation.ProviderCode))
+			if upstreamRequestID == "" {
+				upstreamRequestID = result.Observation.UpstreamRequestID
+			}
+		} else {
+			observed = resolveObservedUsage(body, resp.StatusCode, result)
+		}
 		if modelPrice != nil && modelPrice.Billing.Mode == "image" && observed.Source != usageSourceReported {
 			// Per-image billing does not depend on token usage, so its absence is expected.
 			observed.Source = usageSourceNone
@@ -277,7 +294,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		imageTokenUsageUnavailable := route.Type == "image-generation" && modelPrice != nil && modelPrice.Billing.Mode == "tokens" && observed.Estimated
 		// Responses may contain encrypted reasoning and repeated output snapshots.
 		// Byte estimates cannot represent their token usage.
-		usageUnavailable := imageTokenUsageUnavailable || (endpointKey == "openai_responses" && observed.Estimated)
+		usageUnavailable := imageTokenUsageUnavailable || (endpointKey == "openai_responses" && observed.Estimated) || (usage.IsTTSEndpoint(endpointKey) && observed.Source != usageSourceReported && !result.Observation.Errored)
 		if usageUnavailable {
 			observed = observedUsage{Source: observed.Source}
 		}
@@ -297,6 +314,8 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 		errorType := ""
 		if copyErr != nil {
 			errorType = "response_copy_error"
+		} else if usage.IsTTSEndpoint(endpointKey) && result.Observation.Errored {
+			errorType = "upstream_business_error"
 		} else if resp.StatusCode >= 400 {
 			errorType = "upstream_status"
 		}
@@ -316,6 +335,7 @@ func (g *Gateway) proxy(protocol, endpointKey string) http.HandlerFunc {
 			CacheMissTokens:     observed.CacheMissTokens,
 			CacheWriteTokens:    observed.CacheWriteTokens,
 			ImageCount:          imageCount,
+			Characters:          observed.Characters,
 			UsageUnavailable:    usageUnavailable,
 			ChargedMicrocredits: imageCost,
 			Estimated:           observed.Estimated,
@@ -487,6 +507,8 @@ func endpointSupportsRoute(endpointKey string, route provider.Route) bool {
 	switch endpointKey {
 	case "openai_chat_completions", "openai_responses", "anthropic_messages":
 		return modelType == config.ModelTypeChat
+	case usage.EndpointMiniMaxTTS, usage.EndpointDashScopeTTS:
+		return modelType == config.ModelTypeTTS && route.Protocol == endpointKey
 	case "openai_embeddings":
 		return modelType == config.ModelTypeEmbedding
 	case "openai_image_generations", "openai_image_edits", "openai_image_variations":
@@ -711,8 +733,16 @@ func (g *Gateway) recordRequest(r *http.Request, key store.APIKey, logEntry stor
 		logEntry.PriceSnapshot = string(snapshot)
 		// Locally rejected requests and explicit upstream failures never incur
 		// estimated charges. Successful partial streams use the observed sample.
-		if logEntry.StatusCode >= 200 && logEntry.StatusCode < 300 {
+		if logEntry.StatusCode >= 200 && logEntry.StatusCode < 300 && logEntry.ErrorType != "upstream_business_error" {
 			switch price.Billing.Mode {
+			case "characters":
+				if logEntry.UsageUnavailable {
+					logEntry.BillingStatus = "unavailable"
+					logEntry.ChargedMicrocredits = 0
+				} else {
+					logEntry.ChargedMicrocredits = store.CharacterCost(logEntry.Characters, *price)
+					logEntry.BillingStatus = "charged"
+				}
 			case "free":
 				logEntry.ChargedMicrocredits = 0
 				logEntry.BillingStatus = "free"
@@ -740,7 +770,7 @@ func (g *Gateway) recordRequest(r *http.Request, key store.APIKey, logEntry stor
 		} else {
 			logEntry.ChargedMicrocredits = 0
 		}
-	} else if logEntry.StatusCode >= 200 && logEntry.StatusCode < 300 {
+	} else if logEntry.StatusCode >= 200 && logEntry.StatusCode < 300 && logEntry.ErrorType != "upstream_business_error" {
 		logEntry.BillingStatus = "unpriced"
 	}
 	if g.usage != nil && countUsage {
@@ -764,4 +794,21 @@ func sessionHeaders(r *http.Request) (string, string) {
 		source = "unknown"
 	}
 	return deviceID, source
+}
+
+// TTS is billed only from provider-reported characters, including an explicit zero.
+func resolveTTSUsage(status int, result copyResult) observedUsage {
+	if status < 200 || status >= 300 || result.Observation.Errored {
+		return observedUsage{Source: usageSourceNone}
+	}
+	if result.Undecodable {
+		return observedUsage{Source: usageSourceUndecodable}
+	}
+	if result.Observation.Final {
+		return observedUsage{Characters: result.Observation.Characters, Source: usageSourceReported}
+	}
+	if !result.Complete {
+		return observedUsage{Source: usageSourceInterrupted}
+	}
+	return observedUsage{Source: usageSourceMissing}
 }

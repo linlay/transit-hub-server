@@ -1,0 +1,19 @@
+name: bailian-tts
+protocol: dashscope_tts
+# Standard DashScope API and API key; not the Token Plan compatible-mode endpoint.
+base_url: https://dashscope.aliyuncs.com
+default_pool: primary
+endpoints:
+  dashscope_tts: /api/v1/services/aigc/multimodal-generation/generation
+models:
+  - public: th-dashscope-qwen3-tts-flash
+    upstream: qwen3-tts-flash
+    type: tts
+    owned_by: bailian
+    display_name: Qwen3 TTS Flash
+pools:
+  - name: primary
+    accounts:
+      - name: bailian-tts-main
+        api_key_env: BAILIAN_TTS_API_KEY
+        weight: 1

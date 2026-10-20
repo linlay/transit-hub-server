@@ -176,6 +176,8 @@ func (g *Gateway) Handler() http.Handler {
 	r.Get("/v1/models/{model_id}", g.retrieveOpenAIModel)
 	r.Get("/anthropic/v1/models", g.listAnthropicModels)
 	r.Get("/anthropic/v1/models/{model_id}", g.retrieveAnthropicModel)
+	r.Post("/bailian/v1/services/aigc/multimodal-generation/generation", g.proxy("dashscope_tts", "dashscope_tts"))
+	r.Post("/minimax/v1/t2a_v2", g.proxy("minimax_tts", "minimax_tts"))
 	r.Post("/v1/responses", g.proxy("openai", "openai_responses"))
 	r.Post("/v1/chat/completions", g.proxy("openai", "openai_chat_completions"))
 	r.Post("/v1/embeddings", g.proxy("openai", "openai_embeddings"))

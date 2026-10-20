@@ -101,7 +101,7 @@ func TestCreditsMergeBackPreservesMoneyAndMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	telemetry.Enqueue(RequestLog{APIKeyID: key.ID, Protocol: "openai", PublicModel: "test", StatusCode: 200, RequestTokens: 3, ResponseTokens: 4, ChargedMicrocredits: 2300, BillingStatus: "charged", PriceSnapshot: `{"unit":"CREDITS"}`, StartedAt: options.Now, CreatedAt: options.Now, CacheWriteTokens: 2, ImageCount: 1})
+	telemetry.Enqueue(RequestLog{APIKeyID: key.ID, Protocol: "openai", PublicModel: "test", StatusCode: 200, RequestTokens: 3, ResponseTokens: 4, ChargedMicrocredits: 2300, BillingStatus: "charged", PriceSnapshot: `{"unit":"CREDITS"}`, StartedAt: options.Now, CreatedAt: options.Now, CacheWriteTokens: 2, ImageCount: 1, Characters: 123})
 	if err := telemetry.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -113,15 +113,15 @@ func TestCreditsMergeBackPreservesMoneyAndMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer legacy.Close()
-	var used int64
+	var used, characters int64
 	var status, snapshot string
 	if err := legacy.QueryRow(`SELECT used_microcredits FROM api_keys WHERE id=?`, key.ID).Scan(&used); err != nil {
 		t.Fatal(err)
 	}
-	if err := legacy.QueryRow(`SELECT billing_status,price_snapshot FROM request_logs WHERE api_key_id=?`, key.ID).Scan(&status, &snapshot); err != nil {
+	if err := legacy.QueryRow(`SELECT billing_status,price_snapshot,characters FROM request_logs WHERE api_key_id=?`, key.ID).Scan(&status, &snapshot, &characters); err != nil {
 		t.Fatal(err)
 	}
-	if used != 2300 || status != "charged" || snapshot != `{"unit":"CREDITS"}` {
+	if used != 2300 || characters != 123 || status != "charged" || snapshot != `{"unit":"CREDITS"}` {
 		t.Fatalf("lost data %d %s %s", used, status, snapshot)
 	}
 	fresh, err := openSQLite(filepath.Join(dir, "fresh-usage.db"), time.Second)
@@ -149,7 +149,7 @@ func TestCreditsMergeBackPreservesMoneyAndMetadata(t *testing.T) {
 	if _, err := copyLegacyRequestLogs(t.Context(), legacy, freshLogs, options); err != nil {
 		t.Fatal(err)
 	}
-	if err := freshLogs.QueryRow(`SELECT billing_status,price_snapshot FROM request_logs WHERE api_key_id=?`, key.ID).Scan(&status, &snapshot); err != nil || status != "charged" {
+	if err := freshLogs.QueryRow(`SELECT billing_status,price_snapshot,characters FROM request_logs WHERE api_key_id=?`, key.ID).Scan(&status, &snapshot, &characters); err != nil || characters != 123 || status != "charged" {
 		t.Fatalf("resplit logs %s %v", status, err)
 	}
 }

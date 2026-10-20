@@ -240,7 +240,7 @@ func (g *Gateway) currentAPIKeyPrices(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) allowedPriceKeys(ctx context.Context, key store.APIKey) map[string]struct{} {
 	allowed := map[string]struct{}{}
-	for _, protocol := range []string{"openai", "anthropic"} {
+	for _, protocol := range []string{"openai", "anthropic", "minimax_tts", "dashscope_tts"} {
 		for _, route := range g.allowedRoutes(ctx, protocol, key) {
 			allowed[route.Protocol+"\x00"+route.PublicModel] = struct{}{}
 		}

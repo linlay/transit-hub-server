@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"math/big"
+	"strings"
 	"time"
 )
 
@@ -46,15 +47,24 @@ type TokenPriceTier struct {
 }
 
 type PriceBilling struct {
-	TokenTiers                  []TokenPriceTier `json:"token_tiers,omitempty"`
-	Mode                        string           `json:"mode"` // tokens, image, free
-	CacheWriteMicrocreditsPer1M *int64           `json:"cache_write_microcredits_per_1m_tokens,omitempty,string"`
-	ImagePrices                 []ImagePrice     `json:"image_prices,omitempty"`
+	TokenTiers                   []TokenPriceTier `json:"token_tiers,omitempty"`
+	Mode                         string           `json:"mode"` // tokens, image, characters, free
+	MicrocreditsPer10KCharacters *int64           `json:"microcredits_per_10k_characters,omitempty,string"`
+	CacheWriteMicrocreditsPer1M  *int64           `json:"cache_write_microcredits_per_1m_tokens,omitempty,string"`
+	ImagePrices                  []ImagePrice     `json:"image_prices,omitempty"`
 }
 
 func validateBilling(b PriceBilling, p ModelPriceParams) error {
-	if b.Mode != "tokens" && b.Mode != "image" && b.Mode != "free" {
-		return errors.New("billing.mode must be tokens, image or free")
+	protocol := strings.ToLower(strings.TrimSpace(p.Protocol))
+	tts := protocol == "minimax_tts" || protocol == "dashscope_tts"
+	if tts && b.Mode != "characters" && b.Mode != "free" {
+		return errors.New("tts protocols require characters or free billing")
+	}
+	if b.Mode == "characters" && protocol != "" && !tts {
+		return errors.New("characters billing requires a tts protocol")
+	}
+	if b.Mode != "tokens" && b.Mode != "image" && b.Mode != "characters" && b.Mode != "free" {
+		return errors.New("billing.mode must be tokens, image, characters or free")
 	}
 	for _, cost := range []int64{p.InputMicrocreditsPer1MTokens, p.OutputMicrocreditsPer1MTokens} {
 		if cost < 0 || cost > 9_000_000_000_000_000 {
@@ -71,6 +81,16 @@ func validateBilling(b PriceBilling, p ModelPriceParams) error {
 	}
 	if b.Mode == "image" && len(b.ImagePrices) == 0 {
 		return errors.New("image billing requires image_prices")
+	}
+	if b.Mode == "characters" {
+		if b.MicrocreditsPer10KCharacters == nil || *b.MicrocreditsPer10KCharacters <= 0 || *b.MicrocreditsPer10KCharacters > 9_000_000_000_000_000 {
+			return errors.New("characters billing requires a positive microcredits_per_10k_characters price; use free for zero price")
+		}
+		if p.InputMicrocreditsPer1MTokens != 0 || p.OutputMicrocreditsPer1MTokens != 0 || p.InputCacheHitMicrocreditsPer1MTokens != nil || b.CacheWriteMicrocreditsPer1M != nil || len(b.ImagePrices) != 0 {
+			return errors.New("characters billing cannot include token or image prices")
+		}
+	} else if b.MicrocreditsPer10KCharacters != nil {
+		return errors.New("character price requires characters billing")
 	}
 	previous := int64(-1)
 	for _, tier := range b.TokenTiers {
@@ -179,4 +199,18 @@ func addCost(a, b int64) int64 {
 		return math.MaxInt64
 	}
 	return a + b
+}
+
+// CharacterCost rounds once to the nearest micro-Credit, with overflow saturation.
+func CharacterCost(characters int64, price ModelPrice) int64 {
+	if price.Billing.Mode != "characters" || price.Billing.MicrocreditsPer10KCharacters == nil || characters <= 0 {
+		return 0
+	}
+	cost := new(big.Int).Mul(big.NewInt(characters), big.NewInt(*price.Billing.MicrocreditsPer10KCharacters))
+	cost.Add(cost, big.NewInt(5000))
+	cost.Quo(cost, big.NewInt(10000))
+	if !cost.IsInt64() {
+		return math.MaxInt64
+	}
+	return cost.Int64()
 }

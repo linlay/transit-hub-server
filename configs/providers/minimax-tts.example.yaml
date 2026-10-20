@@ -1,0 +1,18 @@
+name: minimax-tts
+protocol: minimax_tts
+base_url: https://api.minimaxi.com
+default_pool: primary
+endpoints:
+  minimax_tts: /v1/t2a_v2
+models:
+  - public: th-minimax-speech-2_8-hd
+    upstream: speech-2.8-hd
+    type: tts
+    owned_by: minimax
+    display_name: MiniMax Speech 2.8 HD
+pools:
+  - name: primary
+    accounts:
+      - name: minimax-tts-main
+        api_key_env: MINIMAX_TTS_API_KEY
+        weight: 1

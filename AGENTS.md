@@ -74,12 +74,12 @@ configs/
 主要字段：
 
 - `name`：provider 唯一名称。
-- `protocol`：`openai` 或 `anthropic`。
+- `protocol`：`openai`、`anthropic`、`dashscope_tts` 或 `minimax_tts`。
 - `base_url`：上游基础 URL，必须包含 scheme 和 host。
 - `default_pool`：默认账号池；为空时使用第一个 pool。
 - `headers`：provider 级固定请求头。
 - `endpoints`：可选路径覆盖，例如 `openai_chat_completions: /v1/chat/completions`、`openai_responses: /v1/responses`、`openai_embeddings: /v1/embeddings`、`openai_image_generations: /v1/images/generations`、`openai_image_edits: /v1/images/edits`、`openai_image_variations: /v1/images/variations`。
-- `models`：公开模型到上游模型的映射；`models[].type` 支持 `chat`、`embedding`、`image-generation`，为空时默认为 `chat`。
+- `models`：公开模型到上游模型的映射；`models[].type` 支持 `chat`、`embedding`、`image-generation`、`tts`，为空时默认为 `chat`。
 - `models[].image.endpointPath`：仅用于 `/v1/images/generations` 的模型侧路径覆盖，优先级高于 provider 级 `endpoints.openai_image_generations`；不覆盖 edits 或 variations。
 - `pools`：账号池列表，每个 pool 至少一个 account。
 - `accounts[].api_key`：上游账号密钥，只放在真实配置里。
@@ -130,6 +130,14 @@ configs/
 - 运行时已拆分 control/usage/telemetry 三个 SQLite 库；生命周期金额权威计数位于 usage_totals.used_microcredits，不从可清理的日志汇总余额。
 - 唯一单位 CREDITS，1 Credit = 1,000,000 micro-Credits；API 金额为整数字符串，SQLite 为 int64；旧库先执行 scripts/migrate_native_credits.py。总配额 api_keys.quota_microcredits、JWT 发放配额和窗口金额 0 表示不限，剩余额度允许负数。
 - 软额度：开始时检查，完成后短锁累加并异步刷盘，不做金额预占或跨请求事务。限流按请求开始时间归桶，日志 created_at 是完成时间。
-- model_prices.billing 保存 tokens/image/free 模式、缓存写入价格、图片规则和输出上限；缺省价格不等同免费。计费快照和状态保存在 telemetry 请求日志中。
+- model_prices.billing 保存 tokens/image/characters/free 模式、缓存写入价格、图片规则和输出上限；缺省价格不等同免费。计费快照和状态保存在 telemetry 请求日志中。
 - 改动金额协议时同步维护 docs/credits-api.md、Website 类型与表单。Desktop 的新字段通过 /api/me 系列提供；当前契约直接修订，不提供 CNY 兼容层。
 - 修改计费链路至少运行 go test ./...；并发计数修改同时运行 go test -race ./...。
+
+## TTS
+
+- 公开入口固定为 `POST /bailian/v1/services/aigc/multimodal-generation/generation` 与 `POST /minimax/v1/t2a_v2`；协议 `dashscope_tts` / `minimax_tts` 与 `type: tts` 必须配对。原生路径由 provider 默认端点或 endpoints 配置确定，不将外部命名空间拼给上游。
+- 首期仅同步非流式透传；只改写 model、上游鉴权。保留原生 JSON、临时 URL 和音频载荷，由 Platform 下载/解码。
+- `internal/usage/tts.go` 增量跳过大字符串，旁路解析字符、业务错误和请求 ID；字符只取上游实际报告，不估算、不计 token。业务失败即使 HTTP 200 也不扣费。
+- `billing.mode=characters` 的费率字段为 `microcredits_per_10k_characters`（整数字符串），按万字符四舍五入一次；missing/interrupted/undecodable 标 unavailable。日志 characters 自动迁移，TTS 不参与 token 估算校准。
+- 修改字符计费同步维护 Website Pricing、日志、协议类型、docs/credits-api.md；完整接入说明见 docs/tts.md。
