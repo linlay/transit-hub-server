@@ -10,7 +10,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/linlay/transit-hub/internal/accesskey"
 	"github.com/linlay/transit-hub/internal/config"
 	"github.com/linlay/transit-hub/internal/employeeauth"
 	"github.com/linlay/transit-hub/internal/issuer"
@@ -23,7 +22,6 @@ type Gateway struct {
 	employeeAuth      *employeeauth.Service
 	concurrentMu      sync.Mutex
 	concurrent        map[string]int
-	accessKeys        *accesskey.Service
 	env               config.Env
 	store             *store.Store
 	usage             *store.UsageManager
@@ -39,7 +37,6 @@ type Gateway struct {
 
 type Options struct {
 	EmployeeAuth  *employeeauth.Service
-	AccessKeys    *accesskey.Service
 	Env           config.Env
 	Store         *store.Store
 	Usage         *store.UsageManager
@@ -75,7 +72,6 @@ func New(options Options) *Gateway {
 	}
 	return &Gateway{
 		employeeAuth:      options.EmployeeAuth,
-		accessKeys:        options.AccessKeys,
 		env:               options.Env,
 		store:             options.Store,
 		usage:             options.Usage,
@@ -134,6 +130,7 @@ func (g *Gateway) Handler() http.Handler {
 		r.Get("/api-keys", g.listAPIKeys)
 		r.Get("/employee-keys", g.listEmployeeKeys)
 		r.Get("/employee-auth", g.employeeAuthSettings)
+		r.Put("/employee-auth", g.updateEmployeeAuthSettings)
 		r.Post("/api-keys/batch", g.batchAPIKeys)
 		r.Get("/api-keys/{id}", g.getAPIKey)
 		r.Patch("/api-keys/{id}", g.patchAPIKey)
@@ -170,7 +167,6 @@ func (g *Gateway) Handler() http.Handler {
 	})
 
 	r.Post("/api/apply-apikey", g.applyAPIKey)
-	r.Post("/api/bind-apikey", g.bindAPIKey)
 	r.Get("/api/me", g.currentAPIKey)
 	r.Get("/api/me/limits", g.currentAPIKeyLimits)
 	r.Get("/api/me/usage", g.currentAPIKeyUsage)

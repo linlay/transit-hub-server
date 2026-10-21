@@ -62,7 +62,7 @@ Key 创建、列表、详情、`GET /api/me` 增加：
 
 `GET /api/me/limits` 的 `lifetime` 同样包含这四个字段；`rate_limit_usage` 继续列出窗口用量。`GET /admin/api-keys/{id}/usage` 新增同结构 `lifetime`，报表不可用时仍提供额度信息与降级标识。
 
-JWT grant 的金额是新 Key 的发放策略，修改 grant 不追改已发放 Key。`/api/apply-apikey` 从 grant 继承金额与窗口额度；`/api/bind-apikey` 从服务端 access-key YAML 继承，调用者不能选择预算。重复绑定不会重置已消费。
+JWT grant 的金额是新 Key 的发放策略，修改 grant 不追改已发放 Key。`/api/apply-apikey` 从 grant 继承金额与窗口额度，调用者不能选择预算。员工 access token 直接调用模型，按员工身份累计用量。首次建档的金额、模型权限及固定窗口限流使用 `/employee-keys` 全局默认策略，通过 `GET/PUT /admin/employee-auth` 读取与保存；金额仍为 micro-Credits 整数字符串。保存立即生效并持久化，不追改已有员工。
 
 ## Desktop 余额接口
 
@@ -180,7 +180,7 @@ control 保存模型定价、Key/JWT 额度；usage 保存权威生命周期和�
 1. 停止服务并等待在途请求和用量刷盘完成。
 2. 对每个存在的数据库传入 `--db` 运行预检；不存在的库不要传入。
 3. 同样的命令增加 `--apply`。脚本先备份所有数据库，再转换；输出备份目录与行数报告。
-4. 同步更新 access-key/issuer YAML 的额度字段；旧整数乘以 100。JSON 请求金额必须为字符串，YAML/SQLite 使用整数。
+4. 同步更新 employee-auth/issuer YAML 的额度字段；旧整数乘以 100。JSON 请求金额必须为字符串，YAML/SQLite 使用整数。
 5. 同步发布 Server、Website 和消费额度接口的客户端。不会提供人民币兼容响应。
 
 ```sh

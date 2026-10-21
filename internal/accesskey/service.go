@@ -1,12 +1,8 @@
-// Package accesskey verifies external login tokens and protects recoverable device keys.
+// Package accesskey verifies external login access tokens.
 package accesskey
 
 import (
-	"bytes"
 	"crypto"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -14,40 +10,20 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 var ErrToken = errors.New("invalid access token")
 
-type RateLimit struct {
-	Window            string `yaml:"window" json:"window"`
-	RequestQuota      int64  `yaml:"request_quota" json:"request_quota"`
-	TokenQuota        int64  `yaml:"token_quota" json:"token_quota"`
-	QuotaMicrocredits int64  `yaml:"quota_microcredits" json:"quota_microcredits,string"`
-}
-
 type Config struct {
-	QuotaMicrocredits   int64             `yaml:"quota_microcredits"`
-	RateLimits          []RateLimit       `yaml:"rate_limits"`
-	Enabled             bool              `yaml:"enabled"`
-	PublicKeyPath       string            `yaml:"public_key_path"`
-	Algorithm           string            `yaml:"algorithm"`
-	Issuer              string            `yaml:"issuer"`
-	Audience            string            `yaml:"audience"`
-	SubjectClaim        string            `yaml:"subject_claim"`
-	RequiredScope       string            `yaml:"required_scope"`
-	ActiveEncryptionKey string            `yaml:"active_encryption_key"`
-	EncryptionKeyEnvs   map[string]string `yaml:"encryption_key_envs"`
-	AllowedModels       []string          `yaml:"allowed_models"`
-	RequestQuota        int64             `yaml:"request_quota"`
-	TokenQuota          int64             `yaml:"token_quota"`
-	APIKeyTTL           string            `yaml:"api_key_ttl"`
+	PublicKeyPath string
+	Algorithm     string
+	Issuer        string
+	Audience      string
+	SubjectClaim  string
+	RequiredScope string
 }
 type Identity struct {
 	Issuer  string
@@ -56,31 +32,6 @@ type Identity struct {
 type Service struct {
 	Config Config
 	public *rsa.PublicKey
-	keys   map[string]cipher.AEAD
-	TTL    time.Duration
-}
-
-func Load(path string) (*Service, error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var cfg Config
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	if err = decoder.Decode(&cfg); err != nil {
-		return nil, err
-	}
-	if !cfg.Enabled {
-		return nil, nil
-	}
-	if !filepath.IsAbs(cfg.PublicKeyPath) {
-		cfg.PublicKeyPath = filepath.Join(filepath.Dir(path), cfg.PublicKeyPath)
-	}
-	return New(cfg)
 }
 
 // NewVerifier creates an offline JWT verifier without device-key issuance or encryption.
@@ -109,40 +60,6 @@ func NewVerifier(cfg Config) (*Service, error) {
 		return nil, errors.New("access token public key must be RSA >= 2048 bits")
 	}
 	return &Service{Config: cfg, public: public}, nil
-}
-func New(cfg Config) (*Service, error) {
-	svc, err := NewVerifier(cfg)
-	if err != nil {
-		return nil, err
-	}
-	if len(cfg.AllowedModels) == 0 || cfg.RequestQuota < 0 || cfg.TokenQuota < 0 || cfg.QuotaMicrocredits < 0 {
-		return nil, errors.New("bind-apikey requires allowed_models and nonnegative quotas")
-	}
-	ttl, err := time.ParseDuration(cfg.APIKeyTTL)
-	if err != nil || ttl <= 0 {
-		return nil, errors.New("bind-apikey requires positive api_key_ttl")
-	}
-	svc.keys = map[string]cipher.AEAD{}
-	svc.TTL = ttl
-	for id, env := range cfg.EncryptionKeyEnvs {
-		raw, err := base64.StdEncoding.DecodeString(os.Getenv(env))
-		if err != nil || len(raw) != 32 || id == "" {
-			return nil, fmt.Errorf("invalid AES-256 key configuration for key id %q", id)
-		}
-		block, err := aes.NewCipher(raw)
-		if err != nil {
-			return nil, err
-		}
-		aead, err := cipher.NewGCM(block)
-		if err != nil {
-			return nil, err
-		}
-		svc.keys[id] = aead
-	}
-	if svc.keys[cfg.ActiveEncryptionKey] == nil {
-		return nil, errors.New("active encryption key is not configured")
-	}
-	return svc, nil
 }
 func (s *Service) Verify(token string, now time.Time) (Identity, error) {
 	fail := func() (Identity, error) { return Identity{}, ErrToken }
@@ -237,21 +154,4 @@ func (s *Service) Verify(token string, now time.Time) (Identity, error) {
 		}
 	}
 	return Identity{issuer, subject}, nil
-}
-func (s *Service) Seal(plain string, aad []byte) (string, []byte, error) {
-	id := s.Config.ActiveEncryptionKey
-	aead := s.keys[id]
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return "", nil, err
-	}
-	return id, aead.Seal(nonce, nonce, []byte(plain), aad), nil
-}
-func (s *Service) Open(id string, encrypted, aad []byte) (string, error) {
-	aead := s.keys[id]
-	if aead == nil || len(encrypted) < aead.NonceSize() {
-		return "", errors.New("device key encryption key unavailable or ciphertext invalid")
-	}
-	plain, err := aead.Open(nil, encrypted[:aead.NonceSize()], encrypted[aead.NonceSize():], aad)
-	return string(plain), err
 }

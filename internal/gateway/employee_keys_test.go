@@ -20,10 +20,10 @@ import (
 
 func employeeFixture(t *testing.T) (*employeeauth.Service, func(map[string]any) string) {
 	t.Helper()
-	device, sign := deviceKeyFixture(t)
+	verifier, sign := accessTokenFixture(t)
 	svc, err := employeeauth.New(employeeauth.Config{
-		PublicKeyPath: device.Config.PublicKeyPath, Issuer: device.Config.Issuer,
-		Audience: device.Config.Audience, AllowedModels: []string{"public-model"}, RequestQuota: 2,
+		PublicKeyPath: verifier.Config.PublicKeyPath, Issuer: verifier.Config.Issuer,
+		Audience: verifier.Config.Audience, AllowedModels: []string{"public-model"}, RequestQuota: 2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -288,5 +288,62 @@ func TestEmployeeIdentityAndUsageSurviveRestartAndPolicyChange(t *testing.T) {
 	results, err := db.SearchAPIKeys(t.Context(), store.APIKeyListParams{Source: "employee", Search: identity.Subject})
 	if err != nil || results.Total != 1 {
 		t.Fatalf("cannot search employee identity after renaming: %+v %v", results, err)
+	}
+}
+
+func TestEmployeeDefaultPolicyAdminAndFirstAccess(t *testing.T) {
+	app, db, _ := newTestGateway(t, []config.ProviderConfig{openAIProvider("https://unused.invalid")})
+	svc, sign := employeeFixture(t)
+	app.employeeAuth = svc
+	request := func(token, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/admin/employee-auth", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		app.Handler().ServeHTTP(w, req)
+		return w
+	}
+	if w := employeeRequest(app, sign(nil), "/api/me", ""); w.Code != 200 {
+		t.Fatalf("initial employee: %d %s", w.Code, w.Body.String())
+	}
+	body := `{"allowed_models":["public-model"],"request_quota":7,"token_quota":900,"quota_microcredits":"12345678","rate_limits":[{"window":"1h","request_quota":3,"token_quota":100,"quota_microcredits":"7654321"}]}`
+	if w := request(sign(nil), body); w.Code != 401 {
+		t.Fatalf("employee modified global defaults: %d", w.Code)
+	}
+	if w := request("admin", body); w.Code != 200 || !strings.Contains(w.Body.String(), `"quota_microcredits":"12345678"`) {
+		t.Fatalf("save defaults: %d %s", w.Code, w.Body.String())
+	}
+	for _, invalid := range []string{
+		`{"allowed_models":[]}`, `{"allowed_models":["missing"]}`,
+		`{"allowed_models":["public-model"],"request_quota":-1}`,
+		`{"allowed_models":["public-model"],"rate_limits":[{"window":"2h"}]}`,
+		`{"allowed_models":["public-model"],"issuer":"other"}`,
+		body + `{}`, `{"allowed_models":["public-model"],"quota_microcredits":123}`,
+	} {
+		if w := request("admin", invalid); w.Code != 400 {
+			t.Fatalf("invalid defaults accepted: %d %s", w.Code, invalid)
+		}
+	}
+	// Persisted defaults are authoritative even if the YAML bootstrap policy differs.
+	svc.Config.AllowedModels = []string{"removed-model"}
+	for _, subject := range []string{"staff-a", "staff-b"} {
+		if w := employeeRequest(app, sign(map[string]any{"staffuserid": subject}), "/api/me", ""); w.Code != 200 {
+			t.Fatalf("employee lookup %s: %d %s", subject, w.Code, w.Body.String())
+		}
+	}
+	keys, err := db.SearchAPIKeys(t.Context(), store.APIKeyListParams{Source: "employee"})
+	if err != nil || len(keys.Items) != 2 {
+		t.Fatalf("employee records: %+v %v", keys, err)
+	}
+	for _, key := range keys.Items {
+		if key.EmployeeIdentity.Subject == "staff-a" {
+			if key.RequestQuota != 2 || key.QuotaMicrocredits != 0 {
+				t.Fatalf("existing policy overwritten: %+v", key)
+			}
+		} else if key.RequestQuota != 7 || key.TokenQuota != 900 || key.QuotaMicrocredits != 12345678 || len(key.RateLimits) != 1 || key.RateLimits[0].QuotaMicrocredits != 7654321 {
+			t.Fatalf("first access ignored defaults: %+v", key)
+		}
+	}
+	if w := employeeRequest(app, "admin", "/admin/employee-auth", ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"request_quota":7`) {
+		t.Fatalf("read defaults: %d %s", w.Code, w.Body.String())
 	}
 }

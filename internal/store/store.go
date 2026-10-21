@@ -504,6 +504,11 @@ func (s *Store) migrate(ctx context.Context) error {
  PRIMARY KEY(auth_issuer,auth_subject,device_id)
  );
 
+ CREATE TABLE IF NOT EXISTS employee_default_policy (
+ id INTEGER PRIMARY KEY CHECK(id=1),
+ policy TEXT NOT NULL
+ );
+
  CREATE TABLE IF NOT EXISTS employee_identities (
  issuer TEXT NOT NULL,
  subject_claim TEXT NOT NULL,

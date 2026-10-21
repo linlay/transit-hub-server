@@ -395,38 +395,11 @@ curl https://your-transit-hub/v1/chat/completions \
   -d '{"model":"example-chat","messages":[{"role":"user","content":"你好"}]}'
 ```
 
-员工首次通过认证访问时自动建立内部计量记录（`source: employee`），不保存 access token，也不产生可用 API 密钥。身份命名空间为 `(issuer, subject_claim, 身份属性值)`：同一员工刷新 token、变更设备或重启服务均复用记录，累计请求数、token、Credits、固定窗口限流、并发限制和请求日志沿用同一计量 ID。首次创建应用配置中的模型与额度策略；后续重复访问不覆盖管理员调整，不重置已用量。修改签发方或身份字段会建立新命名空间，已有记录和用量不会自动迁移。
+员工首次通过认证访问时自动建立内部计量记录（`source: employee`），不保存 access token，也不产生可用 API 密钥。身份命名空间为 `(issuer, subject_claim, 身份属性值)`：同一员工刷新 token、变更设备或重启服务均复用记录，累计请求数、token、Credits、固定窗口限流、并发限制和请求日志沿用同一计量 ID。首次创建应用管理页面中的全局默认策略（尚未保存时使用 YAML 中的初始策略）；后续重复访问不覆盖管理员调整，不重置已用量。修改签发方或身份字段会建立新命名空间，已有记录和用量不会自动迁移。
+
+管理后台 `/employee-keys` 的「员工全局默认策略」可设置首次建档的模型白名单、总 Credits、请求数、Token 额度和固定窗口限流。`GET /admin/employee-auth` 读取生效策略，`PUT /admin/employee-auth` 完整保存策略（需要管理员认证；金额使用 micro-Credits 整数字符串）。策略存入 control 数据库，保存后立即用于后续首次建档，重启保留；不覆盖已有员工的权限、限额或用量。额度 `0` 表示不限，模型白名单至少包含一个已知公开模型。认证开关、公钥、issuer、audience 和身份字段仍由服务端 YAML 配置，不能通过该接口修改。
 
 管理后台「员工认证密钥」位于「授权型密钥」上方，提供员工列表、身份字段、用量、权限、限额和日志详情。`GET /admin/employee-auth` 返回启用状态及公开验证策略（不含密钥或文件路径）；`GET /admin/employee-keys` 返回员工计量记录，详情、编辑、用量、日志复用 `/admin/api-keys/{id}` 系列。普通 `/admin/api-keys` 列表排除员工记录，可显式使用 `source=employee` 查询。禁用或软删除员工记录后，新 token 不会自动重建授权；身份绑定予以保留。认证中心登出不自动撤销仍有效的 JWT，离线验签遵循 token 到期时间，必要时在后台禁用对应员工。
-
-Desktop 现有版本仍使用 `/api/bind-apikey` 换取设备 Key；本次服务端与管理网站改造没有修改 Desktop / Agent Platform 的 token 传递链路。
-
-## 使用登录身份与设备绑定 API Key（旧接入方式）
-
-`POST /api/bind-apikey` 与原有 `/api/apply-apikey` 独立：前者验证外部登录 access token，后者继续验证本服务签发的 Grant JWT。新路径不创建 Grant、不依赖 Grant issuer 的私钥，也不需要 provider-register 登记 JWT。
-
-复制 `configs/access-key/config.example.yaml` 为同目录 `config.yaml`，设置可信登录签发方的 RSA 公钥、issuer、audience、用户标识 claim 和模型发放策略。缺少文件或 `enabled: false` 只禁用新接口（503），不影响旧接口；启用后配置或密钥不合法会让服务启动失败。配置位置可通过 `ACCESS_KEY_CONFIG_PATH` 覆盖。
-
-当前支持 RS256 和至少 2048 位 RSA 公钥（PKIX/PKCS#1 PEM）；算法固定白名单，不接受请求或 JWT header 提供的公钥来源。验证签名、issuer、audience、必填 exp、可选 nbf/iat 和可配置 scope。`subject_claim` 默认为 `sub`，支持如 `user.id` 的对象路径，值必须是稳定非空字符串。身份由验签后 claims 获取，客户端不能提交用户身份或配额。
-
-配置 `encryption_key_envs` 指定的环境变量为随机生成的 32 字节 AES 密钥的标准 Base64 表达。密钥不得与 JWT 密钥混用，不存入数据库；容器通过现有 `.env` 环境注入。数据库备份与加密密钥分别保管；丢失加密密钥就无法再次返回已有 Key。更换 active key id 后，必须继续配置旧 key id，直到对应密文已完成受控迁移；重启不会自动重加密历史绑定。
-
-```bash
-curl -sS -X POST https://your-transit-hub/api/bind-apikey \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"device_id":"desktop-device-id","name":"My Desktop"}'
-```
-
-- `(issuer, 用户 ID, device_id)` 是唯一绑定。首次返回 201，重复返回 200 和同一 Key；换 access token 不改变绑定。
-- 数据库在事务内先取得写锁再检查绑定；响应丢失后可安全重试，不重复创建 Key。
-- Key 来源为 `access_token`，保留正常 `dk_` Key 与哈希鉴权；另在 `device_key_bindings` 保存 AES-256-GCM 密文，以完整账号、设备和 Key ID 作为附加认证数据，防止密文跨绑定替换。
-- 管理详情可查看 `device_binding`，不会返回 Key 明文或密文；只有重新验签并命中绑定的新接口才返回 Key。
-- 重复领取不改变原有名称、模型权限、额度、用量或有效期；新配置仅用于首次创建。
-- Key 已禁用、软删除、强制过期或自然过期时返回 409，不自动补发，也不删除绑定。当前没有自助重置/轮换接口。
-- `device_id` 是客户端提交的标识，不是设备认证凭证；设备数量与跨设备总额度策略未在此接口中实现，当前配额仍按 Key 计算。
-- 公钥离线验证不提供实时登出/封禁检查；access token 到期前仍可能被接受，已发放 Key 使用独立有效期和管理撤销状态。
-- 响应使用 `Cache-Control: no-store`；生产入口必须使用 HTTPS，不记录 Authorization 或响应 Key。
 
 ## 管理网站
 

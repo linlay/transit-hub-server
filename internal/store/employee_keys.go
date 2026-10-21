@@ -35,6 +35,18 @@ func (s *Store) ResolveEmployeeKey(ctx context.Context, identity EmployeeIdentit
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return APIKey{}, err
 	}
+	defaults, err := s.GetEmployeePolicy(ctx, EmployeePolicy{
+		AllowedModels: policy.AllowedModels, RequestQuota: policy.RequestQuota,
+		TokenQuota: policy.TokenQuota, QuotaMicrocredits: policy.QuotaMicrocredits, RateLimits: policy.RateLimits,
+	})
+	if err != nil {
+		return APIKey{}, err
+	}
+	policy.AllowedModels = defaults.AllowedModels
+	policy.RequestQuota = defaults.RequestQuota
+	policy.TokenQuota = defaults.TokenQuota
+	policy.QuotaMicrocredits = defaults.QuotaMicrocredits
+	policy.RateLimits = defaults.RateLimits
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return APIKey{}, err

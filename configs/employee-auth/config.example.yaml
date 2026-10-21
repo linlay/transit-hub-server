@@ -8,9 +8,10 @@ audience: transit-hub
 # Stable employee identity from the verified JWT payload. Dotted paths supported.
 subject_claim: staffuserid
 required_scope: ""
+# Bootstrap defaults; saved /employee-keys global defaults take precedence.
 allowed_models:
   - example-chat
-# Defaults for a new employee accounting record. 0 = unlimited.
+# Defaults only for an employee identity with no record. 0 = unlimited.
 request_quota: 500
 token_quota: 2000000
 quota_microcredits: 0
