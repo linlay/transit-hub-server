@@ -71,7 +71,16 @@ curl -sS "$TRANSIT_HUB_URL/minimax/v1/t2a_v2" \
 }
 ```
 
-上述 350000 仅为费率格式示例，即 0.35 Credits / 万计费字符，不代表官方价格或 CNY 换算。部署时在 Pricing 配置实际 Credits 售价；本次不自动写入价格。
+上述 350000 仅为费率格式示例，即 0.35 Credits / 万计费字符，不代表实际售价。
+
+2026-10-21 按用户提供的 `zenmind-env/registries/models/dashscope-qwen3-tts-flash.yml`、`minimax-speech-2_8-hd.yml` 设置实际字符价格，沿用已有定价脚本的固定口径：来源价格 1 CNY 对应 100 Credits，不引入运行时汇率。
+
+| 公开模型 | 来源价格（CNY / 万字符） | Credits / 万字符 | micro-Credits / 万字符 |
+| --- | ---: | ---: | ---: |
+| `th-dashscope-qwen3-tts-flash` | 0.8 | 80 | 80000000 |
+| `th-minimax-speech-2_8-hd` | 3.5 | 350 | 350000000 |
+
+可重复执行 `scripts/seed_tts_prices.sql` 同步本地 control 数据库；脚本仅新增或更新这两个模型，保留已有价格 ID 和创建时间，不修改历史用量及价格快照。在线环境也可通过 Admin Pricing 接口设置同样的 `billing.mode: characters` 和上述整数费率，保存后立即生效，无需重启。
 
 费用 = characters × microcredits_per_10k_characters / 10000，使用大整数运算、最终一次四舍五入到 micro-Credits，溢出饱和。字符模式要求正费率，不接受 token / 图片价格；免费必须显式配置 `free`。TTS 只接受 characters/free 价格。缺少价格的金额受限 Key 会在调用上游前拒绝，无金额限制 Key 可继续调用并标记 unpriced。
 
