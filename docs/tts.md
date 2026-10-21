@@ -15,6 +15,18 @@ Transit Hub 提供两个固定的 provider 命名空间入口，首期支持同�
 
 百炼必须使用标准 DashScope 服务与 API Key，不能直接复用现有百炼 Token Plan compatible-mode 地址。两个协议都要求模型 `type: tts`，也只接受 TTS 模型。上游端点可通过 `endpoints.<protocol>` 覆盖；默认路径对基础 URL 已含 `/v1`（MiniMax）或 `/api/v1`（DashScope）的情况自动去除重复前缀。
 
+已有 `minimax` provider 时，也可直接在该文件的 `models` 中追加以下映射，不新增 provider，不复制账号或凭据：
+
+```yaml
+  - public: th-minimax-speech-2_8-hd
+    upstream: speech-2.8-hd
+    protocol: minimax_tts
+    type: tts
+    pool: primary
+```
+
+`models[].protocol` 未填写时继承 provider 协议；这里仅覆盖语音模型，provider 的 `protocol: openai` 和原聊天映射保持不变。模型共享原有 provider 地址、账号池、鉴权配置及熔断状态，选定账号本身必须有对应 TTS 权限。模型使用其实际协议的 endpoint、鉴权默认值和用量解析；provider 级 token usage 覆盖只适用于与 provider 默认协议相同的模型，不会带入 TTS 字符计量。管理快照的模型项也返回实际 `protocol`。
+
 公开模型名为 `th-dashscope-qwen3-tts-flash` 和 `th-minimax-speech-2_8-hd`。客户端使用 Transit Hub 客户端 Key，并须有对应模型权限。账号池选择、并发限制、请求额度、金额额度、固定窗口和模型禁用沿用现有机制。
 
 ## 请求与响应

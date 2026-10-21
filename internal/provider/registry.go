@@ -97,6 +97,7 @@ type ProviderSnapshot struct {
 }
 
 type RouteSnapshot struct {
+	Protocol      string `json:"protocol"`
 	Public        string `json:"public"`
 	Upstream      string `json:"upstream"`
 	Type          string `json:"type,omitempty"`
@@ -326,6 +327,7 @@ func (r *Registry) Snapshot(overrides map[string]string) Snapshot {
 		for _, key := range routeKeys {
 			route := r.routes[key]
 			model := RouteSnapshot{
+				Protocol: route.Protocol,
 				Public:   route.PublicModel,
 				Upstream: route.UpstreamModel,
 				Type:     route.Type,
@@ -463,7 +465,7 @@ func build(configs []config.ProviderConfig, options CircuitOptions) (map[string]
 		}
 		provider := &Provider{
 			Name:            cfg.Name,
-			Protocol:        strings.ToLower(cfg.Protocol),
+			Protocol:        strings.ToLower(strings.TrimSpace(cfg.Protocol)),
 			BaseURL:         baseURL,
 			DefaultPool:     defaultPool,
 			Headers:         cloneStringMap(cfg.Headers),
@@ -509,12 +511,18 @@ func build(configs []config.ProviderConfig, options CircuitOptions) (map[string]
 			if err != nil {
 				return nil, nil, err
 			}
-			key := routeKey(provider.Protocol, model.Public)
+			modelProtocol := model.EffectiveProtocol(cfg.Protocol)
+			providerUsage := cfg.Usage
+			if modelProtocol != provider.Protocol {
+				// Provider usage overrides describe its default wire protocol only.
+				providerUsage = nil
+			}
+			key := routeKey(modelProtocol, model.Public)
 			if _, exists := routes[key]; exists {
-				return nil, nil, fmt.Errorf("duplicate route for protocol %q model %q", provider.Protocol, model.Public)
+				return nil, nil, fmt.Errorf("duplicate route for protocol %q model %q", modelProtocol, model.Public)
 			}
 			routes[key] = Route{
-				Protocol:          provider.Protocol,
+				Protocol:          modelProtocol,
 				PublicModel:       model.Public,
 				UpstreamModel:     model.Upstream,
 				Type:              modelType,
@@ -526,7 +534,7 @@ func build(configs []config.ProviderConfig, options CircuitOptions) (map[string]
 				CreatedAt:         createdAt,
 				Provider:          provider,
 				Pool:              pool,
-				Usage:             mergeUsageMappings(cfg.Usage, model.Usage),
+				Usage:             mergeUsageMappings(providerUsage, model.Usage),
 			}
 		}
 	}

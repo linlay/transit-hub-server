@@ -92,9 +92,9 @@ pools:
 - 文件名包含 `.example.` 的配置不会被加载。
 - 真实配置里会包含上游密钥，已被 `.gitignore` 忽略。
 - 账号也可使用 `api_key_env` 从运行环境读取密钥；当 `api_key` 为空时，服务会读取该环境变量。推荐以此方式配置 Token Plan 等不应写入文件的密钥。
-- `protocol` 只能是 `openai` 或 `anthropic`。
+- `protocol` 为 provider 的默认协议，支持 `openai`、`anthropic`、`minimax_tts`、`dashscope_tts`；`models[].protocol` 可覆盖单个模型的协议，未配置时继承 provider 默认值。同一 provider 中的模型共享地址、账号池、凭据和熔断状态，无需为 MiniMax TTS 新建 provider。
 - `endpoints.openai_chat_completions`、`endpoints.openai_responses`、`endpoints.openai_embeddings`、`endpoints.openai_image_generations`、`endpoints.openai_image_edits`、`endpoints.openai_image_variations` 和 `endpoints.anthropic_messages` 可用于覆盖上游路径。
-- `models[].type` 可选，支持 `chat`、`embedding`、`image-generation`，为空时默认为 `chat`。
+- `models[].type` 可选，支持 `chat`、`embedding`、`image-generation`、`tts`，为空时默认为 `chat`；TTS 类型必须与模型的实际 TTS 协议配对。
 - `models[].image.endpointPath` 仅为 `/v1/images/generations` 覆盖上游路径；未配置时使用 provider 级 `openai_image_generations`，再未配置时使用请求路径。edits 和 variations 只使用各自的 provider 级 endpoint 或请求路径。
 - `models[].owned_by`、`models[].display_name`、`models[].created_at` 可选，用于公开模型查询接口；未配置时分别使用 provider 名、公开模型名和 `1970-01-01T00:00:00Z`。
 

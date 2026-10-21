@@ -25,6 +25,74 @@ func ttsProvider(protocol string) config.ProviderConfig {
 	return cfg
 }
 
+func TestMiniMaxTTSReusesExistingChatProvider(t *testing.T) {
+	cfg := openAIProvider("https://minimax.example")
+	cfg.Name = "minimax"
+	cfg.Models = append(cfg.Models, config.ModelConfig{Public: "th-minimax-speech-2_8-hd", Upstream: "speech-2.8-hd", Protocol: "minimax_tts", Type: "tts"})
+	app, db, key := newTestGateway(t, []config.ProviderConfig{cfg})
+	price := int64(10000)
+	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{Protocol: "minimax_tts", PublicModel: "th-minimax-speech-2_8-hd", Billing: &store.PriceBilling{Mode: "characters", MicrocreditsPer10KCharacters: &price}}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	app.client = &http.Client{Transport: ttsTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.Header.Get("Authorization") != "Bearer upstream-key" {
+			t.Error("existing MiniMax account was not reused")
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		response := `{"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}`
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			if body["model"] != "upstream-model" {
+				t.Error("chat model changed")
+			}
+		case "/v1/t2a_v2":
+			if body["model"] != "speech-2.8-hd" {
+				t.Error("TTS model not rewritten")
+			}
+			response = `{"data":{"audio":"ff00"},"extra_info":{"usage_characters":12},"base_resp":{"status_code":0}}`
+		default:
+			t.Errorf("unexpected upstream path: %s", r.URL.Path)
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(response))}, nil
+	})}
+	for _, tc := range []struct {
+		path, body string
+		code       int
+	}{
+		{"/v1/chat/completions", `{"model":"public-model","messages":[{"role":"user","content":"hello"}]}`, 200},
+		{"/minimax/v1/t2a_v2", `{"model":"th-minimax-speech-2_8-hd","text":"hello","stream":false}`, 200},
+		{"/v1/chat/completions", `{"model":"th-minimax-speech-2_8-hd"}`, 404},
+		{"/minimax/v1/t2a_v2", `{"model":"public-model"}`, 404},
+	} {
+		req := httptest.NewRequest("POST", tc.path, strings.NewReader(tc.body))
+		req.Header.Set("Authorization", "Bearer "+key)
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		if rec.Code != tc.code {
+			t.Fatalf("%s: %d %s", tc.path, rec.Code, rec.Body.String())
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("cross-protocol request reached upstream: calls=%d", calls)
+	}
+	got, err := db.FindAPIKeyByPlainText(t.Context(), key)
+	if err != nil || got.UsedRequests != 2 || got.UsedTokens != 7 || got.UsedMicrocredits != 12 {
+		t.Fatalf("chat/TTS accounting changed: %+v %v", got, err)
+	}
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 || strings.Contains(rec.Body.String(), "th-minimax-speech-2_8-hd") || !strings.Contains(rec.Body.String(), "public-model") {
+		t.Fatalf("chat model catalog leaked TTS: %s", rec.Body.String())
+	}
+}
+
 func TestTTSNativePassthroughAndCharacterBilling(t *testing.T) {
 	for _, protocol := range []string{usage.EndpointMiniMaxTTS, usage.EndpointDashScopeTTS} {
 		for _, compressed := range []bool{false, true} {

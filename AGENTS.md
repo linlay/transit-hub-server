@@ -139,6 +139,7 @@ configs/
 
 - 公开入口固定为 `POST /bailian/v1/services/aigc/multimodal-generation/generation` 与 `POST /minimax/v1/t2a_v2`；协议 `dashscope_tts` / `minimax_tts` 与 `type: tts` 必须配对。原生路径由 provider 默认端点或 endpoints 配置确定，不将外部命名空间拼给上游。
 - 首期仅同步非流式透传；只改写 model、上游鉴权。保留原生 JSON、临时 URL 和音频载荷，由 Platform 下载/解码。
+- `models[].protocol` 可覆盖 provider 默认协议，让 MiniMax TTS 与聊天模型复用同一 provider、账号池和凭据；按模型实际协议做类型校验、路由、鉴权默认值、端点与用量解析。跨协议模型不得继承 provider 默认协议的 token usage 覆盖；管理快照返回模型实际协议。
 - `internal/usage/tts.go` 增量跳过大字符串，旁路解析字符、业务错误和请求 ID；字符只取上游实际报告，不估算、不计 token。业务失败即使 HTTP 200 也不扣费。
 - `billing.mode=characters` 的费率字段为 `microcredits_per_10k_characters`（整数字符串），按万字符四舍五入一次；missing/interrupted/undecodable 标 unavailable。日志 characters 自动迁移，TTS 不参与 token 估算校准。
 - 修改字符计费同步维护 Website Pricing、日志、协议类型、docs/credits-api.md；完整接入说明见 docs/tts.md。

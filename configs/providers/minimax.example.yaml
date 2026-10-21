@@ -58,6 +58,13 @@ models:
   - public: minimax-m2_7-highspeed-openai
     upstream: MiniMax-M2.7-highspeed
     pool: primary
+  # Optional TTS mapping: reuses this provider and its existing accounts.
+  # The selected account must have TTS access.
+  # - public: th-minimax-speech-2_8-hd
+  #   upstream: speech-2.8-hd
+  #   protocol: minimax_tts
+  #   type: tts
+  #   pool: primary
 pools:
   - name: primary
     accounts:

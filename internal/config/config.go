@@ -72,6 +72,7 @@ type ProviderQuotaDisplayConfig struct {
 }
 
 type ModelConfig struct {
+	Protocol    string           `yaml:"protocol" json:"protocol,omitempty"`
 	Public      string           `yaml:"public" json:"public"`
 	Upstream    string           `yaml:"upstream" json:"upstream"`
 	Pool        string           `yaml:"pool" json:"pool,omitempty"`
@@ -81,6 +82,15 @@ type ModelConfig struct {
 	DisplayName string           `yaml:"display_name" json:"display_name,omitempty"`
 	CreatedAt   string           `yaml:"created_at" json:"created_at,omitempty"`
 	Usage       UsageConfig      `yaml:"usage" json:"usage,omitempty"`
+}
+
+// EffectiveProtocol allows models to share provider credentials and pools while
+// using different wire protocols. Empty model protocols inherit the provider.
+func (model ModelConfig) EffectiveProtocol(providerProtocol string) string {
+	if strings.TrimSpace(model.Protocol) != "" {
+		return strings.ToLower(strings.TrimSpace(model.Protocol))
+	}
+	return strings.ToLower(strings.TrimSpace(providerProtocol))
 }
 
 // UsageConfig overrides, per endpoint key, where response usage stores each
@@ -517,14 +527,20 @@ func ValidateProviderConfig(cfg ProviderConfig) error {
 		if err != nil {
 			return fmt.Errorf("model %q type %w", model.Public, err)
 		}
-		ttsProtocol := strings.EqualFold(cfg.Protocol, "minimax_tts") || strings.EqualFold(cfg.Protocol, "dashscope_tts")
+		modelProtocol := model.EffectiveProtocol(cfg.Protocol)
+		switch modelProtocol {
+		case "openai", "anthropic", "minimax_tts", "dashscope_tts":
+		default:
+			return fmt.Errorf("model %q protocol must be openai, anthropic, minimax_tts or dashscope_tts", model.Public)
+		}
+		ttsProtocol := modelProtocol == "minimax_tts" || modelProtocol == "dashscope_tts"
 		if (modelType == ModelTypeTTS) != ttsProtocol {
 			return fmt.Errorf("model %q tts type requires a tts protocol and vice versa", model.Public)
 		}
 		if modelType != ModelTypeImageGeneration && model.Image.EndpointPathValue() != "" {
 			return fmt.Errorf("model %q image endpointPath requires type %q", model.Public, ModelTypeImageGeneration)
 		}
-		if err := validateUsageConfig(cfg.Protocol, model.Usage); err != nil {
+		if err := validateUsageConfig(modelProtocol, model.Usage); err != nil {
 			return fmt.Errorf("model %q usage %w", model.Public, err)
 		}
 		if _, exists := seenModels[model.Public]; exists {
