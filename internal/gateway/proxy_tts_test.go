@@ -28,10 +28,10 @@ func ttsProvider(protocol string) config.ProviderConfig {
 func TestMiniMaxTTSReusesExistingChatProvider(t *testing.T) {
 	cfg := openAIProvider("https://minimax.example")
 	cfg.Name = "minimax"
-	cfg.Models = append(cfg.Models, config.ModelConfig{Public: "th-minimax-speech-2_8-hd", Upstream: "speech-2.8-hd", Protocol: "minimax_tts", Type: "tts"})
+	cfg.Models = append(cfg.Models, config.ModelConfig{Public: "minimax-speech-2.8-hd", Upstream: "speech-2.8-hd", Protocol: "minimax_tts", Type: "tts"})
 	app, db, key := newTestGateway(t, []config.ProviderConfig{cfg})
 	price := int64(10000)
-	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{Protocol: "minimax_tts", PublicModel: "th-minimax-speech-2_8-hd", Billing: &store.PriceBilling{Mode: "characters", MicrocreditsPer10KCharacters: &price}}); err != nil {
+	if _, err := db.UpsertModelPrice(t.Context(), store.ModelPriceParams{Protocol: "minimax_tts", PublicModel: "minimax-speech-2.8-hd", Billing: &store.PriceBilling{Mode: "characters", MicrocreditsPer10KCharacters: &price}}); err != nil {
 		t.Fatal(err)
 	}
 	calls := 0
@@ -65,8 +65,8 @@ func TestMiniMaxTTSReusesExistingChatProvider(t *testing.T) {
 		code       int
 	}{
 		{"/v1/chat/completions", `{"model":"public-model","messages":[{"role":"user","content":"hello"}]}`, 200},
-		{"/minimax/v1/t2a_v2", `{"model":"th-minimax-speech-2_8-hd","text":"hello","stream":false}`, 200},
-		{"/v1/chat/completions", `{"model":"th-minimax-speech-2_8-hd"}`, 404},
+		{"/minimax/v1/t2a_v2", `{"model":"minimax-speech-2.8-hd","text":"hello","stream":false}`, 200},
+		{"/v1/chat/completions", `{"model":"minimax-speech-2.8-hd"}`, 404},
 		{"/minimax/v1/t2a_v2", `{"model":"public-model"}`, 404},
 	} {
 		req := httptest.NewRequest("POST", tc.path, strings.NewReader(tc.body))
@@ -88,7 +88,7 @@ func TestMiniMaxTTSReusesExistingChatProvider(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+key)
 	rec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, req)
-	if rec.Code != 200 || strings.Contains(rec.Body.String(), "th-minimax-speech-2_8-hd") || !strings.Contains(rec.Body.String(), "public-model") {
+	if rec.Code != 200 || strings.Contains(rec.Body.String(), "minimax-speech-2.8-hd") || !strings.Contains(rec.Body.String(), "public-model") {
 		t.Fatalf("chat model catalog leaked TTS: %s", rec.Body.String())
 	}
 }

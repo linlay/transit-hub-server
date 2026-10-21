@@ -18,7 +18,7 @@ Transit Hub 提供两个固定的 provider 命名空间入口，首期支持同�
 已有 `minimax` provider 时，也可直接在该文件的 `models` 中追加以下映射，不新增 provider，不复制账号或凭据：
 
 ```yaml
-  - public: th-minimax-speech-2_8-hd
+  - public: minimax-speech-2.8-hd
     upstream: speech-2.8-hd
     protocol: minimax_tts
     type: tts
@@ -27,7 +27,9 @@ Transit Hub 提供两个固定的 provider 命名空间入口，首期支持同�
 
 `models[].protocol` 未填写时继承 provider 协议；这里仅覆盖语音模型，provider 的 `protocol: openai` 和原聊天映射保持不变。模型共享原有 provider 地址、账号池、鉴权配置及熔断状态，选定账号本身必须有对应 TTS 权限。模型使用其实际协议的 endpoint、鉴权默认值和用量解析；provider 级 token usage 覆盖只适用于与 provider 默认协议相同的模型，不会带入 TTS 字符计量。管理快照的模型项也返回实际 `protocol`。
 
-公开模型名为 `th-dashscope-qwen3-tts-flash` 和 `th-minimax-speech-2_8-hd`。客户端使用 Transit Hub 客户端 Key，并须有对应模型权限。账号池选择、并发限制、请求额度、金额额度、固定窗口和模型禁用沿用现有机制。
+公开模型名为 `qwen3-tts-flash` 和 `minimax-speech-2.8-hd`；MiniMax 上游模型 ID 仍为 `speech-2.8-hd`。Platform 注册项 `key` 可保留 `th-` 前缀以区分接入渠道，实际请求使用 `modelId` 中的公开模型名。客户端使用 Transit Hub 客户端 Key，并须有对应模型权限。账号池选择、并发限制、请求额度、金额额度、固定窗口和模型禁用沿用现有机制。
+
+已有旧名称的环境先运行 `python3 scripts/rename_tts_models.py --db data/transit-hub.db` 查看差异。停服后加 `--apply --backup-dir <新的备份目录>` 执行；同时更新 provider YAML、员工认证 YAML 和 Platform 的 `modelId`，再启动服务。迁移保留价格 ID、费率、用户身份和配额，仅同步价格、模型启停、路由覆盖及模型白名单中的名称；历史日志、用量与价格快照不改写。
 
 ## 请求与响应
 
@@ -37,12 +39,12 @@ Transit Hub 提供两个固定的 provider 命名空间入口，首期支持同�
 curl -sS "$TRANSIT_HUB_URL/bailian/v1/services/aigc/multimodal-generation/generation" \
   -H "Authorization: Bearer $CLIENT_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"th-dashscope-qwen3-tts-flash","input":{"text":"你好。","voice":"Cherry"}}'
+  -d '{"model":"qwen3-tts-flash","input":{"text":"你好。","voice":"Cherry"}}'
 
 curl -sS "$TRANSIT_HUB_URL/minimax/v1/t2a_v2" \
   -H "Authorization: Bearer $CLIENT_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"th-minimax-speech-2_8-hd","text":"你好。","stream":false,"output_format":"hex","voice_setting":{"voice_id":"male-qn-qingse"},"audio_setting":{"format":"mp3","sample_rate":32000}}'
+  -d '{"model":"minimax-speech-2.8-hd","text":"你好。","stream":false,"output_format":"hex","voice_setting":{"voice_id":"male-qn-qingse"},"audio_setting":{"format":"mp3","sample_rate":32000}}'
 ```
 
 只改写顶层 `model` 和上游鉴权；未知字段、大整数和厂商参数保留。HTTP 状态、响应体及音频字段原样透传。百炼的临时 URL 由客户端下载，MiniMax hex / 百炼 base64 由客户端解码；Hub 不下载、不持久化音频。`stream:true`、`X-DashScope-SSE: enable` 或请求 SSE 输出会在调用上游前被拒绝。
@@ -60,7 +62,7 @@ curl -sS "$TRANSIT_HUB_URL/minimax/v1/t2a_v2" \
 ```json
 {
   "protocol": "minimax_tts",
-  "public_model": "th-minimax-speech-2_8-hd",
+  "public_model": "minimax-speech-2.8-hd",
   "unit": "CREDITS",
   "input_microcredits_per_1m_tokens": "0",
   "output_microcredits_per_1m_tokens": "0",
@@ -77,8 +79,8 @@ curl -sS "$TRANSIT_HUB_URL/minimax/v1/t2a_v2" \
 
 | 公开模型 | 来源价格（CNY / 万字符） | Credits / 万字符 | micro-Credits / 万字符 |
 | --- | ---: | ---: | ---: |
-| `th-dashscope-qwen3-tts-flash` | 0.8 | 80 | 80000000 |
-| `th-minimax-speech-2_8-hd` | 3.5 | 350 | 350000000 |
+| `qwen3-tts-flash` | 0.8 | 80 | 80000000 |
+| `minimax-speech-2.8-hd` | 3.5 | 350 | 350000000 |
 
 可重复执行 `scripts/seed_tts_prices.sql` 同步本地 control 数据库；脚本仅新增或更新这两个模型，保留已有价格 ID 和创建时间，不修改历史用量及价格快照。在线环境也可通过 Admin Pricing 接口设置同样的 `billing.mode: characters` 和上述整数费率，保存后立即生效，无需重启。
 
@@ -114,7 +116,7 @@ name: Qwen3 TTS Flash via Transit Hub
 provider: transit-hub-tts
 type: tts
 protocol: DASHSCOPE_TTS
-modelId: th-dashscope-qwen3-tts-flash
+modelId: qwen3-tts-flash
 ```
 
 ```yaml
@@ -123,7 +125,7 @@ name: MiniMax Speech 2.8 HD via Transit Hub
 provider: transit-hub-tts
 type: tts
 protocol: MINIMAX_TTS
-modelId: th-minimax-speech-2_8-hd
+modelId: minimax-speech-2.8-hd
 ```
 
 把 `tools.yml` 的 `speech-generate.profiles.*.model-key` 切换至相应新 key。Platform 的 CNY pricing 为自身费用展示，与 Hub 的 Credits 扣费独立配置；不根据 Hub 价格自动填充或换算。本次不修改正在使用的 Platform registry 或 profile。

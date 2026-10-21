@@ -5,7 +5,7 @@ default_pool: primary
 endpoints:
   minimax_tts: /v1/t2a_v2
 models:
-  - public: th-minimax-speech-2_8-hd
+  - public: minimax-speech-2.8-hd
     upstream: speech-2.8-hd
     type: tts
     owned_by: minimax

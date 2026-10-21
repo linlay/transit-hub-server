@@ -60,7 +60,7 @@ models:
     pool: primary
   # Optional TTS mapping: reuses this provider and its existing accounts.
   # The selected account must have TTS access.
-  # - public: th-minimax-speech-2_8-hd
+  # - public: minimax-speech-2.8-hd
   #   upstream: speech-2.8-hd
   #   protocol: minimax_tts
   #   type: tts

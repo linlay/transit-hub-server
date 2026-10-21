@@ -10,13 +10,13 @@ INSERT INTO model_prices (
   unit, billing, created_at, updated_at
 ) VALUES
   (
-    'price_dashscope_qwen3_tts_flash', 'dashscope_tts', 'th-dashscope-qwen3-tts-flash',
+    'price_dashscope_qwen3_tts_flash', 'dashscope_tts', 'qwen3-tts-flash',
     0, NULL, 0, 'CREDITS',
     '{"mode":"characters","microcredits_per_10k_characters":"80000000"}',
     strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
   ),
   (
-    'price_minimax_speech_2_8_hd', 'minimax_tts', 'th-minimax-speech-2_8-hd',
+    'price_minimax_speech_2_8_hd', 'minimax_tts', 'minimax-speech-2.8-hd',
     0, NULL, 0, 'CREDITS',
     '{"mode":"characters","microcredits_per_10k_characters":"350000000"}',
     strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
