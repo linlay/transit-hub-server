@@ -386,7 +386,7 @@ curl -sS -X DELETE http://localhost:8080/admin/jwt-grants/jti_xxx \
 
 员工认证密钥与 API Key / JWT Grant 独立。启用后，模型接口接受 `Authorization: Bearer <access_token>`，使用认证中心 RSA 公钥离线验证 RS256 签名、issuer、audience、有效期和可选 scope；不领取、不生成 API Key。`/v1/models`、`/anthropic/v1/models`、`/api/me` 及其用量、余额、日志等接口也接受该 token。
 
-将 `configs/employee-auth/config.example.yaml` 复制为同目录 `config.yaml`，设置 `enabled: true`、认证中心 `public_key_path`、`issuer`、`audience`、`allowed_models`。`subject_claim` 默认 `staffuserid`，支持 `user.staffuserid` 等对象路径，必须指向 JWT payload 中稳定、非空的字符串。字段只从验签后的 JWT 获取，客户端不能另行指定员工身份。配置路径可由 `EMPLOYEE_AUTH_CONFIG_PATH` 覆盖；公钥路径相对配置文件解析。缺少配置或关闭开关时不接受员工 token，已启用但配置非法则启动失败；修改配置后重启服务。
+将 `configs/employee-auth/config.example.yaml` 复制为同目录 `config.yaml`，设置 `enabled: true`、认证中心 `public_key_path`、`issuer`、`audience`、`allowed_models`。`subject_claim` 默认 `staffuserid`，支持 `user.staffuserid` 等对象路径，必须指向 JWT payload 中稳定、非空的字符串。`name_claim` 默认 `name`，同样支持嵌套路径；从验签后的 JWT 读取用户名，首次建档保存到员工记录的 `name`，缺失、非字符串或超过 512 字节时回退为员工编号。已有记录仍为编号时，在下次有效认证时补全用户名；保留管理员设置的名字。姓名不参与唯一身份或用量归属。字段只从验签后的 JWT 获取，客户端不能另行指定员工身份。配置路径可由 `EMPLOYEE_AUTH_CONFIG_PATH` 覆盖；公钥路径相对配置文件解析。缺少配置或关闭开关时不接受员工 token，已启用但配置非法则启动失败；修改配置后重启服务。
 
 ```bash
 curl https://your-transit-hub/v1/chat/completions \
@@ -399,7 +399,7 @@ curl https://your-transit-hub/v1/chat/completions \
 
 管理后台 `/employee-keys` 的「员工全局默认策略」可设置首次建档的模型白名单、总 Credits、请求数、Token 额度和固定窗口限流。`GET /admin/employee-auth` 读取生效策略，`PUT /admin/employee-auth` 完整保存策略（需要管理员认证；金额使用 micro-Credits 整数字符串）。策略存入 control 数据库，保存后立即用于后续首次建档，重启保留；不覆盖已有员工的权限、限额或用量。额度 `0` 表示不限，模型白名单至少包含一个已知公开模型。认证开关、公钥、issuer、audience 和身份字段仍由服务端 YAML 配置，不能通过该接口修改。
 
-管理后台「员工认证密钥」位于「授权型密钥」上方，提供员工列表、身份字段、用量、权限、限额和日志详情。`GET /admin/employee-auth` 返回启用状态及公开验证策略（不含密钥或文件路径）；`GET /admin/employee-keys` 返回员工计量记录，详情、编辑、用量、日志复用 `/admin/api-keys/{id}` 系列。普通 `/admin/api-keys` 列表排除员工记录，可显式使用 `source=employee` 查询。禁用或软删除员工记录后，新 token 不会自动重建授权；身份绑定予以保留。认证中心登出不自动撤销仍有效的 JWT，离线验签遵循 token 到期时间，必要时在后台禁用对应员工。
+管理后台「员工认证密钥」位于「授权型密钥」上方，提供员工列表、身份字段、用量、权限、限额和日志详情。`GET /admin/employee-auth` 返回启用状态及公开验证策略（不含密钥或文件路径）；`GET /admin/employee-keys` 返回员工计量记录，详情、编辑、用量、日志复用 `/admin/api-keys/{id}` 系列。普通 `/admin/api-keys` 列表排除员工记录，可显式使用 `source=employee` 查询。禁用员工后保留身份绑定，新的 Token 仍不能访问。删除员工时归档旧身份并解除当前绑定，下次有效 Token 请求按全局默认策略注册为新用户，用量从零开始；旧记录与历史用量、日志仍保留，支持多次删除后重新注册。认证中心登出不自动撤销仍有效的 JWT，离线验签遵循 token 到期时间，必要时在后台禁用对应员工。
 
 ## 管理网站
 

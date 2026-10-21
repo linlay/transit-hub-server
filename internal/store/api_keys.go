@@ -145,8 +145,16 @@ func (s *Store) DeleteAPIKey(ctx context.Context, id string) (APIKey, error) {
 	if err != nil {
 		return APIKey{}, err
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return APIKey{}, err
+	}
+	defer tx.Rollback()
+	if err = archiveEmployeeIdentities(ctx, tx, "id = ?", id); err != nil {
+		return APIKey{}, err
+	}
 	now := time.Now().UTC()
-	_, err = s.db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		UPDATE api_keys
 		SET status = 'disabled',
 		    forced_expired = 1,
@@ -155,6 +163,9 @@ func (s *Store) DeleteAPIKey(ctx context.Context, id string) (APIKey, error) {
 		WHERE id = ?
 	`, formatTime(now), formatTime(now), id)
 	if err != nil {
+		return APIKey{}, err
+	}
+	if err = tx.Commit(); err != nil {
 		return APIKey{}, err
 	}
 	key.Status = "disabled"
@@ -191,6 +202,9 @@ func (s *Store) BatchAPIKeys(ctx context.Context, params APIKeyBatchParams) (API
 	updateArgs := []any{}
 	query := ""
 	if action == "delete" {
+		if err := archiveEmployeeIdentities(ctx, tx, "deleted_at IS NULL AND ("+where+")", args...); err != nil {
+			return APIKeyBatchResult{}, err
+		}
 		updateArgs = append(updateArgs, formatTime(now), formatTime(now))
 		query = fmt.Sprintf(`
 			UPDATE api_keys

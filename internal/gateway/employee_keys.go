@@ -19,6 +19,7 @@ func (g *Gateway) lookupEmployeeKey(w http.ResponseWriter, r *http.Request, toke
 	key, err := g.store.ResolveEmployeeKey(r.Context(), store.EmployeeIdentity{
 		Issuer: identity.Issuer, Claim: svc.Config.SubjectClaim, Subject: identity.Subject,
 	}, store.CreateAPIKeyParams{
+		Name:          identity.Name,
 		AllowedModels: svc.Config.AllowedModels, RequestQuota: svc.Config.RequestQuota,
 		TokenQuota: svc.Config.TokenQuota, QuotaMicrocredits: svc.Config.QuotaMicrocredits,
 		RateLimits: svc.Config.RateLimits,
@@ -51,6 +52,7 @@ type employeeAuthResponse struct {
 	store.EmployeePolicy
 	Enabled       bool   `json:"enabled"`
 	SubjectClaim  string `json:"subject_claim"`
+	NameClaim     string `json:"name_claim"`
 	Issuer        string `json:"issuer,omitempty"`
 	Audience      string `json:"audience,omitempty"`
 	Algorithm     string `json:"algorithm,omitempty"`
@@ -64,11 +66,12 @@ func (g *Gateway) employeeAuthSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "employee defaults unavailable")
 		return
 	}
-	response := employeeAuthResponse{EmployeePolicy: policy, SubjectClaim: "staffuserid"}
+	response := employeeAuthResponse{EmployeePolicy: policy, SubjectClaim: "staffuserid", NameClaim: "name"}
 	if g.employeeAuth != nil {
 		cfg := g.employeeAuth.Config
 		response.Enabled = true
 		response.SubjectClaim, response.Issuer, response.Audience = cfg.SubjectClaim, cfg.Issuer, cfg.Audience
+		response.NameClaim = cfg.NameClaim
 		response.Algorithm, response.RequiredScope = cfg.Algorithm, cfg.RequiredScope
 	}
 	writeJSON(w, http.StatusOK, response)

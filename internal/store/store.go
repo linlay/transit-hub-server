@@ -516,6 +516,13 @@ func (s *Store) migrate(ctx context.Context) error {
  api_key_id TEXT NOT NULL DEFAULT '',
  PRIMARY KEY(issuer,subject_claim,subject)
  );
+
+ CREATE TABLE IF NOT EXISTS employee_identity_history (
+ api_key_id TEXT PRIMARY KEY,
+ issuer TEXT NOT NULL,
+ subject_claim TEXT NOT NULL,
+ subject TEXT NOT NULL
+ );
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_identity_key
 	ON employee_identities(api_key_id) WHERE api_key_id != '';
 

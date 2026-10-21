@@ -23,11 +23,13 @@ type Config struct {
 	Issuer        string
 	Audience      string
 	SubjectClaim  string
+	NameClaim     string
 	RequiredScope string
 }
 type Identity struct {
 	Issuer  string
 	Subject string
+	Name    string
 }
 type Service struct {
 	Config Config
@@ -153,5 +155,21 @@ func (s *Service) Verify(token string, now time.Time) (Identity, error) {
 			return fail()
 		}
 	}
-	return Identity{issuer, subject}, nil
+	// Display names are optional metadata, read only after all token checks pass.
+	var name string
+	if s.Config.NameClaim != "" {
+		value := json.RawMessage(payload)
+		for _, segment := range strings.Split(s.Config.NameClaim, ".") {
+			var object map[string]json.RawMessage
+			if json.Unmarshal(value, &object) != nil {
+				value = nil
+				break
+			}
+			value = object[segment]
+		}
+		if json.Unmarshal(value, &name) != nil || len(name) > 512 {
+			name = ""
+		}
+	}
+	return Identity{Issuer: issuer, Subject: subject, Name: strings.TrimSpace(name)}, nil
 }

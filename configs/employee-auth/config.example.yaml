@@ -7,6 +7,8 @@ issuer: https://identity.example.com
 audience: transit-hub
 # Stable employee identity from the verified JWT payload. Dotted paths supported.
 subject_claim: staffuserid
+# Optional display name; does not affect identity or accounting. Dotted paths supported.
+name_claim: name
 required_scope: ""
 # Bootstrap defaults; saved /employee-keys global defaults take precedence.
 allowed_models:

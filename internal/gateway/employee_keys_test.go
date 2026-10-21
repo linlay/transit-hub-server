@@ -146,12 +146,34 @@ func TestEmployeeTokenValidationAndIdentityRevocation(t *testing.T) {
 	if _, err := db.DeleteAPIKey(t.Context(), id); err != nil {
 		t.Fatal(err)
 	}
-	if w = employeeRequest(app, sign(nil), "/api/me", ""); w.Code != 401 {
-		t.Fatal("deleted employee was recreated")
+	if w = employeeRequest(app, sign(nil), "/api/me", ""); w.Code != 200 {
+		t.Fatalf("deleted employee did not re-register: %d %s", w.Code, w.Body.String())
 	}
 	all, _ := db.SearchAPIKeys(t.Context(), store.APIKeyListParams{Source: "employee", IncludeDeleted: true})
-	if all.Total != 1 {
-		t.Fatal("revocation reset identity")
+	if all.Total != 2 {
+		t.Fatal("old record or newly registered employee missing")
+	}
+	active, _ := db.SearchAPIKeys(t.Context(), store.APIKeyListParams{Source: "employee"})
+	if len(active.Items) != 1 || active.Items[0].ID == id || active.Items[0].UsedRequests != 0 || active.Items[0].Status != "active" {
+		t.Fatal("re-registration did not create a fresh employee")
+	}
+	old, err := db.GetAPIKey(t.Context(), id)
+	if err != nil || old.DeletedAt == nil || old.EmployeeIdentity.Subject != "staff-a" {
+		t.Fatalf("old identity lost after deletion: %+v %v", old, err)
+	}
+	// Batch deletion uses the same semantics; the next record takes current defaults.
+	if err := db.SetEmployeePolicy(t.Context(), store.EmployeePolicy{AllowedModels: []string{"public-model"}, RequestQuota: 17}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.BatchAPIKeys(t.Context(), store.APIKeyBatchParams{Action: "delete", IDs: []string{active.Items[0].ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if w := employeeRequest(app, sign(nil), "/api/me", ""); w.Code != 200 {
+		t.Fatalf("re-register after batch delete: %d %s", w.Code, w.Body.String())
+	}
+	latest, _ := db.SearchAPIKeys(t.Context(), store.APIKeyListParams{Source: "employee"})
+	if len(latest.Items) != 1 || latest.Items[0].RequestQuota != 17 || latest.Items[0].ID == active.Items[0].ID {
+		t.Fatal("batch deletion did not release identity or apply new defaults")
 	}
 }
 
@@ -159,13 +181,14 @@ func TestEmployeeConfigurationAndCustomClaim(t *testing.T) {
 	svc, sign := employeeFixture(t)
 	cfg := svc.Config
 	cfg.SubjectClaim = "user.id"
+	cfg.NameClaim = "profile.displayName"
 	cfg.RequiredScope = "models:call"
 	custom, err := employeeauth.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity, err := custom.Verifier.Verify(sign(map[string]any{"scope": "profile models:call"}), time.Now())
-	if err != nil || identity.Subject != "user-a" {
+	identity, err := custom.Verifier.Verify(sign(map[string]any{"scope": "profile models:call", "profile": map[string]any{"displayName": "测试员工"}, "name": "ignored"}), time.Now())
+	if err != nil || identity.Subject != "user-a" || identity.Name != "测试员工" {
 		t.Fatalf("custom nested claim: %+v %v", identity, err)
 	}
 	if _, err = custom.Verifier.Verify(sign(nil), time.Now()); err == nil {
@@ -180,7 +203,7 @@ func TestEmployeeConfigurationAndCustomClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, err := employeeauth.Load(file)
-	if err != nil || loaded.Config.SubjectClaim != "staffuserid" || loaded.Config.RateLimits[0].RequestQuota != 3 || loaded.Config.RateLimits[0].QuotaMicrocredits != 1000 {
+	if err != nil || loaded.Config.NameClaim != "name" || loaded.Config.SubjectClaim != "staffuserid" || loaded.Config.RateLimits[0].RequestQuota != 3 || loaded.Config.RateLimits[0].QuotaMicrocredits != 1000 {
 		t.Fatalf("config defaults/limits: %+v %v", loaded, err)
 	}
 	if err = os.WriteFile(file, []byte(content+"typo: true\n"), 0600); err != nil {
@@ -188,6 +211,50 @@ func TestEmployeeConfigurationAndCustomClaim(t *testing.T) {
 	}
 	if _, err = employeeauth.Load(file); err == nil {
 		t.Fatal("unknown config accepted")
+	}
+}
+
+func TestEmployeeNamesArePersistedFromVerifiedConfigurableClaim(t *testing.T) {
+	app, db, _ := newTestGateway(t, nil)
+	svc, sign := employeeFixture(t)
+	app.employeeAuth = svc
+	for _, token := range []string{sign(map[string]any{"name": "伪造姓名"}) + "tampered", sign(map[string]any{"name": "伪造姓名", "iss": "https://other.invalid"})} {
+		if w := employeeRequest(app, token, "/api/me", ""); w.Code != 401 {
+			t.Fatal("unverified name accepted")
+		}
+	}
+	if w := employeeRequest(app, sign(map[string]any{"name": "测试员工"}), "/api/me", ""); w.Code != 200 {
+		t.Fatalf("valid named employee: %d %s", w.Code, w.Body.String())
+	}
+	result, err := db.SearchAPIKeys(t.Context(), store.APIKeyListParams{Source: "employee", Search: "测试员工"})
+	if err != nil || result.Total != 1 || result.Items[0].Name != "测试员工" {
+		t.Fatalf("name was not persisted/searchable: %+v %v", result, err)
+	}
+	id := result.Items[0].ID
+	if w := employeeRequest(app, sign(map[string]any{"name": "另一个名字"}), "/api/me", ""); w.Code != 200 {
+		t.Fatal("token refresh rejected")
+	}
+	key, _ := db.GetAPIKey(t.Context(), id)
+	if key.Name != "测试员工" || key.EmployeeIdentity.Subject != "staff-a" {
+		t.Fatal("name change overwrote stored name/identity")
+	}
+	for i, value := range []any{nil, 12, strings.Repeat("x", 513), "  "} {
+		subject := []string{"missing-name", "numeric-name", "long-name", "blank-name"}[i]
+		if w := employeeRequest(app, sign(map[string]any{"staffuserid": subject, "name": value}), "/api/me", ""); w.Code != 200 {
+			t.Fatalf("optional invalid name rejected valid employee: %d", w.Code)
+		}
+		result, _ := db.SearchAPIKeys(t.Context(), store.APIKeyListParams{Source: "employee", Search: subject})
+		if len(result.Items) != 1 || result.Items[0].Name != subject {
+			t.Fatal("name fallback failed")
+		}
+	}
+	// An existing identifier-only record gains its name on the next verified request.
+	if w := employeeRequest(app, sign(map[string]any{"staffuserid": "missing-name", "name": "补全姓名"}), "/api/me", ""); w.Code != 200 {
+		t.Fatal("name backfill failed")
+	}
+	result, _ = db.SearchAPIKeys(t.Context(), store.APIKeyListParams{Source: "employee", Search: "补全姓名"})
+	if result.Total != 1 || result.Items[0].EmployeeIdentity.Subject != "missing-name" {
+		t.Fatal("existing employee name not backfilled")
 	}
 }
 

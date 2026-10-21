@@ -21,6 +21,7 @@ type Config struct {
 	Issuer            string            `yaml:"issuer"`
 	Audience          string            `yaml:"audience"`
 	SubjectClaim      string            `yaml:"subject_claim"`
+	NameClaim         string            `yaml:"name_claim"`
 	RequiredScope     string            `yaml:"required_scope"`
 	AllowedModels     []string          `yaml:"allowed_models"`
 	RequestQuota      int64             `yaml:"request_quota"`
@@ -64,9 +65,14 @@ func New(cfg Config) (*Service, error) {
 	if strings.TrimSpace(cfg.SubjectClaim) == "" {
 		cfg.SubjectClaim = "staffuserid"
 	}
-	for _, part := range strings.Split(cfg.SubjectClaim, ".") {
-		if strings.TrimSpace(part) == "" || strings.TrimSpace(part) != part {
-			return nil, errors.New("invalid employee subject_claim")
+	if cfg.NameClaim == "" {
+		cfg.NameClaim = "name"
+	}
+	for _, claim := range []string{cfg.SubjectClaim, cfg.NameClaim} {
+		for _, part := range strings.Split(claim, ".") {
+			if strings.TrimSpace(part) == "" || strings.TrimSpace(part) != part {
+				return nil, errors.New("invalid employee claim path")
+			}
 		}
 	}
 	if cfg.Algorithm == "" {
@@ -83,7 +89,7 @@ func New(cfg Config) (*Service, error) {
 	}
 	verifier, err := accesskey.NewVerifier(accesskey.Config{
 		PublicKeyPath: cfg.PublicKeyPath, Algorithm: cfg.Algorithm, Issuer: cfg.Issuer,
-		Audience: cfg.Audience, SubjectClaim: cfg.SubjectClaim, RequiredScope: cfg.RequiredScope,
+		Audience: cfg.Audience, SubjectClaim: cfg.SubjectClaim, NameClaim: cfg.NameClaim, RequiredScope: cfg.RequiredScope,
 	})
 	if err != nil {
 		return nil, err

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 )
 
 // EmployeeIdentity is extracted only from verified JWT claims. Claim is part of
@@ -16,8 +18,22 @@ type EmployeeIdentity struct {
 
 func (s *Store) employeeIdentity(ctx context.Context, id string) (*EmployeeIdentity, error) {
 	var identity EmployeeIdentity
-	err := s.db.QueryRowContext(ctx, `SELECT issuer,subject_claim,subject FROM employee_identities WHERE api_key_id=?`, id).Scan(&identity.Issuer, &identity.Claim, &identity.Subject)
+	err := s.db.QueryRowContext(ctx, `SELECT issuer,subject_claim,subject FROM employee_identities WHERE api_key_id=?
+ UNION ALL SELECT issuer,subject_claim,subject FROM employee_identity_history WHERE api_key_id=? LIMIT 1`, id, id).Scan(&identity.Issuer, &identity.Claim, &identity.Subject)
 	return &identity, err
+}
+
+// Archive the old accounting identity and release its active binding atomically
+// with deletion. Old logs/usage retain their original key; next use gets a new one.
+func archiveEmployeeIdentities(ctx context.Context, tx *sql.Tx, where string, args ...any) error {
+	selection := fmt.Sprintf(`SELECT id FROM api_keys WHERE source='employee' AND %s`, where)
+	_, err := tx.ExecContext(ctx, `INSERT INTO employee_identity_history(api_key_id,issuer,subject_claim,subject)
+ SELECT api_key_id,issuer,subject_claim,subject FROM employee_identities WHERE api_key_id IN (`+selection+`) ON CONFLICT DO NOTHING`, args...)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM employee_identities WHERE api_key_id IN (`+selection+`)`, args...)
+	return err
 }
 
 // ResolveEmployeeKey creates an accounting record on first authenticated use.
@@ -30,7 +46,17 @@ func (s *Store) ResolveEmployeeKey(ctx context.Context, identity EmployeeIdentit
 	var existing string
 	err := s.db.QueryRowContext(ctx, `SELECT api_key_id FROM employee_identities WHERE issuer=? AND subject_claim=? AND subject=?`, identity.Issuer, identity.Claim, identity.Subject).Scan(&existing)
 	if err == nil && existing != "" {
-		return s.GetAPIKey(ctx, existing)
+		key, err := s.GetAPIKey(ctx, existing)
+		// Backfill legacy identifier-only names without overwriting admin edits,
+		// reviving deleted records, or changing entitlement and usage.
+		name := strings.TrimSpace(policy.Name)
+		if err == nil && name != "" && name != identity.Subject && key.Name == identity.Subject && key.DeletedAt == nil && key.Status == "active" {
+			_, err = s.db.ExecContext(ctx, `UPDATE api_keys SET name=? WHERE id=? AND name=? AND deleted_at IS NULL AND status='active'`, name, existing, identity.Subject)
+			if err == nil {
+				return s.GetAPIKey(ctx, existing)
+			}
+		}
+		return key, err
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return APIKey{}, err
@@ -64,7 +90,10 @@ func (s *Store) ResolveEmployeeKey(ctx context.Context, identity EmployeeIdentit
 	}
 	if id == "" {
 		policy.Source = "employee"
-		policy.Name = identity.Subject
+		policy.Name = strings.TrimSpace(policy.Name)
+		if policy.Name == "" {
+			policy.Name = identity.Subject
+		}
 		created, err := s.createAPIKeyInTx(ctx, tx, policy)
 		if err != nil {
 			return APIKey{}, err
@@ -78,6 +107,6 @@ func (s *Store) ResolveEmployeeKey(ctx context.Context, identity EmployeeIdentit
 	if err = tx.Commit(); err != nil {
 		return APIKey{}, err
 	}
-	// Disabled/deleted records remain bound; a new token cannot reset entitlement.
+	// Disabled records remain bound; deletion explicitly releases the identity.
 	return s.GetAPIKey(ctx, id)
 }
